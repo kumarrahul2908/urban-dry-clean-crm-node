@@ -39,11 +39,13 @@ import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
 import { registerMobileWhatsAppRoutes } from './routes/mobile/whatsapp.js';
+import { registerWebRoutes } from './web/routes.js';
 import { registerWhatsAppWebhook } from './routes/whatsappWebhook.js';
 import { WhatsAppService, type InvoicePdfGenerator } from './services/whatsappService.js';
 import { PasswordResetService } from './services/passwordReset.js';
 import { MetaCloudProvider, type WhatsAppProvider } from './whatsapp/provider.js';
 import { whatsappOrderHooks } from './services/whatsappHooks.js';
+import { WebSessionStore } from './web/session.js';
 import { InvoicePdfService } from './services/invoicePdf.js';
 
 export interface Services {
@@ -70,6 +72,7 @@ export interface Services {
   hooks: OrderHooks;
   whatsapp: WhatsAppService;
   passwordReset: PasswordResetService;
+  web: { sessions: WebSessionStore; /** nav entries whose page exists in this app (is_file() in header.php) */ pages: Set<string>; navShowAll: boolean };
 }
 
 declare module 'fastify' {
@@ -88,6 +91,8 @@ export interface BuildOptions {
   /** Override the WhatsApp provider (tests). Default: Meta Cloud API. */
   provider?: WhatsAppProvider;
   invoicePdf?: InvoicePdfGenerator;
+  /** Render every sidebar link as live (PHP's is_file() is always true there) — used by HTML-parity tests. */
+  navShowAll?: boolean;
 }
 
 export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Services {
@@ -127,6 +132,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     workshopInvoice: new WorkshopInvoice(db, audit, workshop, env.APP_TIMEZONE),
     hooks,
     whatsapp,
+    web: { sessions: new WebSessionStore(db), pages: new Set<string>(), navShowAll: !!options.navShowAll },
     passwordReset: new PasswordResetService(db, whatsapp, audit, env.APP_URL),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
@@ -144,7 +150,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   });
   app.decorate('services', services);
 
-  await app.register(helmet);
+  await app.register(helmet, { contentSecurityPolicy: false }); // the CRM pages use inline scripts/styles and CDN assets (as the PHP app did)
   await app.register(cors, { origin: false });
   await app.register(formbody); // PHP's $_POST fallback for form-encoded bodies
   // Photos are stored verbatim; the only limit is a generous safety ceiling (UPLOAD_MAX_MB, 0 = none).
@@ -201,5 +207,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileWhatsAppRoutes, { prefix: '/api/mobile' });
   await app.register(registerWhatsAppWebhook);
+  await app.register(registerWebRoutes);
   return app;
 }

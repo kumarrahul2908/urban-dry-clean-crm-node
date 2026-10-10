@@ -1,0 +1,134 @@
+:root{
+  --udc-primary:#0b3d91;
+  --udc-primary-light:#1857c9;
+  --udc-accent:#00b4d8;
+  --udc-sidebar-bg:#0b1e3d;
+  --udc-sidebar-text:#c9d6ef;
+  --udc-sidebar-active:#12325e;
+  --udc-bg:#f1f5f9;
+  --udc-card-radius:12px;
+}
+*{box-sizing:border-box;}
+body{background:var(--udc-bg);font-family:'Segoe UI',Roboto,Arial,sans-serif;}
+
+.udc-wrapper{display:flex;min-height:100vh;}
+
+/* Sidebar */
+.udc-sidebar{
+  width:250px;flex-shrink:0;background:var(--udc-sidebar-bg);color:var(--udc-sidebar-text);
+  position:fixed;top:0;bottom:0;left:0;overflow-y:auto;z-index:1030;transition:transform .2s ease;
+}
+.udc-brand{display:flex;align-items:center;gap:10px;padding:18px 20px;font-weight:700;font-size:16px;color:#fff;border-bottom:1px solid rgba(255,255,255,.08);}
+.udc-brand i{color:var(--udc-accent);font-size:20px;}
+.udc-nav{padding:12px 0 40px;}
+.udc-nav-section{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#7c8db5;padding:14px 20px 6px;}
+.udc-nav-link{display:flex;align-items:center;gap:12px;padding:10px 20px;color:var(--udc-sidebar-text);text-decoration:none;font-size:14px;border-left:3px solid transparent;}
+.udc-nav-link i{width:18px;text-align:center;opacity:.85;}
+.udc-nav-link:hover{background:rgba(255,255,255,.06);color:#fff;}
+.udc-nav-link.active{background:var(--udc-sidebar-active);color:#fff;border-left-color:var(--udc-accent);}
+.udc-nav-link-disabled{opacity:.45;cursor:default;pointer-events:none;}
+.udc-nav-link-disabled:hover{background:none;}
+.udc-coming-soon{margin-left:auto;font-size:10px;text-transform:uppercase;letter-spacing:.04em;background:rgba(255,255,255,.12);padding:2px 6px;border-radius:8px;white-space:nowrap;}
+
+/* Main area */
+.udc-main{margin-left:250px;flex-grow:1;display:flex;flex-direction:column;min-height:100vh;width:calc(100% - 250px);}
+.udc-topbar{display:flex;align-items:center;gap:14px;background:#fff;padding:12px 22px;border-bottom:1px solid #e5e9f0;position:sticky;top:0;z-index:1020;}
+.udc-content{padding:22px;flex-grow:1;}
+.udc-footer{padding:14px 22px;text-align:center;font-size:12px;color:#8a94a6;}
+
+/* Cards */
+.card{border:0;border-radius:var(--udc-card-radius);box-shadow:0 1px 3px rgba(20,30,60,.08);}
+.stat-card{border-radius:var(--udc-card-radius);padding:18px;color:#fff;position:relative;overflow:hidden;}
+.stat-card .stat-icon{position:absolute;right:14px;top:14px;font-size:34px;opacity:.35;}
+.stat-card .stat-value{font-size:26px;font-weight:700;}
+.stat-card .stat-label{font-size:12.5px;opacity:.9;}
+
+.btn-primary{background:var(--udc-primary);border-color:var(--udc-primary);}
+.btn-primary:hover{background:var(--udc-primary-light);border-color:var(--udc-primary-light);}
+/* Without this, the brand-color rule above wins the cascade over Bootstrap's own disabled
+   treatment for this specific variant, leaving a disabled .btn-primary looking fully active
+   (solid brand blue) even though its `disabled` attribute is genuinely set — this is the exact
+   bug behind the POS "Add to Order" button looking enabled while correctly blocked. Fixed at
+   the source so it's correct for every .btn-primary in the app, not just this one button. */
+.btn-primary:disabled,
+.btn-primary.disabled{background:#adb5bd;border-color:#adb5bd;opacity:.65;pointer-events:none;}
+
+.garment-tile{border:1px solid #e5e9f0;border-radius:10px;padding:10px;text-align:center;cursor:pointer;background:#fff;transition:.15s;}
+.garment-tile:hover{border-color:var(--udc-primary);box-shadow:0 2px 10px rgba(11,61,145,.15);}
+.garment-tile img{width:100%;height:64px;object-fit:contain;margin-bottom:6px;}
+.garment-tile .g-name{font-size:12.5px;font-weight:600;}
+.garment-tile .g-rate{font-size:12px;color:#0b3d91;}
+
+table.table thead th{font-size:12.5px;text-transform:uppercase;letter-spacing:.03em;color:#6b7688;background:#f8f9fb;}
+
+@media (max-width: 991.98px){
+  .udc-sidebar{transform:translateX(-100%);}
+  .udc-sidebar.show{transform:translateX(0);}
+  .udc-main{margin-left:0;width:100%;}
+}
+
+/* ==========================================================================
+   MOBILE TABLE → CARD TRANSFORMATION  (screen only, <=767px)
+   Reuses the SAME server-rendered table markup — no duplicate row rendering,
+   no second data structure, no extra queries. Each <td> carries a data-label
+   whose text becomes the field name in card mode via ::before.
+   `screen and` is deliberate: print output must stay exactly as-is.
+   ========================================================================== */
+@media screen and (max-width: 767.98px) {
+  .udc-cards thead { display: none; }
+  .udc-cards, .udc-cards tbody, .udc-cards tr, .udc-cards td { display: block; width: 100%; }
+  .udc-cards tr {
+    border: 1px solid #e2e6ee; border-radius: .55rem; background: #fff;
+    margin-bottom: .75rem; padding: .55rem .8rem;
+  }
+  .udc-cards td {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+    border: none !important; padding: .3rem 0 !important; text-align: right !important;
+    min-height: 1.9rem;
+  }
+  .udc-cards td::before {
+    content: attr(data-label); font-weight: 600; color: #6c757d;
+    text-align: left; flex-shrink: 0; white-space: nowrap;
+  }
+  /* Cells flagged as headline (item no., garment, service, order no.) render full-width
+     without a label prefix, forming the card's title block. */
+  .udc-cards td.udc-card-head {
+    display: block; text-align: left !important; padding-bottom: .1rem !important;
+  }
+  .udc-cards td.udc-card-head::before { content: none; }
+  .udc-cards td.udc-card-title { font-weight: 700; font-size: 1.02rem; }
+  /* Emphasised money row */
+  .udc-cards td.udc-card-total { border-top: 1px solid #eef1f6 !important; margin-top: .2rem; padding-top: .45rem !important; font-size: 1.05rem; }
+  /* In card mode the wrapper must not scroll — cards already fit the viewport. */
+  .udc-cards-wrap { overflow-x: visible !important; }
+
+  /* Order header: allow a sensible two-part wrap, never per-character breaking. */
+  .udc-order-title { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+  .udc-order-title .udc-order-number { word-break: normal; overflow-wrap: anywhere; }
+
+  /* Action button groups wrap into rows instead of overflowing. */
+  .udc-action-group { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .udc-action-group .btn { flex: 1 1 auto; white-space: nowrap; }
+
+  /* Filter forms stack full-width. */
+  .udc-filter-form { flex-direction: column; align-items: stretch; }
+  .udc-filter-form .form-control,
+  .udc-filter-form .form-select,
+  .udc-filter-form .btn { width: 100% !important; min-width: 0 !important; }
+
+
+  /* First cell of every card becomes its title block automatically — applies to all 50 pages
+     without editing each one. Pages that already declare .udc-card-head explicitly
+     (orders/view, orders/list) are excluded so their hand-tuned layout is untouched. */
+  .udc-cards tbody tr td:first-child:not(.udc-card-head) {
+    display: block; text-align: left !important; font-weight: 700; font-size: 1.02rem;
+    border-bottom: 1px solid #eef1f6 !important;
+    padding-bottom: .4rem !important; margin-bottom: .25rem;
+  }
+  .udc-cards tbody tr td:first-child:not(.udc-card-head)::before { content: none; }
+  /* Action/button cells (blank label) sit full-width at the card foot */
+  .udc-cards td[data-label=""] { justify-content: flex-end; padding-top: .5rem !important; }
+
+  /* Belt-and-braces: no page-level horizontal scroll on small screens. */
+  html, body { max-width: 100%; overflow-x: hidden; }
+}
