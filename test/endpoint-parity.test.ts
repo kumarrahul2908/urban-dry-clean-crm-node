@@ -218,6 +218,9 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       expenses: await q('SELECT * FROM expenses ORDER BY id'),
       income: await q('SELECT * FROM income ORDER BY id'),
       notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
+      waQueue: (await q('SELECT id, account_id, customer_id, order_id, to_number, message_type, template_key, payload_json, event_ref, campaign_id, status, retry_count FROM whatsapp_outbound_queue ORDER BY id'))
+        .map((r: any) => ({ ...r, payload_json: JSON.parse(r.payload_json) })),
+      resetTokens: (await q('SELECT id, reset_token IS NOT NULL AS has_token, reset_token_expires IS NOT NULL AS has_expiry FROM users ORDER BY id')),
       audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items","pickup_orders","delivery_orders","workshop_challans","workshop_items","workshop_bills")  ORDER BY id'))
         .map((a: any) => ({ ...a, user_id: a.action === 'lookup' ? null : a.user_id, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
     });
@@ -450,6 +453,51 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_prefix_counter', '2') ON DUPLICATE KEY UPDATE setting_value = '2'");
   };
   const yday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const WA_ = (action: string, extra: Record<string, unknown> = {}, who: Who = 'admin') => P('workshop_action', { action, ...extra }, who);
+  const waSeed = async () => {
+    await db.execute("INSERT INTO whatsapp_accounts (id, store_id, account_name, waba_id, phone_number_id, access_token_encrypted, api_version, is_active) VALUES (1, NULL, 'Main', 'w1', 'p1', 'AAAA', 'v21.0', 1)");
+    await db.execute(
+      `INSERT INTO notification_templates (template_key, channel, body, provider_template_name, language, template_param_order, is_active) VALUES
+       ('order_confirmation', 'WhatsApp', 'Hi {customer_name}, order {order_number} Rs.{grand_total} - {business_name} {nope}', 'order_confirmation_v1', 'en', '["customer_name","order_number","grand_total","business_name"]', 1),
+       ('order_ready', 'WhatsApp', 'Hi {customer_name}, order {order_number} is ready', NULL, NULL, NULL, 1),
+       ('pickup_scheduled', 'WhatsApp', 'Pickup for {order_number} on {pickup_date}', 'pickup_v1', 'hi', '["order_number","pickup_date"]', 1),
+       ('workshop_completed', 'WhatsApp', 'Workshop done for {order_number}', NULL, '', '', 1)`);
+    await db.execute("UPDATE customers SET address = '5 Market Road' WHERE id = 2");
+    await db.execute("UPDATE order_items SET item_status = 'Packed' WHERE order_id = 4");                       // pickup needs a fully packed order
+    await db.execute("UPDATE order_items SET item_status = 'Ready' WHERE order_id = 3 AND id NOT IN (4, 5)");   // QC-passing items 4+5 completes order 3
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('business_name', 'Urban Test') ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+  };
+  scenario('whatsapp: order_confirmation, pickup_scheduled, order_ready and inactive-template hooks enqueue identical rows', [
+    P('pos_orders_create', { client_request_id: 'wa-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 2 }], payments: [{ payment_type_id: 1, amount: 50 }] }),
+    P('pos_orders_create', { client_request_id: 'wa-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 2 }], payments: [{ payment_type_id: 1, amount: 50 }] }),
+    P('pickup_action', { action: 'create', order_id: 4, pickup_date: today, pickup_time: '10:30' }),
+    P('pickup_action', { action: 'create', order_id: 4, pickup_date: today }),
+    P('qc_action', { action: 'pass', order_item_id: 4 }),
+    P('qc_action', { action: 'pass', order_item_id: 5 }),
+    P('laundry_orders_create', { client_request_id: 'wa-2', customer_id: 2, batches: [{ service_id: 3, weight: 3, rate: 60, garment_count: 1, garments: [{ garment_id: 1, quantity: 1 }] }] }),
+    WA_('create_challan', { workshop_id: 1, item_ids: [1] }),
+    WA_('start_processing', { workshop_item_id: 1 }),
+    WA_('complete_processing', { workshop_item_id: 1 }),
+  ], waSeed);
+
+  scenario('whatsapp: without any account nothing is queued; password reset not set up / set up', [
+    P('pos_orders_create', { client_request_id: 'wa-3', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }),
+    P('pickup_action', { action: 'create', order_id: 1, pickup_date: today }),
+  ]);
+
+  const resetCases = async () => {
+    await db.execute("UPDATE users SET mobile = '+91 98765-43210', email = 'admin@example.com' WHERE id = 1");
+    await db.execute("UPDATE users SET mobile = '9876543210' WHERE id = 3");
+    await db.execute("UPDATE users SET mobile = '' WHERE id = 4");
+    await db.execute("UPDATE users SET reset_token = 'old', reset_token_expires = NOW() + INTERVAL 59 MINUTE WHERE id = 5"); await db.execute("UPDATE users SET mobile = '9000000001', reset_token = 'old2', reset_token_expires = NOW() + INTERVAL 53 MINUTE WHERE id = 6");
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('password_reset_wa_template', 'reset_tpl') ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+  };
+  const PR = (identifier: unknown): Case => ({ name: 'password_reset_request', endpoint: 'password_reset_request', method: 'POST', body: { identifier } });
+  scenario('password_reset_request: not configured', [PR('rahul'), PR(''), PR(5)]);
+  scenario('password_reset_request: configured — unknown, success, no mobile, recently sent, ambiguous (shared mobile)', [
+    PR('nobody-here'), PR('rahul'), PR('ws'), PR('nobody'), PR('admin@example.com'), PR('9876543210'), PR('boss'), PR('driver'), PR('x'.repeat(151)), PR('  '), PR({ a: 1 }),
+  ], resetCases);
+
   const WA = (action: string, extra: Record<string, unknown> = {}, who: Who = 'admin') => P('workshop_action', { action, ...extra }, who);
   scenario('workshop: queue, challans, item lifecycle, schedule, report, billing + permissions', [
     G('workshop_queue'),

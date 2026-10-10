@@ -38,6 +38,12 @@ import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
+import { registerMobileWhatsAppRoutes } from './routes/mobile/whatsapp.js';
+import { registerWhatsAppWebhook } from './routes/whatsappWebhook.js';
+import { WhatsAppService, type InvoicePdfGenerator } from './services/whatsappService.js';
+import { PasswordResetService } from './services/passwordReset.js';
+import { MetaCloudProvider, type WhatsAppProvider } from './whatsapp/provider.js';
+import { whatsappOrderHooks } from './services/whatsappHooks.js';
 
 export interface Services {
   env: Env;
@@ -61,6 +67,8 @@ export interface Services {
   workshop: WorkshopService;
   workshopInvoice: WorkshopInvoice;
   hooks: OrderHooks;
+  whatsapp: WhatsAppService;
+  passwordReset: PasswordResetService;
 }
 
 declare module 'fastify' {
@@ -73,10 +81,22 @@ declare module 'fastify' {
   }
 }
 
-export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHooks): Services {
+export interface BuildOptions {
+  /** Override order side-effects (tests). Default: real WhatsApp queueing. */
+  hooks?: OrderHooks;
+  /** Override the WhatsApp provider (tests). Default: Meta Cloud API. */
+  provider?: WhatsAppProvider;
+  invoicePdf?: InvoicePdfGenerator;
+}
+
+export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Services {
+  const crypto = new Crypto(env.APP_SECRET_KEY);
+  const audit0 = new AuditLog(db);
+  const whatsapp = new WhatsAppService(db, crypto, options.provider ?? new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE, invoicePdf: options.invoicePdf });
+  const hooks = options.hooks ?? whatsappOrderHooks(db, whatsapp, env.APP_NAME);
   const limiter = new LoginRateLimiter(db, env.LOGIN_LOCKOUT_MINUTES);
   const auth = new AuthService(db, limiter, { maxLoginAttempts: env.MAX_LOGIN_ATTEMPTS, lockoutMinutes: env.LOGIN_LOCKOUT_MINUTES });
-  const audit = new AuditLog(db);
+  const audit = audit0;
   const wallet = new CustomerWallet(db, audit);
   const pricing = new PricingEngine(db);
   const finance = new OrderFinance(db, audit);
@@ -90,7 +110,7 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     audit,
     auth,
     apiAuth: new ApiAuth(db, auth, env.API_TOKEN_LIFETIME_DAYS),
-    crypto: new Crypto(env.APP_SECRET_KEY),
+    crypto,
     pricing,
     customers: new CustomerService(db, audit),
     wallet,
@@ -105,6 +125,8 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     workshop,
     workshopInvoice: new WorkshopInvoice(db, audit, workshop, env.APP_TIMEZONE),
     hooks,
+    whatsapp,
+    passwordReset: new PasswordResetService(db, whatsapp, audit, env.APP_URL),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
@@ -176,5 +198,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileWhatsAppRoutes, { prefix: '/api/mobile' });
+  await app.register(registerWhatsAppWebhook);
   return app;
 }

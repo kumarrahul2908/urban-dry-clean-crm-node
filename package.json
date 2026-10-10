@@ -13,7 +13,9 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "job:photo-cleanup": "node dist/jobs/photoCleanup.js"
+    "job:photo-cleanup": "node dist/jobs/photoCleanup.js",
+    "job:whatsapp-worker": "node dist/jobs/whatsappWorker.js",
+    "job:whatsapp-marketing": "node dist/jobs/whatsappMarketing.js"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
