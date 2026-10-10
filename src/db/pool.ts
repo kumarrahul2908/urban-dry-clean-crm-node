@@ -21,6 +21,8 @@ export function createPool(env: Env): { db: Db; close: () => Promise<void> } {
     timezone: 'Z',
     dateStrings: true,
     connectionLimit: 10,
+    // PDO-MySQL semantics: affectedRows = rows actually CHANGED (mysql2 defaults to rows matched).
+    flags: ['-FOUND_ROWS'],
     namedPlaceholders: false,
   });
 

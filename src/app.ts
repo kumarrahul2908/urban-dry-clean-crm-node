@@ -15,6 +15,7 @@ import { CustomerWallet } from './services/customerWallet.js';
 import { OrderFinance } from './services/orderFinance.js';
 import { OrderService } from './services/orderService.js';
 import { NotificationService } from './services/notificationService.js';
+import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
 import { ApiError } from './lib/http.js';
 import { registerMobileAuthRoutes } from './routes/mobile/auth.js';
@@ -22,6 +23,7 @@ import { registerMobileCatalogRoutes } from './routes/mobile/catalog.js';
 import { registerMobileCustomerRoutes } from './routes/mobile/customers.js';
 import { registerMobileOrderRoutes } from './routes/mobile/orders.js';
 import { registerMobileReportRoutes } from './routes/mobile/reports.js';
+import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 
 export interface Services {
   env: Env;
@@ -36,6 +38,7 @@ export interface Services {
   orders: OrderService;
   finance: OrderFinance;
   notifications: NotificationService;
+  expenses: ExpenseService;
 }
 
 declare module 'fastify' {
@@ -68,6 +71,7 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     wallet,
     finance,
     notifications,
+    expenses: new ExpenseService(db, audit, env.APP_TIMEZONE),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
@@ -126,5 +130,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileCustomerRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileOrderRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileReportRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
   return app;
 }

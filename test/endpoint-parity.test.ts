@@ -67,9 +67,9 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     return php;
   };
 
-  beforeAll(async () => {
+  async function buildDataset() {
     await resetAndSeed(db);
-    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view'];
+    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage'];
     await db.execute(`INSERT INTO permissions (id, permission_key, module) VALUES ${perms.map((p, i) => `(${i + 1}, '${p}', 'x')`).join(',')}`);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (3, 'Super Admin'), (4, 'Workshop Staff'), (5, 'Nobody')");
     await db.execute(`INSERT INTO role_permissions (role_id, permission_id) VALUES ${[1, 3].flatMap((r) => perms.map((_, i) => `(${r}, ${i + 1})`)).join(',')}, (4, 1)`);
@@ -80,7 +80,6 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute('UPDATE users SET password_hash = ?', [await hashPassword('x')]);
 
     const svc = buildServices(env, db);
-    app = await buildApp(svc);
     const A = { userId: 1 };
     const line = (g: number, s: number, q = 1) => ({ garment_id: g, service_id: s, quantity: q });
     const mk = async (customer: number, items: object[], extra: object = {}, store = 1) => {
@@ -114,6 +113,15 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute("INSERT INTO feedback (customer_id, order_id, rating, comments) VALUES (1, ?, 5, 'great'), (2, NULL, 2, 'slow')", [o1]);
     await db.execute("INSERT INTO qc_records (order_item_id, result, checked_at) VALUES (1, 'Passed', NOW()), (2, 'Failed', NOW()), (3, 'Rework', NOW())");
     await db.execute("INSERT INTO audit_logs (user_id, action, module, record_id, old_value, new_value, ip_address) VALUES (1, 'edit', 'customers', '1', '{\"mobile\":\"9876543210\",\"email\":\"rahul@example.com\",\"address\":\"12 Street\",\"password_hash\":\"$2y$10$abc\",\"nested\":{\"api_key\":\"zzz\",\"note\":\"ok\"},\"list\":[1,{\"token\":\"t\"}],\"empty\":{}}', 'plain text with 9876543210 inside', '10.0.0.1'), (NULL, 'login', 'auth', NULL, NULL, 'Bearer abcdef', NULL), (3, 'delete', 'orders', '99', 'my password is x', '\"just a string\"', '')");
+    await db.execute("INSERT INTO expense_categories (id, category_name, is_active) VALUES (1, 'Rent', 1), (2, 'Fuel', 1), (3, 'Old', 0)");
+    await db.execute("INSERT INTO expenses (expense_date, category_id, description, amount, payment_mode, vendor, remarks, created_by) VALUES (CURDATE(), 1, 'shop rent', 15000, 'Cash', 'Landlord', NULL, 1), (CURDATE() - INTERVAL 2 DAY, 2, 'diesel', 1234.5, 'UPI', NULL, 'van', 3), (DATE_FORMAT(CURDATE(), '%Y-%m-01'), 1, 'rent adv', 500, NULL, NULL, NULL, 1)");
+    await db.execute("INSERT INTO income (income_date, source, description, amount, payment_mode, created_by) VALUES (CURDATE(), 'Scrap', 'hangers', 300, 'Cash', 1), (CURDATE(), 'Scrap', 'boxes', 120.25, NULL, 3)");
+    await db.execute("INSERT INTO notification_logs (customer_id, order_id, user_id, template_key, channel, message, status, is_read) VALUES (1, NULL, NULL, 'a', 'In-App', 'shared unread', 'Sent', 0), (1, NULL, 1, 'b', 'In-App', 'mine unread', 'Sent', 0), (2, NULL, 3, 'c', 'In-App', 'boss only', 'Sent', 0), (2, NULL, 1, 'd', 'In-App', 'mine read', 'Sent', 1), (NULL, NULL, NULL, 'e', 'WhatsApp', 'not in-app', 'Sent', 0)");
+    await db.execute("INSERT INTO feedback (customer_id, order_id, rating, comments, status) VALUES (2, NULL, 4, 'ok', 'Reviewed'), (1, NULL, 1, 'bad', 'Resolved')");
+  }
+  beforeAll(async () => {
+    await buildDataset();
+    app = await buildApp(buildServices(env, db));
   });
   afterAll(async () => {
     await app?.close();
@@ -152,6 +160,95 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     { name: 'workshop staff blocked 2', endpoint: 'daily_dashboard', who: 'ws' },
     { name: 'no permission', endpoint: 'reports_summary', who: 'viewer' },
     { name: 'no permission 2', endpoint: 'outstanding_list', who: 'viewer' },
+    { name: 'feedback_list', endpoint: 'feedback_list' },
+    { name: 'feedback_list filters', endpoint: 'feedback_list', query: { rating: '4', status: 'Reviewed', customer: 'Plain' } },
+    { name: 'feedback_list orders_for_customer', endpoint: 'feedback_list', query: { orders_for_customer: '1' } },
+    { name: 'expenses_list', endpoint: 'expenses_list' },
+    { name: 'expenses_list filtered', endpoint: 'expenses_list', query: { from: '2020-01-01', to: '2099-01-01', category_id: '1', q: 'rent' } },
+    { name: 'expenses_list swapped range', endpoint: 'expenses_list', query: { from: '2099-01-01', to: '2020-01-01' } },
+    { name: 'expenses_list income', endpoint: 'expenses_list', query: { type: 'income' } },
+    { name: 'expenses_list bad type', endpoint: 'expenses_list', query: { type: 'x' } },
+    { name: 'notifications_list', endpoint: 'notifications_list' },
+    { name: 'notifications_list unread boss', endpoint: 'notifications_list', who: 'boss', query: { filter: 'unread' } },
+    { name: 'feedback no permission', endpoint: 'feedback_list', who: 'viewer' },
   ];
   for (const c of cases) it(c.name, async () => { await check(c); });
+
+  // ---- write endpoints: same dataset, same calls, compare responses AND resulting rows ----------------
+  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at']);
+  const strip = (v: any): any => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !TIME_KEYS.has(k)).map(([k, x]) => [k, strip(x)])) : v);
+  async function state() {
+    const q = (sql: string) => db.query<any>(sql).then((r) => r.map(strip));
+    return norm({
+      feedback: await q('SELECT id, customer_id, order_id, rating, comments, status FROM feedback ORDER BY id'),
+      expenses: await q('SELECT * FROM expenses ORDER BY id'),
+      income: await q('SELECT * FROM income ORDER BY id'),
+      notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
+      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income")  ORDER BY id'))
+        .map((a: any) => ({ ...a, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
+    });
+  }
+  const scenario = (name: string, calls: Case[]) =>
+    it(name, async () => {
+      await buildDataset();
+      const phpOut = calls.map((c) => runPhp(c));
+      const phpState = await state();
+      await buildDataset();
+      const nodeOut: any[] = [];
+      for (const c of calls) nodeOut.push(await runNode(c));
+      const nodeState = await state();
+      const outs = (xs: { status: number; body: unknown }[]) => xs.map((r) => ({ status: r.status, body: norm(strip(r.body)) }));
+      try {
+        expect(outs(nodeOut)).toEqual(outs(phpOut));
+      } catch (e) {
+        if (!sameMultiset(outs(nodeOut), outs(phpOut))) throw e; // only tie-ordering of equal sort keys may differ
+      }
+      expect(nodeState).toEqual(phpState);
+    });
+  const P = (endpoint: string, body: unknown, who: Who = 'admin'): Case => ({ name: endpoint, endpoint, method: 'POST', body, who });
+
+  scenario('feedback: add, duplicate, validation, status changes', [
+    P('feedback_action', { action: 'add', customer_id: 1, order_id: 1, rating: 5, comments: ' lovely ' }),
+    P('feedback_action', { action: 'add', customer_id: 1, order_id: 1, rating: 5, comments: 'lovely' }),
+    P('feedback_action', { action: 'add', customer_id: 2, rating: '3', comments: '' }),
+    P('feedback_action', { action: 'add', customer_id: 1, order_id: 2, rating: 5 }),
+    P('feedback_action', { action: 'add', customer_id: 99, rating: 5 }),
+    P('feedback_action', { action: 'add', customer_id: 1, rating: 6 }),
+    P('feedback_action', { action: 'add', customer_id: 1, rating: 2.5 }),
+    P('feedback_action', { action: 'set_status', feedback_id: 1, status: 'Resolved' }),
+    P('feedback_action', { action: 'set_status', feedback_id: 1, status: 'Resolved' }),
+    P('feedback_action', { action: 'set_status', feedback_id: 999, status: 'New' }),
+    P('feedback_action', { action: 'set_status', feedback_id: 1, status: 'Bogus' }),
+    P('feedback_action', { action: 'nope' }),
+    { name: 'feedback_list after', endpoint: 'feedback_list' },
+  ]);
+
+  scenario('expenses + income: create, duplicate, update, validation', [
+    P('expense_save', { type: 'expense', entry_date: '2026-10-01', category_id: 1, amount: '250.505', description: ' tea ', payment_mode: 'Cash', vendor: 'Stall' }),
+    P('expense_save', { type: 'expense', entry_date: '2026-10-01', category_id: 1, amount: 250.51, description: 'tea', payment_mode: 'Cash', vendor: 'Stall' }),
+    P('expense_save', { type: 'expense', id: 1, expense_date: '2026-10-02', category_id: 2, amount: 15000, description: 'shop rent', payment_mode: 'Cash', vendor: 'Landlord' }),
+    P('expense_save', { type: 'expense', id: 2, entry_date: '2026-10-05', category_id: 2, amount: 1234.5, description: 'diesel', payment_mode: 'UPI', remarks: 'van' }),
+    P('expense_save', { type: 'expense', id: 999, entry_date: '2026-10-05', category_id: 2, amount: 5 }),
+    P('expense_save', { type: 'expense', entry_date: '2026-02-30', category_id: 1, amount: 5 }),
+    P('expense_save', { type: 'expense', entry_date: '2026-10-05', category_id: 3, amount: 5 }),
+    P('expense_save', { type: 'expense', entry_date: '2026-10-05', category_id: 77, amount: -5 }),
+    P('expense_save', { type: 'expense', entry_date: '2026-10-05', category_id: 1, amount: 5, payment_mode: 'Wallet' }),
+    P('expense_save', { type: 'income', income_date: '2026-10-05', source: 'Scrap', amount: 99.999, payment_mode: 'UPI' }),
+    P('expense_save', { type: 'income', entry_date: '2026-10-05', source: '  ', amount: 10 }),
+    P('expense_save', { type: 'income', id: 1, income_date: '2026-10-05', source: 'Scrap', amount: 301, description: 'hangers', payment_mode: 'Cash' }),
+    P('expense_save', { type: 'other' }),
+    { name: 'list after', endpoint: 'expenses_list', query: { from: '2020-01-01', to: '2099-01-01' } },
+    { name: 'list income after', endpoint: 'expenses_list', query: { type: 'income', from: '2020-01-01', to: '2099-01-01' } },
+  ]);
+
+  scenario('notifications: mark one / again / all / not found', [
+    P('notifications_mark_read', { notification_id: 1 }),
+    P('notifications_mark_read', { notification_id: 1 }),
+    P('notifications_mark_read', { notification_id: 3 }),
+    P('notifications_mark_read', { notification_id: 5 }),
+    P('notifications_mark_read', {}),
+    { name: 'list', endpoint: 'notifications_list', query: { filter: 'unread' } },
+    P('notifications_mark_read', { all: 1 }),
+    { name: 'list after', endpoint: 'notifications_list' },
+  ]);
 });
