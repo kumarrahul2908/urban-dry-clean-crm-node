@@ -33,4 +33,5 @@ class Database {
 PHP
 cp "$(dirname "$0")/../test/parity/run.php" "$OUT/run.php"
 cp "$(dirname "$0")/../test/parity/endpoint.php" "$OUT/endpoint.php"
+cp "$(dirname "$0")/../test/parity/invoice.php" "$OUT/invoice.php"
 echo "PHP parity app ready: $OUT"

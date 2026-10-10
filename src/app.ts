@@ -44,6 +44,7 @@ import { WhatsAppService, type InvoicePdfGenerator } from './services/whatsappSe
 import { PasswordResetService } from './services/passwordReset.js';
 import { MetaCloudProvider, type WhatsAppProvider } from './whatsapp/provider.js';
 import { whatsappOrderHooks } from './services/whatsappHooks.js';
+import { InvoicePdfService } from './services/invoicePdf.js';
 
 export interface Services {
   env: Env;
@@ -92,7 +93,7 @@ export interface BuildOptions {
 export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Services {
   const crypto = new Crypto(env.APP_SECRET_KEY);
   const audit0 = new AuditLog(db);
-  const whatsapp = new WhatsAppService(db, crypto, options.provider ?? new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE, invoicePdf: options.invoicePdf });
+  const whatsapp = new WhatsAppService(db, crypto, options.provider ?? new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE, invoicePdf: options.invoicePdf ?? new InvoicePdfService(db, env.APP_NAME) });
   const hooks = options.hooks ?? whatsappOrderHooks(db, whatsapp, env.APP_NAME);
   const limiter = new LoginRateLimiter(db, env.LOGIN_LOCKOUT_MINUTES);
   const auth = new AuthService(db, limiter, { maxLoginAttempts: env.MAX_LOGIN_ATTEMPTS, lockoutMinutes: env.LOGIN_LOCKOUT_MINUTES });

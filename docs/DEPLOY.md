@@ -35,3 +35,17 @@ location / { proxy_pass http://127.0.0.1:3000; proxy_set_header X-Forwarded-For 
   * `POST /api/mobile/order_photos_cleanup {"older_than_days":30}` → **dry run** (counts + bytes that would be freed).
   * `POST /api/mobile/order_photos_cleanup {"older_than_days":30,"dry_run":false,"confirm":true}` → really deletes
     the files and rows. Irreversible; every run is written to the audit log.
+
+## WhatsApp (queue worker, marketing, webhook)
+* Accounts/templates stay in the existing tables (`whatsapp_accounts`, `notification_templates`); tokens/secrets are
+  AES-GCM encrypted with `APP_SECRET_KEY` — **use the same key as the PHP app** or they cannot be decrypted.
+* Outbound queue worker (every minute) and marketing automation (daily):
+  ```
+  * * * * *  cd /opt/udc && /usr/bin/node dist/jobs/whatsappWorker.js    >> /var/log/udc-wa-worker.log 2>&1
+  30 9 * * * cd /opt/udc && /usr/bin/node dist/jobs/whatsappMarketing.js >> /var/log/udc-wa-marketing.log 2>&1
+  ```
+  Stop the equivalent PHP cron jobs (`cron/whatsapp_worker.php`, `cron/whatsapp_marketing_automation.php`) first —
+  two workers would both send. (The queue claims rows, so overlap is safe against double-sending, but keep one.)
+* Meta webhook URL: `https://<host>/api/whatsapp_webhook` (same verify token and app secret as before). nginx must pass the
+  body through unchanged (it does by default); the HMAC is checked on the raw bytes.
+* Invoice PDFs are generated in the OS temp dir and deleted right after upload.
