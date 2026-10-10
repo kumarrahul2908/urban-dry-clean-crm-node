@@ -211,7 +211,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       wchallans: await q('SELECT id, challan_number, workshop_id, remarks, created_by FROM workshop_challans ORDER BY id'),
       witems: await q('SELECT id, challan_id, order_item_id, laundry_garment_id, status, remarks FROM workshop_items ORDER BY id'),
       bills: await q('SELECT id, bill_number, store_id, is_combined, workshop_id, period_start, period_end, invoice_date, due_date, terms_label, subject, item_count, total_value, share_percent, gst_mode, gst_rate, gst_amount, workshop_share, store_share, grand_total, amount_paid, status, payment_type_id, reference_no, paid_by, created_by, snapshot_json FROM workshop_bills ORDER BY id'),
-      billItems: await q('SELECT id, bill_id, order_item_id, item_value FROM workshop_bill_items ORDER BY id'),
+      billItems: await q('SELECT bill_id, order_item_id, item_value FROM workshop_bill_items ORDER BY bill_id, order_item_id'),
       billPayments: await q('SELECT id, bill_id, amount, payment_type_id, reference_no, paid_on, notes, received_by FROM workshop_bill_payments ORDER BY id'),
       workshopsCounter: await q('SELECT id, invoice_next_number FROM workshops ORDER BY id'),
       history: await q('SELECT id, order_item_id, laundry_garment_id, previous_status, new_status, changed_by, remarks, module FROM garment_status_history ORDER BY id'),
