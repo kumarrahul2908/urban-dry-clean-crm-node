@@ -28,5 +28,5 @@ INSERT INTO colors (id, color_name) VALUES (1, 'Blue');
 INSERT INTO settings (setting_key, setting_value) VALUES
   ('default_price_list_id', '1'), ('invoice_prefix', 'INV-'), ('payment_prefix', 'PAY-'), ('refund_prefix', 'REF-'),
   ('customer_prefix', 'CUST-'), ('short_order_code_prefix', 'A'), ('short_order_code_digits', '4'), ('garment_seq_padding', '2'),
-  ('max_counter_discount_percent', '10'), ('default_due_days', '2'), ('currency_symbol', 'Rs.'), ('allow_overpayment', '0');
+  ('max_counter_discount_percent', '10'), ('default_due_days', '2'), ('currency_symbol', 'Rs.'), ('allow_overpayment', '0'), ('pickup_prefix', 'PCK-'), ('delivery_prefix', 'DEL-');
 SET FOREIGN_KEY_CHECKS = 1;

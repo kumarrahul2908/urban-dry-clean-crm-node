@@ -7,11 +7,16 @@ export interface OrderHooks {
   orderCreated(info: { customerId: number; orderId: number; orderNumber: string; grandTotal: number }): Promise<void>;
   /** WhatsAppService::maybeNotifyOrderReady(): fired when QC passes an item / a laundry batch becomes fully Ready. */
   orderReady(orderId: number): Promise<void>;
+  /** WhatsApp 'pickup_scheduled' (event_ref pickup_scheduled:<order>:<date>). */
+  pickupScheduled(info: { customerId: number; orderId: number; orderNumber: string; customerName: string; mobile: string; pickupDate: string }): Promise<void>;
 }
 
 export const noopOrderHooks: OrderHooks = {
   async orderCreated(info) {
     console.warn(`[order-hooks] WhatsApp order_confirmation NOT queued for order ${info.orderNumber} (Phase 4 not ported yet)`);
+  },
+  async pickupScheduled(info) {
+    console.warn(`[order-hooks] WhatsApp pickup_scheduled NOT queued for order ${info.orderNumber} (Phase 4 not ported yet)`);
   },
   async orderReady(orderId) {
     console.warn(`[order-hooks] WhatsApp order_ready NOT queued for order ${orderId} (Phase 4 not ported yet)`);

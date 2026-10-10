@@ -15,7 +15,7 @@ import { resetAndSeed } from './helpers.js';
 const PHP_APP = process.env.PARITY_PHP_APP;
 const enabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
 
-const TOKENS = { admin: 'a'.repeat(64), boss: 'b'.repeat(64), ws: 'c'.repeat(64), viewer: 'd'.repeat(64) } as const;
+const TOKENS = { admin: 'a'.repeat(64), boss: 'b'.repeat(64), ws: 'c'.repeat(64), viewer: 'd'.repeat(64), driver: 'e'.repeat(64) } as const;
 type Who = keyof typeof TOKENS;
 interface Case { name: string; endpoint: string; who?: Who; method?: 'GET' | 'POST'; query?: Record<string, string>; body?: unknown }
 
@@ -77,6 +77,10 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (3, 3, 'Boss', 'boss', 'x', NULL, 1), (4, 4, 'Ws', 'ws', 'x', 1, 1), (5, 5, 'Nobody', 'nobody', 'x', 1, 1)");
     await db.execute("INSERT INTO stores (id, organization_id, store_name, store_type, is_active) VALUES (2, 1, 'Branch', 'branch', 1)");
     const tok = (id: number, t: string) => db.execute("INSERT INTO api_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW() + INTERVAL 1 DAY)", [id, createHash('sha256').update(t).digest('hex')]);
+    await db.execute("INSERT INTO roles (id, role_name) VALUES (6, 'Delivery Driver')");
+    await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (6, 6, 'Driver', 'driver', 'x', 1, 1)");
+    await db.execute("INSERT INTO role_permissions (role_id, permission_id) SELECT 6, id FROM permissions WHERE permission_key IN ('delivery.manage')");
+    await tok(6, TOKENS.driver);
     await tok(1, TOKENS.admin); await tok(3, TOKENS.boss); await tok(4, TOKENS.ws); await tok(5, TOKENS.viewer);
     await db.execute('UPDATE users SET password_hash = ?', [await hashPassword('x')]);
 
@@ -196,20 +200,25 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       items: await q('SELECT id, order_id, item_status FROM order_items ORDER BY id'),
       qc: await q('SELECT id, order_item_id, laundry_garment_id, checked_by, result, reason, remarks FROM qc_records ORDER BY id'),
       rework: await q('SELECT id, order_item_id, laundry_garment_id, qc_record_id, reason, rework_date, status FROM rework_records ORDER BY id'),
+      pickups: await q('SELECT id, pickup_number, customer_id, order_id, address, area, pincode, pickup_date, pickup_time, garment_count, notes, driver_id, status, created_by FROM pickup_orders ORDER BY id'),
+      deliveries: await q('SELECT id, delivery_number, order_id, customer_id, phone, address, amount_due, delivery_date, time_slot, driver_id, status, payment_collected, remarks, created_by FROM delivery_orders ORDER BY id'),
+      orderStatus: await q('SELECT id, status_id FROM orders ORDER BY id'),
       history: await q('SELECT id, order_item_id, laundry_garment_id, previous_status, new_status, changed_by, remarks, module FROM garment_status_history ORDER BY id'),
       expenses: await q('SELECT * FROM expenses ORDER BY id'),
       income: await q('SELECT * FROM income ORDER BY id'),
       notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
-      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items")  ORDER BY id'))
+      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items","pickup_orders","delivery_orders")  ORDER BY id'))
         .map((a: any) => ({ ...a, user_id: a.action === 'lookup' ? null : a.user_id, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
     });
   }
-  const scenario = (name: string, calls: Case[]) =>
+  const scenario = (name: string, calls: Case[], prepare?: () => Promise<void>) =>
     it(name, async () => {
       await buildDataset();
+      await prepare?.();
       const phpOut = calls.map((c) => runPhp(c));
       const phpState = await state();
       await buildDataset();
+      await prepare?.();
       const nodeOut: any[] = [];
       for (const c of calls) nodeOut.push(await runNode(c));
       const nodeState = await state();
@@ -351,4 +360,60 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     G('qc_queue', {}, 'viewer'),
     P('qc_action', { action: 'pass', order_item_id: 3 }, 'viewer'),
   ]);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const prepFulfillment = async () => {
+    await db.execute('DELETE FROM delivery_orders');
+    await db.execute('DELETE FROM pickup_orders');
+    await db.execute("UPDATE customers SET address = '12 Street', area = 'Sector 5', pincode = '110001' WHERE id = 1");
+    await db.execute("UPDATE order_items SET item_status = 'Packed' WHERE order_id IN (1, 4, 5)");
+    await db.execute("INSERT INTO drivers (id, driver_name, user_id, is_active) VALUES (1, 'Ravi', 6, 1), (2, 'Gone', NULL, 0)");
+  };
+  scenario('pickups + deliveries: eligibility, scheduling, drivers, status flow, permissions', [
+    G('pickup_list'),
+    G('pickup_list', { status: 'weird' }),
+    G('delivery_manage_list'),
+    P('pickup_action', { action: 'create', order_id: 1, pickup_date: today, pickup_time: '10:30', notes: ' <i>call first</i> ' }),
+    P('pickup_action', { action: 'create', order_id: 1, pickup_date: today }),
+    P('pickup_action', { action: 'create', order_id: 4, pickup_date: today }),
+    P('pickup_action', { action: 'create', order_id: 3, pickup_date: today }),
+    P('pickup_action', { action: 'create', order_id: 5, pickup_date: '2026-13-45' }),
+    P('pickup_action', { action: 'create', order_id: 5, pickup_date: today, pickup_time: '25:99' }),
+    P('pickup_action', { action: 'create', order_id: 5, pickup_date: today, notes: 'n'.repeat(501) }),
+    P('pickup_action', { action: 'create', order_id: 0 }),
+    P('pickup_action', { action: 'assign_driver', pickup_id: 1, driver_id: 2 }),
+    P('pickup_action', { action: 'assign_driver', pickup_id: 1, driver_id: 1 }),
+    P('pickup_action', { action: 'assign_driver', pickup_id: 99, driver_id: 1 }),
+    G('pickup_list', { status: 'Assigned' }),
+    P('pickup_action', { action: 'mark_picked_up', pickup_id: 1 }),
+    P('pickup_action', { action: 'mark_picked_up', pickup_id: 1 }),
+    P('pickup_action', { action: 'zap' }),
+    // deliveries
+    P('delivery_manage_action', { action: 'schedule', order_id: 5, delivery_date: today }),
+    P('delivery_manage_action', { action: 'schedule', order_id: 5, delivery_date: today }),
+    P('delivery_manage_action', { action: 'schedule', order_id: 4, delivery_date: today }),
+    P('delivery_manage_action', { action: 'schedule', order_id: 1, delivery_date: today }),
+    P('delivery_manage_action', { action: 'schedule', order_id: 3, delivery_date: today }),
+    P('delivery_manage_action', { action: 'schedule', order_id: 5, delivery_date: '2026-02-30' }),
+    P('delivery_manage_action', { action: 'assign_driver', delivery_id: 1, driver_id: 2 }),
+    P('delivery_manage_action', { action: 'assign_driver', delivery_id: 1, driver_id: 1 }),
+    P('delivery_manage_action', { action: 'assign_driver', delivery_id: 0, driver_id: 1 }),
+    P('delivery_manage_action', { action: 'nope' }),
+    G('delivery_manage_list'),
+    G('delivery_manage_list', { status: 'Assigned', customer: 'Vip' }),
+    G('my_deliveries_list', {}, 'driver'),
+    G('my_deliveries_list', {}, 'admin'),
+    P('delivery_mark_delivered', { delivery_id: 1 }, 'ws'),
+    P('delivery_mark_out', { delivery_id: 1 }, 'driver'),
+    P('delivery_mark_out', { delivery_id: 1 }, 'driver'),
+    P('delivery_mark_out', { delivery_id: 99 }, 'driver'),
+    P('delivery_mark_out', { delivery_id: 0 }, 'driver'),
+    P('delivery_mark_delivered', { delivery_id: 1 }, 'driver'),
+    P('delivery_mark_delivered', { delivery_id: 1 }, 'driver'),
+    G('my_deliveries_list', {}, 'driver'),
+    G('delivery_manage_list', {}, 'driver'),
+    P('delivery_manage_action', { action: 'schedule', order_id: 5, delivery_date: today }, 'driver'),
+    G('pickup_list', {}, 'viewer'),
+    G('my_deliveries_list', {}, 'viewer'),
+  ], prepFulfillment);
 });

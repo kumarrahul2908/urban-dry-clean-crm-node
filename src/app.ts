@@ -20,6 +20,7 @@ import fastifyStatic from '@fastify/static';
 import { LocalDiskStorage } from './storage/localDisk.js';
 import { PhotoService } from './services/photoService.js';
 import { LaundryGarmentService } from './services/laundryGarmentService.js';
+import { FulfillmentService } from './services/fulfillmentService.js';
 import { QcService } from './services/qcService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
@@ -33,6 +34,7 @@ import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
+import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 
 export interface Services {
   env: Env;
@@ -52,6 +54,8 @@ export interface Services {
   photos: PhotoService;
   laundry: LaundryGarmentService;
   qc: QcService;
+  fulfillment: FulfillmentService;
+  hooks: OrderHooks;
 }
 
 declare module 'fastify' {
@@ -91,6 +95,8 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     photos: new PhotoService(db, audit, storage, env.PHOTO_RETENTION_DAYS),
     laundry,
     qc: new QcService(db, audit, laundry, notifications, hooks),
+    fulfillment: new FulfillmentService(db, audit, notifications),
+    hooks,
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
@@ -160,5 +166,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
   return app;
 }
