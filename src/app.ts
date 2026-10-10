@@ -15,6 +15,10 @@ import { CustomerWallet } from './services/customerWallet.js';
 import { OrderFinance } from './services/orderFinance.js';
 import { OrderService } from './services/orderService.js';
 import { NotificationService } from './services/notificationService.js';
+import multipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
+import { LocalDiskStorage } from './storage/localDisk.js';
+import { PhotoService } from './services/photoService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
 import { ApiError } from './lib/http.js';
@@ -25,6 +29,7 @@ import { registerMobileOrderRoutes } from './routes/mobile/orders.js';
 import { registerMobileReportRoutes } from './routes/mobile/reports.js';
 import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
+import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
 
 export interface Services {
   env: Env;
@@ -40,6 +45,8 @@ export interface Services {
   finance: OrderFinance;
   notifications: NotificationService;
   expenses: ExpenseService;
+  storage: LocalDiskStorage;
+  photos: PhotoService;
 }
 
 declare module 'fastify' {
@@ -60,6 +67,7 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
   const pricing = new PricingEngine(db);
   const finance = new OrderFinance(db, audit);
   const notifications = new NotificationService(db);
+  const storage = new LocalDiskStorage(env.UPLOAD_DIR, env.APP_URL);
   return {
     env,
     db,
@@ -73,6 +81,8 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     finance,
     notifications,
     expenses: new ExpenseService(db, audit, env.APP_TIMEZONE),
+    storage,
+    photos: new PhotoService(db, audit, storage, env.PHOTO_RETENTION_DAYS),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
@@ -92,6 +102,13 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(helmet);
   await app.register(cors, { origin: false });
   await app.register(formbody); // PHP's $_POST fallback for form-encoded bodies
+  // Photos are stored verbatim; the only limit is a generous safety ceiling (UPLOAD_MAX_MB, 0 = none).
+  await app.register(multipart, {
+    limits: { fileSize: services.env.UPLOAD_MAX_MB > 0 ? services.env.UPLOAD_MAX_MB * 1024 * 1024 : Number.MAX_SAFE_INTEGER, files: 3, fields: 20, fieldSize: 64 * 1024 },
+  });
+  if (services.env.SERVE_UPLOADS) {
+    await app.register(fastifyStatic, { root: services.storage.root, prefix: '/uploads/', index: false, list: false, dotfiles: 'deny', setHeaders: (res) => { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); } });
+  }
 
   app.decorate('requireToken', async (req: FastifyRequest) => {
     const token = bearerToken(req);
@@ -133,5 +150,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileReportRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
   return app;
 }

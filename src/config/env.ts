@@ -23,6 +23,16 @@ const schema = z.object({
   LOGIN_LOCKOUT_MINUTES: z.coerce.number().default(15),
   API_TOKEN_LIFETIME_DAYS: z.coerce.number().default(30),
 
+  // File storage (Phase 4): order photos + garment images live on this server's disk.
+  UPLOAD_DIR: z.string().default('./uploads'),
+  /** Safety ceiling per uploaded image, in MB. 0 = no limit at all. Originals are stored byte-for-byte (no recompression). */
+  UPLOAD_MAX_MB: z.coerce.number().min(0).default(100),
+  /** Order photos older than this many days are deleted by the daily job. 0 = never auto-delete. Overridable via settings.order_photo_retention_days. */
+  PHOTO_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
+  /** Serve /uploads from this process (dev). In production let nginx serve UPLOAD_DIR directly. */
+  SERVE_UPLOADS: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  ALLOWED_IMAGE_TYPES: z.string().default('jpg,jpeg,png,webp'),
+
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
