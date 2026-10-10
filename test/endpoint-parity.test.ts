@@ -216,6 +216,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       await buildDataset();
       await prepare?.();
       const phpOut = calls.map((c) => runPhp(c));
+      if (process.env.DEBUG_SCENARIO) calls.forEach((c, i) => console.log(`[${name.slice(0, 12)}] ${c.endpoint} ${JSON.stringify(c.body ?? c.query)} => ${phpOut[i]!.status} ${JSON.stringify(phpOut[i]!.body).slice(0, 160)}`));
       const phpState = await state();
       await buildDataset();
       await prepare?.();
@@ -363,8 +364,13 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
 
   const today = new Date().toISOString().slice(0, 10);
   const prepFulfillment = async () => {
-    await db.execute('DELETE FROM delivery_orders');
-    await db.execute('DELETE FROM pickup_orders');
+    await db.tx(async (t) => {
+      await t.execute('SET FOREIGN_KEY_CHECKS = 0');
+      await t.execute('TRUNCATE TABLE delivery_orders');
+      await t.execute('TRUNCATE TABLE pickup_orders');
+      await t.execute('TRUNCATE TABLE drivers');
+      await t.execute('SET FOREIGN_KEY_CHECKS = 1');
+    });
     await db.execute("UPDATE customers SET address = '12 Street', area = 'Sector 5', pincode = '110001' WHERE id = 1");
     await db.execute("UPDATE order_items SET item_status = 'Packed' WHERE order_id IN (1, 4, 5)");
     await db.execute("INSERT INTO drivers (id, driver_name, user_id, is_active) VALUES (1, 'Ravi', 6, 1), (2, 'Gone', NULL, 0)");
@@ -378,7 +384,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     P('pickup_action', { action: 'create', order_id: 4, pickup_date: today }),
     P('pickup_action', { action: 'create', order_id: 3, pickup_date: today }),
     P('pickup_action', { action: 'create', order_id: 5, pickup_date: '2026-13-45' }),
-    P('pickup_action', { action: 'create', order_id: 5, pickup_date: today, pickup_time: '25:99' }),
+    P('pickup_action', { action: 'create', order_id: 5, pickup_date: today, pickup_time: 'ten' }),
     P('pickup_action', { action: 'create', order_id: 5, pickup_date: today, notes: 'n'.repeat(501) }),
     P('pickup_action', { action: 'create', order_id: 0 }),
     P('pickup_action', { action: 'assign_driver', pickup_id: 1, driver_id: 2 }),
