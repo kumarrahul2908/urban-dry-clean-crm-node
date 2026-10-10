@@ -6,6 +6,7 @@ set -euo pipefail
 SRC="${1:?backup repo path}"; OUT="${2:?output dir}"
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp -r "$SRC/includes" "$OUT/includes"
+cp -r "$SRC/api" "$OUT/api"
 mkdir -p "$OUT/config"
 cat > "$OUT/config/config.php" <<'PHP'
 <?php
@@ -31,4 +32,5 @@ class Database {
 }
 PHP
 cp "$(dirname "$0")/../test/parity/run.php" "$OUT/run.php"
+cp "$(dirname "$0")/../test/parity/endpoint.php" "$OUT/endpoint.php"
 echo "PHP parity app ready: $OUT"
