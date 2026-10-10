@@ -72,3 +72,14 @@ Same harness, 20+ more scenarios (uploads, QC/rework/packing, pickup/delivery, w
   (PHP's worker would abort the whole batch); webhook signature compare is timing-safe; cron entry points are CLI-only
   (no `?secret=` web trigger); the password-reset link still points at `APP_URL/modules/auth/reset-password.php`
   until the Node web UI exists.
+
+## Web UI (Phase 5)
+`test/web-*.test.ts` start the **real PHP app** (`php -S`) and the Node app on the same database and compare pages: HTTP status,
+redirect target and the HTML (whitespace/comments/CSRF tokens normalised). Writes are run PHP-first, the database is rolled
+back to a snapshot, then Node runs the same request; resulting rows and audit entries must match.
+* Rows that tie on every `ORDER BY` key come back in unspecified order from MariaDB (PHP as much as Node); fixtures use
+  distinct keys, or the comparison treats the rows of a `<tbody>` as a set.
+* **PHP defect, not reproduced:** *Import Customers → Confirm* aborts with "There is already an active transaction" whenever
+  at least one row has to be **created** (`generate_customer_code()` opens its own transaction inside the importer's). Updates
+  and skips work. Node completes the import (the code counter simply joins the importer's transaction).
+* Audit rows written by Node store JSON without PHP's `\/` escaping (identical once parsed).

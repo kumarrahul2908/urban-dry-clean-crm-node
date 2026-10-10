@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { afterAll, beforeAll } from 'vitest';
 import { buildApp, buildServices } from '../../src/app.js';
@@ -12,7 +15,8 @@ export const PHP_APP = process.env.PARITY_PHP_APP;
 export const webEnabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
 
 export interface Resp { status: number; location: string | null; body: string; type: string | null }
-export interface Client { get(path: string): Promise<Resp>; post(path: string, form: Record<string, string>, opts?: { csrf?: boolean }): Promise<Resp>; csrf(): string | null; cookie(): string }
+export interface UploadFile { field: string; filename: string; content: string | Buffer; type?: string }
+export interface Client { get(path: string): Promise<Resp>; post(path: string, form: Record<string, string>, opts?: { csrf?: boolean }): Promise<Resp>; upload(path: string, form: Record<string, string>, file: UploadFile): Promise<Resp>; csrf(): string | null; cookie(): string }
 
 const free = () => new Promise<number>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as any).port; s.close(() => res(p)); }); });
 
@@ -25,7 +29,7 @@ export function webHarness() {
     DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306',
     DB_NAME: process.env.TEST_DB_NAME || 'unused', DB_USER: process.env.TEST_DB_USER || 'unused', DB_PASS: process.env.TEST_DB_PASS ?? '',
   };
-  const env = loadEnv({ NODE_ENV: 'test', ...dbEnv, APP_SECRET_KEY: 'k', APP_TIMEZONE: 'Asia/Kolkata', APP_URL: 'https://example.test', SESSION_LIFETIME_MINUTES: '120' } as NodeJS.ProcessEnv);
+  const env = loadEnv({ NODE_ENV: 'test', ...dbEnv, APP_SECRET_KEY: 'k', APP_TIMEZONE: 'Asia/Kolkata', APP_URL: 'https://example.test', SESSION_LIFETIME_MINUTES: '120', UPLOAD_DIR: mkdtempSync(join(tmpdir(), 'udc-web-uploads-')) } as NodeJS.ProcessEnv);
   const { db, close } = createPool(env);
   const h = { db, env, app: null as unknown as Awaited<ReturnType<typeof buildApp>>, port: 0, php: null as ChildProcess | null };
 
@@ -50,11 +54,12 @@ export function webHarness() {
   };
   const csrfOf = (html: string) => /name="csrf-token" content="([0-9a-f]{64})"/.exec(html)?.[1] ?? /name="csrf_token" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? null;
 
-  const mk = (send: (method: string, path: string, headers: Record<string, string>, form?: Record<string, string>) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>): Client => {
+  type Send = (method: string, path: string, headers: Record<string, string>, form?: Record<string, string>, file?: UploadFile) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
+  const mk = (send: Send): Client => {
     const jar = cookieJar();
     let token: string | null = null;
-    const call = async (method: string, path: string, form?: Record<string, string>): Promise<Resp> => {
-      const r = await send(method, path, jar.header() ? { cookie: jar.header() } : {}, form);
+    const call = async (method: string, path: string, form?: Record<string, string>, file?: UploadFile): Promise<Resp> => {
+      const r = await send(method, path, jar.header() ? { cookie: jar.header() } : {}, form, file);
       const sc = r.headers['set-cookie']; jar.absorb(Array.isArray(sc) ? sc : sc ? [sc] : []);
       const t = csrfOf(r.body); if (t) token = t;
       let loc = (r.headers.location as string | undefined) ?? null;
@@ -63,26 +68,39 @@ export function webHarness() {
     return {
       get: (p) => call('GET', p),
       post: (p, form, o) => call('POST', p, o?.csrf === false ? form : { csrf_token: token ?? '', ...form }),
+      upload: (p, form, file) => call('POST', p, { csrf_token: token ?? '', ...form }, file),
       csrf: () => token,
       cookie: () => jar.header(),
     };
   };
 
-  const phpClient = () => mk(async (method, path, headers, form) => {
-    const r = await fetch(`http://127.0.0.1:${h.port}${path}`, {
-      method, redirect: 'manual', headers: { ...headers, ...(form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
-      body: form ? new URLSearchParams(form).toString() : undefined,
-    });
+  const phpClient = () => mk(async (method, path, headers, form, file) => {
+    let body: BodyInit | undefined;
+    let ct: Record<string, string> = {};
+    if (file) {
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(form ?? {})) fd.set(k, v);
+      fd.set(file.field, new Blob([new Uint8Array(Buffer.from(file.content))], { type: file.type ?? 'text/csv' }), file.filename);
+      body = fd;
+    } else if (form) { body = new URLSearchParams(form).toString(); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
+    const r = await fetch(`http://127.0.0.1:${h.port}${path}`, { method, redirect: 'manual', headers: { ...headers, ...ct }, body });
     const headersObj: Record<string, string | string[] | undefined> = {};
     r.headers.forEach((v, k) => { headersObj[k] = v; });
     headersObj['set-cookie'] = r.headers.getSetCookie();
-    return { status: r.status, headers: headersObj, body: await r.text() };
+    return { status: r.status, headers: headersObj, body: new TextDecoder('utf-8', { ignoreBOM: true }).decode(await r.arrayBuffer()) }; // keep a CSV's BOM
   });
-  const nodeClient = () => mk(async (method, path, headers, form) => {
-    const r = await h.app.inject({
-      method: method as 'GET' | 'POST', url: path, headers: { ...headers, ...(form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
-      payload: form ? new URLSearchParams(form).toString() : undefined,
-    });
+  const nodeClient = () => mk(async (method, path, headers, form, file) => {
+    let payload: string | Buffer | undefined;
+    let ct: Record<string, string> = {};
+    if (file) {
+      const boundary = `----t${Math.random().toString(16).slice(2)}`;
+      const parts: Buffer[] = [];
+      for (const [k, v] of Object.entries(form ?? {})) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\nContent-Type: ${file.type ?? 'text/csv'}\r\n\r\n`), Buffer.from(file.content), Buffer.from(`\r\n--${boundary}--\r\n`));
+      payload = Buffer.concat(parts);
+      ct = { 'content-type': `multipart/form-data; boundary=${boundary}` };
+    } else if (form) { payload = new URLSearchParams(form).toString(); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
+    const r = await h.app.inject({ method: method as 'GET' | 'POST', url: path, headers: { ...headers, ...ct }, payload });
     return { status: r.statusCode, headers: r.headers as Record<string, string | string[] | undefined>, body: r.body };
   });
 
@@ -121,6 +139,7 @@ export function webHarness() {
 export function normalizeHtml(s: string, appUrl: string, sortRows = false): string {
   const out = s
     .replace(/[0-9a-f]{64}/g, 'TOKEN')
+    .replace(/\b[0-9a-f]{32}\b/g, 'TOKEN32')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\s+/g, ' ')
     .replace(/> </g, '><')

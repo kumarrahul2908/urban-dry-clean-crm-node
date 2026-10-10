@@ -12,7 +12,9 @@ export const SESSION_COOKIE = 'udc_sid';
 
 /** What a page handler may return. */
 export class WebRedirect { constructor(readonly path: string, readonly status = 302) {} }
-export class WebText { constructor(readonly body: string, readonly status = 200, readonly contentType = 'text/html; charset=utf-8') {} }
+export class WebText {
+  constructor(readonly body: string | Buffer, readonly status = 200, readonly contentType = 'text/html; charset=utf-8', readonly headers: Record<string, string> = {}) {}
+}
 export type WebResult = Raw | WebRedirect | WebText | string;
 
 /** Per-request view of the PHP $_SESSION + helper functions (Auth::can, csrf_token, flash_*, base_url …). */
@@ -59,6 +61,21 @@ export class WebCtx {
   roleName(): string { return this.data.user?.role_name ?? ''; }
   fixedStoreId(): number | null { const id = this.data.user?.store_id; return id ? Number(id) : null; }
   activeStoreId(): number | null { return this.data.active_store_id !== undefined ? Number(this.data.active_store_id) : null; }
+
+  /** Uploaded files of a multipart/form-data request (field name → file). Text fields end up in req.body, like $_POST. */
+  files: Record<string, { filename: string; mimetype: string; buffer: Buffer }> = {};
+  async readMultipart() {
+    const fields: Record<string, unknown> = {};
+    for await (const part of this.req.parts()) {
+      if (part.type === 'file') {
+        const buffer = await part.toBuffer();
+        if (part.filename) this.files[part.fieldname] = { filename: part.filename, mimetype: part.mimetype, buffer };
+      } else {
+        fields[part.fieldname] = part.value;
+      }
+    }
+    (this.req as { body: unknown }).body = fields;
+  }
 
   set(key: string, value: unknown) { (this.data as Record<string, unknown>)[key] = value; this.dirty = true; }
 
@@ -117,6 +134,7 @@ export function webPage(app: FastifyInstance, paths: string | string[], opts: Pa
     let data: SessionData | null = sid ? await store.load(sid) : null;
     if (!data) { sid = null; data = {}; }
     const ctx = new WebCtx(svc, req, sid, data);
+    if (req.isMultipart()) await ctx.readMultipart();
     const lifetime = svc.env.SESSION_LIFETIME_MINUTES * 60;
 
     let result: WebResult;
@@ -144,7 +162,7 @@ export function webPage(app: FastifyInstance, paths: string | string[], opts: Pa
 
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate').header('Pragma', 'no-cache').header('Expires', 'Thu, 19 Nov 1981 08:52:00 GMT');
     if (result instanceof WebRedirect) return reply.type('text/html; charset=UTF-8').redirect(result.path.startsWith('http') ? result.path : ctx.baseUrl(result.path), result.status);
-    if (result instanceof WebText) return reply.status(result.status).type(result.contentType).send(result.body);
+    if (result instanceof WebText) { for (const [k, v] of Object.entries(result.headers)) reply.header(k, v); return reply.status(result.status).type(result.contentType).send(result.body); }
     return reply.type('text/html; charset=utf-8').send(result instanceof Raw ? result.value : result);
   };
   for (const p of Array.isArray(paths) ? paths : [paths]) {

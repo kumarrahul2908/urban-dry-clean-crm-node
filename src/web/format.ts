@@ -104,3 +104,6 @@ export const formatDatetime = (v: unknown, tz: string, fmt = 'd-M-Y h:i A') => f
 
 /** urlencode(): everything except [A-Za-z0-9_.-] is percent-encoded, space as "+". */
 export const urlencode = (s: string) => encodeURIComponent(s).replace(/[!'()*~]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+');
+
+/** http_build_query() for flat string maps (urlencode for keys and values, "&"-joined). */
+export const httpBuildQuery = (o: Record<string, unknown>) => Object.entries(o).map(([k, v]) => `${urlencode(k)}=${urlencode(String(v ?? ''))}`).join('&');

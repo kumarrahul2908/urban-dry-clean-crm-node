@@ -6,6 +6,7 @@ import { WebRedirect, WebText, webPage } from './context.js';
 import { registerAuthPages, postLoginRedirect } from './pages/auth.js';
 import { registerDashboardPages } from './pages/dashboard.js';
 import { registerCustomerPages } from './pages/customers.js';
+import { registerCustomerPortPages } from './pages/customerPorts.js';
 import { registerDailyDashboard } from './pages/dailyDashboard.js';
 import { registerLandingPages } from './pages/landing.js';
 
@@ -33,6 +34,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerDashboardPages(app);
   registerDailyDashboard(app);
   registerCustomerPages(app);
+  registerCustomerPortPages(app);
 
   // api/set_active_store.php
   webPage(app, '/api/set_active_store', { auth: 'login', methods: ['GET', 'POST'] }, async (ctx, req) => {
