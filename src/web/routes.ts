@@ -8,6 +8,7 @@ import { registerDashboardPages } from './pages/dashboard.js';
 import { registerCustomerPages } from './pages/customers.js';
 import { registerCustomerPortPages } from './pages/customerPorts.js';
 import { registerDailyDashboard } from './pages/dailyDashboard.js';
+import { registerOrderPages } from './pages/orders.js';
 import { registerLandingPages } from './pages/landing.js';
 
 const json = (data: unknown, status = 200) => new WebText(jsonEncode(data), status, 'application/json');
@@ -35,6 +36,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerDailyDashboard(app);
   registerCustomerPages(app);
   registerCustomerPortPages(app);
+  registerOrderPages(app);
 
   // api/set_active_store.php
   webPage(app, '/api/set_active_store', { auth: 'login', methods: ['GET', 'POST'] }, async (ctx, req) => {

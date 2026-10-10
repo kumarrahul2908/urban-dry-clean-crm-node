@@ -24,23 +24,23 @@ export class CustomerWallet {
     return new CustomerWallet(db, this.audit.using(db));
   }
 
-  deposit(customerId: number, amount: number, paymentMode: string | null = null, remarks: string | null = null, orderId: number | null = null, actor: number | null = null) {
-    return this.apply(customerId, 'Deposit', 0, amount, { paymentMode, remarks, orderId, actor });
+  deposit(customerId: number, amount: number, paymentMode: string | null = null, remarks: string | null = null, orderId: number | null = null, actor: number | null = null, ip: string | null = null) {
+    return this.apply(customerId, 'Deposit', 0, amount, { paymentMode, remarks, orderId, actor, ip });
   }
-  redeem(customerId: number, amount: number, remarks: string | null = null, orderId: number | null = null, actor: number | null = null) {
-    return this.apply(customerId, 'Redeem', amount, 0, { remarks, orderId, actor });
+  redeem(customerId: number, amount: number, remarks: string | null = null, orderId: number | null = null, actor: number | null = null, ip: string | null = null) {
+    return this.apply(customerId, 'Redeem', amount, 0, { remarks, orderId, actor, ip });
   }
-  refund(customerId: number, amount: number, paymentMode: string | null = null, remarks: string | null = null, orderId: number | null = null, actor: number | null = null) {
-    return this.apply(customerId, 'Refund', 0, amount, { paymentMode, remarks, orderId, actor });
+  refund(customerId: number, amount: number, paymentMode: string | null = null, remarks: string | null = null, orderId: number | null = null, actor: number | null = null, ip: string | null = null) {
+    return this.apply(customerId, 'Refund', 0, amount, { paymentMode, remarks, orderId, actor, ip });
   }
-  adjust(customerId: number, delta: number, remarks: string, o: { orderId?: number | null; actor?: number | null; clientRequestId?: string | null; requestFingerprint?: string | null } = {}) {
-    const opts = { remarks, orderId: o.orderId ?? null, actor: o.actor ?? null, clientRequestId: o.clientRequestId ?? null, requestFingerprint: o.requestFingerprint ?? null };
+  adjust(customerId: number, delta: number, remarks: string, o: { orderId?: number | null; actor?: number | null; ip?: string | null; clientRequestId?: string | null; requestFingerprint?: string | null } = {}) {
+    const opts = { remarks, orderId: o.orderId ?? null, actor: o.actor ?? null, ip: o.ip ?? null, clientRequestId: o.clientRequestId ?? null, requestFingerprint: o.requestFingerprint ?? null };
     return delta >= 0 ? this.apply(customerId, 'Adjustment', 0, delta, opts) : this.apply(customerId, 'Adjustment', Math.abs(delta), 0, opts);
   }
 
   private apply(
     customerId: number, type: TxnType, debit: number, credit: number,
-    o: { paymentMode?: string | null; remarks?: string | null; orderId?: number | null; actor?: number | null; clientRequestId?: string | null; requestFingerprint?: string | null },
+    o: { paymentMode?: string | null; remarks?: string | null; orderId?: number | null; actor?: number | null; ip?: string | null; clientRequestId?: string | null; requestFingerprint?: string | null },
   ): Promise<WalletResult> {
     if (debit < 0 || credit < 0) throw new Error('Wallet amounts must not be negative.');
     return this.db.tx(async (t) => {
@@ -73,7 +73,7 @@ export class CustomerWallet {
         [customerId, o.orderId ?? null, type, debit, credit, newBalance, o.paymentMode ?? null, o.remarks ?? null, o.clientRequestId ?? null, o.requestFingerprint ?? null, o.actor ?? null],
       );
       await t.execute('UPDATE customer_wallet SET balance = ? WHERE customer_id = ?', [newBalance, customerId]);
-      await this.audit.record({ action: 'edit', module: 'wallet', recordId: String(customerId), oldValue: { balance_before: current }, newValue: { balance_after: newBalance, type }, userId: o.actor ?? null });
+      await this.audit.record({ action: 'edit', module: 'wallet', recordId: String(customerId), oldValue: { balance_before: current }, newValue: { balance_after: newBalance, type }, userId: o.actor ?? null, ip: o.ip ?? null });
       return { success: true as const, balance: newBalance };
     });
   }

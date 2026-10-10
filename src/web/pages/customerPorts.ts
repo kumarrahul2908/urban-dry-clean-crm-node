@@ -241,7 +241,7 @@ export function registerCustomerPortPages(app: FastifyInstance) {
               await t.execute('INSERT INTO customer_wallet (customer_id, balance) VALUES (?, 0)', [ins.insertId]);
               await audit.record({ action: 'create', module: 'customers', recordId: String(ins.insertId), newValue: { imported: true, line: row.line }, userId, ip: req.ip });
               if (!phpEmpty(m.opening_wallet) && isNumeric(m.opening_wallet) && parseFloat(m.opening_wallet!) > 0) {
-                await wallet.deposit(ins.insertId, parseFloat(m.opening_wallet!), 'Opening Balance', 'Imported opening balance', null, userId);
+                await wallet.deposit(ins.insertId, parseFloat(m.opening_wallet!), 'Opening Balance', 'Imported opening balance', null, userId, req.ip);
               }
               created++;
             }

@@ -118,7 +118,7 @@ export interface PageOptions {
   /** JSON endpoint (api/*.php): same session + auth redirect, responses are the handler's business. */
 }
 
-const forbiddenPage = (ctx: WebCtx) =>
+export const forbiddenPage = (ctx: WebCtx) =>
   new WebText(`<h2>403 - Access Denied</h2><p>You do not have permission to access this page.</p><p><a href="${ctx.baseUrl('modules/dashboard/index.php')}">Back to Dashboard</a></p>`, 403);
 
 /**

@@ -414,7 +414,7 @@ export class OrderService {
     }
 
     if (walletAmount > 0) {
-      await sc.wallet.redeem(customerId, walletAmount, `Applied to order/payment ${paymentNumber}`, orderId, actor.userId);
+      await sc.wallet.redeem(customerId, walletAmount, `Applied to order/payment ${paymentNumber}`, orderId, actor.userId, actor.ip ?? null);
       lines.push({ payment_type_id: walletTypeId!, amount: round2(walletAmount) });
     }
     const total = round2(sum(lines.map((l) => l.amount)));
@@ -557,7 +557,7 @@ export class OrderService {
         const paymentId = ins.insertId;
         for (const l of lines) await t.execute('INSERT INTO payment_transactions (payment_id, payment_type_id, amount) VALUES (?,?,?)', [paymentId, l.payment_type_id, l.amount]);
         if (creditToWallet) {
-          await sc.wallet.deposit(Number(locked.customer_id), refundAmount, 'Refund', `Refund for order ${locked.order_number} (${refundNumber})`, orderId, actor.userId);
+          await sc.wallet.deposit(Number(locked.customer_id), refundAmount, 'Refund', `Refund for order ${locked.order_number} (${refundNumber})`, orderId, actor.userId, actor.ip ?? null);
         }
         await sc.audit.record({
           action: 'refund', module: 'orders', recordId: String(orderId),

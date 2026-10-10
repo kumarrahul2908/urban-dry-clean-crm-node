@@ -107,3 +107,12 @@ export const urlencode = (s: string) => encodeURIComponent(s).replace(/[!'()*~]/
 
 /** http_build_query() for flat string maps (urlencode for keys and values, "&"-joined). */
 export const httpBuildQuery = (o: Record<string, unknown>) => Object.entries(o).map(([k, v]) => `${urlencode(k)}=${urlencode(String(v ?? ''))}`).join('&');
+
+/** A form field posted as `name[]` (PHP array): string for one value, string[] for several (querystring parser). */
+export function formArray(body: Record<string, unknown>, name: string): string[] {
+  const v = body[`${name}[]`] ?? body[name];
+  return Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)];
+}
+
+/** PHP (string) of a float: whole numbers without ".0". */
+export const floatStr = (n: number) => String(n);
