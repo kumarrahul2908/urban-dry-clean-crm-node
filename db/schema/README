@@ -1,0 +1,1 @@
+Place schema.sql here (mysqldump --no-data --routines test.urbandryclean.in DB). Do NOT commit data dumps.
