@@ -39,3 +39,13 @@ export function checkDate(y: number, m: number, d: number): boolean {
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
+
+/** format_date() for a pure DATE column ('YYYY-MM-DD' -> 'd-M-Y'); '' for empty / 0000-00-00. */
+export function formatDateOnly(v: unknown): string {
+  if (v === null || v === undefined || v === '' || v === 0 || v === '0') return '';
+  const s = String(v).trim();
+  if (s === '' || s.startsWith('0000-00-00')) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return '';
+  return `${m[3]}-${dayMon(s).slice(3)}-${m[1]}`;
+}

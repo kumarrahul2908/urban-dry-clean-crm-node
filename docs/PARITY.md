@@ -33,3 +33,18 @@ PARITY_PHP_APP=/tmp/php-parity TEST_DB_NAME=... TEST_DB_USER=... TEST_DB_PASS=..
 ## Not in this phase
 Order photo upload/delete/list (file storage), rework endpoints, delivery/pickup/packing/QC/workshop
 actions — Phase 4 (operations modules).
+
+## Endpoint-level parity (Phase 3)
+`test/endpoint-parity.test.ts` runs the real `api/mobile/<name>.php` (through `test/parity/endpoint.php`, which feeds
+GET query / JSON body / bearer token exactly like the web server) and the Node route against the **same seeded
+database** and compares HTTP status + JSON; write endpoints are run on two identically rebuilt databases and the
+resulting rows are compared too. 50 cases: dashboards, reports, ageing, daily collection, customer history, audit
+log (incl. redaction), feedback, expenses/income, notifications, garments, barcode/QR lookups, permission failures.
+
+Notes
+- Numbers vs numeric strings are treated as equal (PHP's PDO returned many columns as strings).
+- When rows tie on every ORDER BY key MariaDB returns them in unspecified order on each execution, for PHP as much
+  as for Node; the harness accepts a difference only in the order of such tied rows (same multiset).
+- Differences kept on purpose: barcode/QR lookup audit rows now carry the acting user (PHP wrote NULL);
+  `garment_image`, `order_photo_*` (file storage), `password_reset_request` and `whatsapp_send_invoice`
+  (WhatsApp) are Phase 4.

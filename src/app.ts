@@ -24,6 +24,7 @@ import { registerMobileCustomerRoutes } from './routes/mobile/customers.js';
 import { registerMobileOrderRoutes } from './routes/mobile/orders.js';
 import { registerMobileReportRoutes } from './routes/mobile/reports.js';
 import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
+import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 
 export interface Services {
   env: Env;
@@ -131,5 +132,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileOrderRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileReportRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   return app;
 }

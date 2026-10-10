@@ -78,3 +78,10 @@ export function similarTextPercent(a: string, b: string): number {
   if (!a.length && !b.length) return 0;
   return (simText(a, b) * 2 * 100) / (a.length + b.length);
 }
+
+/** PHP filter_var($v, FILTER_VALIDATE_BOOLEAN) (non-null-on-failure variant: unknown -> false). */
+export function filterBool(v: unknown): boolean {
+  if (typeof v === 'boolean') return v;
+  const s = String(v ?? '').trim().toLowerCase();
+  return ['1', 'true', 'on', 'yes'].includes(s);
+}

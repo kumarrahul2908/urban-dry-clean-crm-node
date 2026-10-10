@@ -69,10 +69,11 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
 
   async function buildDataset() {
     await resetAndSeed(db);
-    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage'];
+    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage', 'garment.view', 'garment.create', 'garment.edit', 'garment.delete', 'garments.manage', 'garment_tags.view'];
     await db.execute(`INSERT INTO permissions (id, permission_key, module) VALUES ${perms.map((p, i) => `(${i + 1}, '${p}', 'x')`).join(',')}`);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (3, 'Super Admin'), (4, 'Workshop Staff'), (5, 'Nobody')");
-    await db.execute(`INSERT INTO role_permissions (role_id, permission_id) VALUES ${[1, 3].flatMap((r) => perms.map((_, i) => `(${r}, ${i + 1})`)).join(',')}, (4, 1)`);
+    const rolePerms = [1, 3].flatMap((r) => perms.map((k, i) => ({ r, i: i + 1, k }))).filter((x) => !(x.r === 1 && ['garment.delete', 'garments.manage'].includes(x.k)));
+    await db.execute(`INSERT INTO role_permissions (role_id, permission_id) VALUES ${rolePerms.map((x) => `(${x.r}, ${x.i})`).join(',')}, (4, 1)`);
     await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (3, 3, 'Boss', 'boss', 'x', NULL, 1), (4, 4, 'Ws', 'ws', 'x', 1, 1), (5, 5, 'Nobody', 'nobody', 'x', 1, 1)");
     await db.execute("INSERT INTO stores (id, organization_id, store_name, store_type, is_active) VALUES (2, 1, 'Branch', 'branch', 1)");
     const tok = (id: number, t: string) => db.execute("INSERT INTO api_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW() + INTERVAL 1 DAY)", [id, createHash('sha256').update(t).digest('hex')]);
@@ -181,11 +182,12 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     const q = (sql: string) => db.query<any>(sql).then((r) => r.map(strip));
     return norm({
       feedback: await q('SELECT id, customer_id, order_id, rating, comments, status FROM feedback ORDER BY id'),
+      garments: await q('SELECT * FROM garments ORDER BY id'),
       expenses: await q('SELECT * FROM expenses ORDER BY id'),
       income: await q('SELECT * FROM income ORDER BY id'),
       notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
-      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income")  ORDER BY id'))
-        .map((a: any) => ({ ...a, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
+      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments")  ORDER BY id'))
+        .map((a: any) => ({ ...a, user_id: a.action === 'lookup' ? null : a.user_id, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
     });
   }
   const scenario = (name: string, calls: Case[]) =>
@@ -251,4 +253,44 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     P('notifications_mark_read', { all: 1 }),
     { name: 'list after', endpoint: 'notifications_list' },
   ]);
+
+  scenario('garments: create, edit, duplicates, validation, active flag without permission', [
+    P('garment_save', { garment_name: 'Jacket', sku: 'JK1', category_id: 1, default_service_id: 1, unit: 'Pcs', description: 'warm' }),
+    P('garment_save', { garment_name: 'jacket', category_id: 1, unit: 'Pcs' }),
+    P('garment_save', { garment_name: 'Other', sku: 'JK1', category_id: 1, unit: 'Pcs' }),
+    P('garment_save', { garment_name: 'Scarf', category_id: 1, unit: 'Bundle' }),
+    P('garment_save', { garment_name: '', category_id: '', unit: '' }),
+    P('garment_save', { garment_name: 'Hat', category_id: 'abc', unit: 'Pcs', default_service_id: 99 }),
+    P('garment_save', { id: 1, garment_name: 'Shirt Plus', sku: 'SH1', category_id: 1, default_service_id: '', unit: 'Set', is_active: false }),
+    P('garment_save', { id: 1, garment_name: 'Shirt Plus', sku: 'SH1', category_id: 1, unit: 'Set', is_active: false }, 'boss'),
+    P('garment_save', { id: 1, garment_name: 'Shirt Plus', sku: 'SH1', category_id: 1, unit: 'Set', is_active: 'yes' }, 'boss'),
+    P('garment_save', { id: 999, garment_name: 'x', category_id: 1, unit: 'Pcs' }),
+    P('garment_save', { garment_name: 'No Perm', category_id: 1, unit: 'Pcs' }, 'viewer'),
+    { name: 'manage new', endpoint: 'garment_manage' },
+    { name: 'manage 1', endpoint: 'garment_manage', query: { id: '1' }, who: 'boss' },
+    { name: 'manage missing', endpoint: 'garment_manage', query: { id: '999' } },
+    { name: 'manage forbidden', endpoint: 'garment_manage', who: 'viewer' },
+    { name: 'catalog', endpoint: 'garments_catalog_list', who: 'boss' },
+  ]);
+
+  it('barcode / qr lookups (piece + laundry + not found + invalid)', async () => {
+    await buildDataset();
+    const rows = await db.query<any>('SELECT barcode_value, qr_token, short_qr_payload, laundry_garment_id FROM barcodes ORDER BY id');
+    const piece = rows.find((r) => !r.laundry_garment_id);
+    const laundry = rows.find((r) => r.laundry_garment_id);
+    const cs: Case[] = [
+      { name: 'barcode piece', endpoint: 'barcode_lookup', query: { barcode: piece.barcode_value } },
+      { name: 'barcode laundry', endpoint: 'barcode_lookup', query: { barcode: laundry.barcode_value } },
+      { name: 'barcode missing', endpoint: 'barcode_lookup', query: { barcode: 'NOPE-01' } },
+      { name: 'barcode empty', endpoint: 'barcode_lookup', query: { barcode: ' ' } },
+      { name: 'qr token piece', endpoint: 'qr_lookup', query: { token: piece.qr_token } },
+      { name: 'qr token laundry', endpoint: 'qr_lookup', query: { token: laundry.qr_token } },
+      { name: 'qr short piece', endpoint: 'qr_lookup', query: { token: piece.short_qr_payload } },
+      { name: 'qr unknown token', endpoint: 'qr_lookup', query: { token: 'f'.repeat(32) } },
+      { name: 'qr malformed', endpoint: 'qr_lookup', query: { token: 'not a token' } },
+      { name: 'barcode forbidden', endpoint: 'barcode_lookup', query: { barcode: piece.barcode_value }, who: 'ws' },
+    ];
+    for (const c of cs) await check(c);
+    expect((await db.query<any>("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'lookup'"))[0].n).toBeGreaterThan(10);
+  });
 });

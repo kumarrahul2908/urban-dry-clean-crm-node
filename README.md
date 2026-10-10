@@ -8,8 +8,8 @@ Node.js (TypeScript, Fastify, MySQL/MariaDB) port of the PHP CRM backed up in
 |---|---|---|
 | 1 Foundation | env config, DB pool, crypto, password, audit log, per-IP + per-account login limiter, bearer-token auth (`api_tokens`), RBAC, store/delivery authorization helpers, `POST /api/mobile/login`, `POST /api/mobile/logout`, `GET /api/mobile/me`, `/health`, Docker, CI, tests | **done (code)** |
 | 2 Core domain services + mobile endpoints | **2a done:** product catalog + rates (PricingEngine, `pos_*` lookups, `pos_rate`, `pos_universal_rate`, `pos_garments`, `garments_catalog_list`, NEW `products`). **2b done:** customers (CRUD, duplicate rules), wallet (ledger, idempotent adjust). **2c done:** orders (POS + laundry create, list/detail/search, edit, item add/remove, cancel), payments (record, refund, list), OrderFinance, garment tags/barcodes — verified against the real PHP code (see `docs/PARITY.md`) | done |
-| 3 REST API | remaining `api/mobile/*` (78) + `api/*` (27) | |
-| 4 Ops modules + integrations | workshop, QC, packing, delivery, WhatsApp, cron, PDF, barcode/QR | |
+| 3 REST API (non-operations) | **done:** dashboards (`dashboard_summary`, `daily_dashboard`), `reports_summary`, `daily_collection`, `outstanding_list`, `customer_history`, `audit_logs` (with redaction), feedback, expenses/income, in-app notifications, garment manage/save, barcode + QR lookup — each checked against the real `api/mobile/*.php` (see `docs/PARITY.md`) | done |
+| 4 Ops modules + integrations | workshop, QC, packing, rework, pickup, delivery, WhatsApp (+ `password_reset_request`, `whatsapp_send_invoice`), cron, PDF invoice, file uploads (`order_photo_*`, `garment_image`) | next |
 | 5 Web UI + cutover | | |
 
 ## Compatibility guarantees (Phase 1)
