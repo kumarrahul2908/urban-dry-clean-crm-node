@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { jsonEncode } from './html.js';
 import { WebRedirect, WebText, webPage } from './context.js';
 import { registerAuthPages, postLoginRedirect } from './pages/auth.js';
+import { registerDashboardPages } from './pages/dashboard.js';
+import { registerDailyDashboard } from './pages/dailyDashboard.js';
 import { registerLandingPages } from './pages/landing.js';
 
 const json = (data: unknown, status = 200) => new WebText(jsonEncode(data), status, 'application/json');
@@ -27,6 +29,8 @@ export async function registerWebRoutes(app: FastifyInstance) {
 
   registerAuthPages(app);
   registerLandingPages(app);
+  registerDashboardPages(app);
+  registerDailyDashboard(app);
 
   // api/set_active_store.php
   webPage(app, '/api/set_active_store', { auth: 'login', methods: ['GET', 'POST'] }, async (ctx, req) => {

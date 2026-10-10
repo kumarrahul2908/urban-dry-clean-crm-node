@@ -6,6 +6,7 @@ import { loadEnv } from '../../src/config/env.js';
 import { createPool, type Db } from '../../src/db/pool.js';
 import { hashPassword } from '../../src/lib/password.js';
 import { resetAndSeed } from '../helpers.js';
+import { buildDataset, TOKENS } from './dataset.js';
 
 export const PHP_APP = process.env.PARITY_PHP_APP;
 export const webEnabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
@@ -15,7 +16,7 @@ export interface Client { get(path: string): Promise<Resp>; post(path: string, f
 
 const free = () => new Promise<number>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as any).port; s.close(() => res(p)); }); });
 
-export const USERS = { admin: 'rahul', boss: 'boss', ws: 'wstaff', viewer: 'viewer', fixed: 'fixed' } as const;
+export const USERS = { admin: 'rahul', boss: 'boss', ws: 'wstaff', viewer: 'viewer', fixed: 'fixed', nobody: 'nobody', orphan: 'orphan', driver: 'driver' } as const;
 export const PASSWORD = 'pw-12345-ok';
 
 /** Real PHP (php -S) and the Node app on the SAME database; each `login()` gives an independent cookie jar per side. */
@@ -98,6 +99,12 @@ export function webHarness() {
     await extra?.(db);
   }
 
+  /** The big shared fixture (orders in every state, payments, pickups, workshop …); users: rahul(store 1) boss(no store) wstaff nobody orphan driver. */
+  async function seedRich(extra?: (db: Db) => Promise<void>) {
+    await buildDataset(db, env, TOKENS, PASSWORD);
+    await extra?.(db);
+  }
+
   async function login(who: keyof typeof USERS | null) {
     const php = phpClient(), node = nodeClient();
     if (who) for (const c of [php, node]) {
@@ -107,7 +114,7 @@ export function webHarness() {
     }
     return { php, node };
   }
-  return { h, seed, login, phpClient, nodeClient };
+  return { h, seed, seedRich, login, phpClient, nodeClient };
 }
 
 /** Makes two pages comparable: random tokens, comments and insignificant whitespace are removed. */
@@ -120,4 +127,15 @@ export function normalizeHtml(s: string, appUrl: string): string {
     .replace(/\s+\/>/g, '/>')
     .trim()
     .replaceAll(appUrl, 'BASE');
+}
+
+/** Fails with the first differing region (±160 chars) instead of dumping two whole pages. */
+export function expectSameHtml(got: { status: number; location: string | null; body: string }, want: { status: number; location: string | null; body: string }, appUrl: string, label = '') {
+  const g = normalizeHtml(got.body, appUrl), w = normalizeHtml(want.body, appUrl);
+  if (got.status !== want.status) throw new Error(`${label} status ${got.status} ≠ PHP ${want.status}`);
+  if ((got.location ?? null) !== (want.location ?? null)) throw new Error(`${label} location ${got.location} ≠ PHP ${want.location}`);
+  if (g === w) return;
+  let i = 0;
+  while (i < g.length && i < w.length && g[i] === w[i]) i++;
+  throw new Error(`${label} HTML differs at char ${i}:\n  node: …${g.slice(Math.max(0, i - 120), i + 160)}\n  php : …${w.slice(Math.max(0, i - 120), i + 160)}`);
 }

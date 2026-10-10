@@ -3,6 +3,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Services } from '../app.js';
 import { parseCookies, serializeCookie } from './cookies.js';
 import { Raw } from './html.js';
+import { numberFormat2 } from '../lib/php.js';
+import { todayIn } from '../lib/dates.js';
 import type { SessionData } from './session.js';
 
 export const SESSION_COOKIE = 'udc_sid';
@@ -23,6 +25,26 @@ export class WebCtx {
     public sid: string | null,
     public data: SessionData,
   ) {}
+
+  private settingsCache: Record<string, string | null> | null = null;
+  /** get_setting(): the settings table is read once per request. */
+  async setting(key: string, fallback: string | null = null): Promise<string | null> {
+    if (!this.settingsCache) {
+      this.settingsCache = {};
+      for (const r of await this.svc.db.query<{ setting_key: string; setting_value: string | null }>('SELECT setting_key, setting_value FROM settings')) this.settingsCache[r.setting_key] = r.setting_value;
+    }
+    return this.settingsCache[key] ?? fallback;
+  }
+  private symbol: string | null = null;
+  /** Loads the currency symbol so money() can be used synchronously inside templates. */
+  async loadMoney(): Promise<(amount: unknown) => string> {
+    this.symbol = (await this.setting('currency_symbol', 'Rs.')) ?? 'Rs.';
+    return (a) => this.money(a);
+  }
+  /** format_currency() */
+  money(amount: unknown): string { return `${this.symbol ?? 'Rs.'} ${numberFormat2(parseFloat(String(amount ?? '')) || 0)}`; }
+  /** date('Y-m-d') in APP_TIMEZONE */
+  get today(): string { return todayIn(this.svc.env.APP_TIMEZONE); }
 
   get now() { return Math.floor(Date.now() / 1000); }
   baseUrl(path = ''): string { return `${this.svc.env.APP_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`; }

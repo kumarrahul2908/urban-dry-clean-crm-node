@@ -24,6 +24,16 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Raw {
   return new Raw(out);
 }
 
-/** json_encode() as PHP emits it for inline scripts: "/" escaped as "\/". */
-export const jsonEncode = (v: unknown) =>
-  JSON.stringify(v).replace(/\//g, '\\/').replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+/** (float) cast of a DB/request value for json_encode (PHP prints whole floats as 370, not 370.0). */
+export const pf = (v: unknown): number => parseFloat(String(v ?? '')) || 0;
+
+function encode(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v === 'string') return JSON.stringify(v).replace(/\//g, '\\/').replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return `[${v.map(encode).join(',')}]`;
+  return `{${Object.entries(v as Record<string, unknown>).map(([k, x]) => `${encode(k)}:${encode(x)}`).join(',')}}`;
+}
+
+/** json_encode() as PHP emits it (slashes and non-ASCII escaped) — for inline scripts and JSON responses. */
+export const jsonEncode = encode;
