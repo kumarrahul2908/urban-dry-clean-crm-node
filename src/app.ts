@@ -8,8 +8,10 @@ import { LoginRateLimiter } from './auth/loginRateLimiter.js';
 import { AuthService } from './auth/authService.js';
 import { ApiAuth, type UserContext } from './auth/apiAuth.js';
 import { Crypto } from './lib/crypto.js';
+import { NoDefaultPriceListError, PricingEngine } from './services/pricingEngine.js';
 import { ApiError } from './lib/http.js';
 import { registerMobileAuthRoutes } from './routes/mobile/auth.js';
+import { registerMobileCatalogRoutes } from './routes/mobile/catalog.js';
 
 export interface Services {
   env: Env;
@@ -18,6 +20,7 @@ export interface Services {
   auth: AuthService;
   apiAuth: ApiAuth;
   crypto: Crypto;
+  pricing: PricingEngine;
 }
 
 declare module 'fastify' {
@@ -40,6 +43,7 @@ export function buildServices(env: Env, db: Db): Services {
     auth,
     apiAuth: new ApiAuth(db, auth, env.API_TOKEN_LIFETIME_DAYS),
     crypto: new Crypto(env.APP_SECRET_KEY),
+    pricing: new PricingEngine(db),
   };
 }
 
@@ -74,7 +78,10 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   // Never leak stack traces / SQL to clients (same promise as mobile_set_error_handlers()).
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ApiError) {
-      return reply.status(err.status).send({ success: false, error: { code: err.code, message: err.message } });
+      return reply.status(err.status).send({ success: false, error: { code: err.code, message: err.message, ...err.extra } });
+    }
+    if (err instanceof NoDefaultPriceListError) {
+      return reply.status(409).send({ success: false, error: { code: 'no_default_price_list', message: err.message } });
     }
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status >= 400 && status < 500) {
@@ -89,5 +96,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
 
   app.get('/health', async () => ({ status: 'ok' }));
   await app.register(registerMobileAuthRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileCatalogRoutes, { prefix: '/api/mobile' });
   return app;
 }
