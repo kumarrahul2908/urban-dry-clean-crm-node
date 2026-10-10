@@ -313,3 +313,360 @@ export const receiptStyle = (u: (p: string) => string, j: (v: unknown) => string
     .actions { display:none; }
   }
 </style>`;
+// x[0] = <?= json_encode((int)$order['price_list_id']) ?>
+// x[1] = <?= $canManualOverrideRate ? 'true' : 'false' ?>
+// x[2] = <?= !empty($services) ? (int)$services[0]['id'] : 'null' ?>
+export const orderAddItemsScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}, x: string[] = []): string => `<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+const ORDER_ID = ${a.orderId};
+const PRICE_LIST_ID = ${x[0]};
+const API = {
+  garments: ${j(u('api/garments_for_pos.php'))},
+  rate: ${j(u('api/pos_get_rate.php'))},
+  addItem: ${j(u('modules/orders/add_item.php'))},
+  orderView: ${j(u('modules/orders/view.php'))},
+};
+const CAN_MANUAL_OVERRIDE_RATE = ${x[1]};
+
+let activeServiceId = ${x[2]};
+let activeCategoryId = null;
+let cart = [];
+let pendingGarment = null;
+let agCurrentRate = null;
+let garmentSearchDebounce = null;
+
+const dom = {
+  garmentGrid: document.getElementById('garmentGrid'),
+  garmentSearch: document.getElementById('garmentSearch'),
+  cartBody: document.getElementById('cartBody'),
+  saveItemsBtn: document.getElementById('saveItemsBtn'),
+  saveError: document.getElementById('saveError'),
+  agBillingUnitDisplay: document.getElementById('agBillingUnitDisplay'),
+  agQtyWrap: document.getElementById('agQtyWrap'),
+  agWeightWrap: document.getElementById('agWeightWrap'),
+  agQuantity: document.getElementById('agQuantity'),
+  agQtyMinus: document.getElementById('agQtyMinus'),
+  agQtyPlus: document.getElementById('agQtyPlus'),
+  agWeight: document.getElementById('agWeight'),
+  agConfiguredRate: document.getElementById('agConfiguredRate'),
+  agRateOverride: document.getElementById('agRateOverride'),
+  agTaxDisplay: document.getElementById('agTaxDisplay'),
+  agLineTotalDisplay: document.getElementById('agLineTotalDisplay'),
+  agBrand: document.getElementById('agBrand'),
+  agColor: document.getElementById('agColor'),
+  agRemarks: document.getElementById('agRemarks'),
+  agError: document.getElementById('agError'),
+  agAddBtn: document.getElementById('agAddBtn'),
+  agManualOverrideOfferRow: document.getElementById('agManualOverrideOfferRow'),
+  agEnableManualOverrideBtn: document.getElementById('agEnableManualOverrideBtn'),
+  agManualOverrideUnauthorized: document.getElementById('agManualOverrideUnauthorized'),
+  agManualOverrideActive: document.getElementById('agManualOverrideActive'),
+  agManualOverrideConfiguredNote: document.getElementById('agManualOverrideConfiguredNote'),
+  agCancelManualOverrideBtn: document.getElementById('agCancelManualOverrideBtn'),
+};
+let manualOverrideActive = false;
+let manualOverrideConfiguredRate = null;
+
+const agModal = new bootstrap.Modal(document.getElementById('addGarmentModal'));
+
+document.querySelectorAll('.svc-tab').forEach(btn => btn.addEventListener('click', function () {
+  document.querySelectorAll('.svc-tab').forEach(b => b.classList.replace('btn-primary', 'btn-outline-primary'));
+  this.classList.replace('btn-outline-primary', 'btn-primary');
+  activeServiceId = parseInt(this.dataset.id, 10);
+  loadGarments();
+}));
+document.querySelectorAll('.cat-tab').forEach(btn => btn.addEventListener('click', function () {
+  document.querySelectorAll('.cat-tab').forEach(b => b.classList.replace('btn-secondary', 'btn-outline-secondary'));
+  this.classList.replace('btn-outline-secondary', 'btn-secondary');
+  activeCategoryId = parseInt(this.dataset.id, 10);
+  loadGarments();
+}));
+dom.garmentSearch.addEventListener('input', function () {
+  clearTimeout(garmentSearchDebounce);
+  garmentSearchDebounce = setTimeout(loadGarments, 300);
+});
+
+dom.agQtyMinus.addEventListener('click', function () { dom.agQuantity.value = Math.max(1, (parseInt(dom.agQuantity.value, 10) || 1) - 1); recomputeLineTotal(); });
+dom.agQtyPlus.addEventListener('click', function () { dom.agQuantity.value = (parseInt(dom.agQuantity.value, 10) || 1) + 1; recomputeLineTotal(); });
+dom.agQuantity.addEventListener('input', recomputeLineTotal);
+dom.agWeight.addEventListener('input', recomputeLineTotal);
+dom.agRateOverride.addEventListener('input', recomputeLineTotal);
+dom.agAddBtn.addEventListener('click', addToCart);
+// Explicitly wrapped, not passed directly — addEventListener would otherwise pass the DOM click
+// Event as the first argument, which the preserveRate parameter would read as truthy.
+dom.agEnableManualOverrideBtn.addEventListener('click', function () { onEnableManualOverrideClick(false); });
+dom.agCancelManualOverrideBtn.addEventListener('click', onCancelManualOverrideClick);
+dom.saveItemsBtn.addEventListener('click', saveItems);
+
+function loadGarments() {
+  if (!activeCategoryId) { dom.garmentGrid.innerHTML = '<p class="text-muted">Select a category to view garments.</p>'; return; }
+  const q = dom.garmentSearch.value.trim();
+  const params = new URLSearchParams({ category_id: activeCategoryId, service_id: activeServiceId || '', q, price_list_id: PRICE_LIST_ID || '' });
+  fetch(API.garments + '?' + params.toString())
+    .then(r => r.json())
+    .then(function (data) {
+      dom.garmentGrid.innerHTML = '';
+      const garments = data.garments || [];
+      garments.forEach(function (g) {
+        const div = document.createElement('div');
+        div.className = 'garment-card';
+        div.innerHTML = (g.image ? '<img src="' + g.image + '">' : '<div style="height:60px;display:flex;align-items:center;justify-content:center;"><i class="fa-solid fa-shirt text-muted"></i></div>')
+          + '<div class="g-name">' + escapeHtml(g.name) + '</div>'
+          + (g.display_has_price && Number(g.display_rate) === 0 ? '<div class="g-rate" style="color:#b45309;">Price at counter</div>' : g.display_has_price ? '<div class="g-rate">from ' + fmt(g.display_rate) + (g.billing_unit === 'weight' ? ' / kg' : ' / pc') + '</div>' : '<div class="g-nopricing">Price not configured</div>');
+        div.addEventListener('click', function () { openGarmentModal(g); });
+        dom.garmentGrid.appendChild(div);
+      });
+      if (garments.length === 0) dom.garmentGrid.innerHTML = '<p class="text-muted">No garments found.</p>';
+    })
+    .catch(function () { dom.garmentGrid.innerHTML = '<p class="text-danger">Could not load garments.</p>'; });
+}
+
+function openGarmentModal(g) {
+  pendingGarment = g;
+  document.querySelector('#addGarmentModal .modal-title').textContent = 'Add Garment: ' + g.name;
+  dom.agQuantity.value = 1;
+  dom.agWeight.value = '';
+  dom.agBrand.value = '';
+  dom.agColor.value = '';
+  dom.agRemarks.value = '';
+  document.querySelectorAll('.ag-defect').forEach(cb => cb.checked = false);
+  dom.agError.classList.add('d-none');
+  // Manual Rate Override must never leak from one garment to the next.
+  resetManualOverrideUI();
+  // Lock every pricing field the instant the modal opens, before the async price fetch even
+  // starts — same reasoning/fix as modules/pos/index.php's equivalent modal, applied here since
+  // this page never had it.
+  dom.agWeight.disabled = true;
+  dom.agQuantity.disabled = true;
+  dom.agQtyMinus.disabled = true;
+  dom.agQtyPlus.disabled = true;
+  dom.agRateOverride.disabled = true;
+  dom.agConfiguredRate.disabled = true;
+  dom.agTaxDisplay.disabled = true;
+  dom.agLineTotalDisplay.disabled = true;
+  dom.agAddBtn.disabled = true;
+  fetchRate();
+  agModal.show();
+}
+
+// Resets all three Manual Rate Override UI states to hidden — mirrors modules/pos/index.php.
+function resetManualOverrideUI() {
+  manualOverrideActive = false;
+  dom.agManualOverrideOfferRow.classList.add('d-none');
+  dom.agManualOverrideUnauthorized.classList.add('d-none');
+  dom.agManualOverrideActive.classList.add('d-none');
+}
+
+function onEnableManualOverrideClick(preserveRate) {
+  dom.agManualOverrideOfferRow.classList.add('d-none');
+  if (!CAN_MANUAL_OVERRIDE_RATE) {
+    dom.agManualOverrideUnauthorized.classList.remove('d-none');
+    return;
+  }
+  manualOverrideActive = true;
+  dom.agManualOverrideConfiguredNote.textContent = manualOverrideConfiguredRate
+    ? ('Configured rate: ' + manualOverrideConfiguredRate + ' — this override will replace it for this line only.')
+    : 'No configured rate exists for this garment/service.';
+  dom.agManualOverrideActive.classList.remove('d-none');
+  dom.agError.classList.add('d-none');
+  const isWeight = !dom.agWeightWrap.classList.contains('d-none');
+  dom.agWeight.disabled = !isWeight;
+  dom.agQuantity.disabled = isWeight;
+  dom.agQtyMinus.disabled = isWeight;
+  dom.agQtyPlus.disabled = isWeight;
+  dom.agRateOverride.disabled = false;
+  if (!preserveRate) { dom.agRateOverride.value = ''; }
+  dom.agLineTotalDisplay.disabled = false;
+  dom.agAddBtn.disabled = false;
+  recomputeLineTotal();
+}
+
+function onCancelManualOverrideClick() {
+  manualOverrideActive = false;
+  dom.agManualOverrideActive.classList.add('d-none');
+  fetchRate();
+}
+
+// Fetches the SERVER-AUTHORITATIVE configured rate AND billing_unit for this garment+service.
+// Billing unit is never a user choice here — it comes entirely from the service's configuration.
+function fetchRate() {
+  const params = new URLSearchParams({ garment_id: pendingGarment.id, service_id: activeServiceId, price_list_id: PRICE_LIST_ID || '' });
+  fetch(API.rate + '?' + params.toString())
+    .then(r => r.json())
+    .then(function (data) {
+      if (!data.success) {
+        agCurrentRate = null;
+        dom.agError.textContent = data.message || 'Price not configured for this garment/service.';
+        dom.agError.classList.remove('d-none');
+        // Even on failure, pos_get_rate.php now always returns billing_unit — keep the
+        // Qty/Weight display consistent with the currently selected service instead of leaving
+        // whatever was shown for a previously-opened, unrelated garment (same fix already
+        // applied to modules/pos/index.php's equivalent modal).
+        const failedIsWeight = data.billing_unit === 'weight';
+        dom.agBillingUnitDisplay.value = failedIsWeight ? 'Weight (KG)' : 'Quantity (Pieces)';
+        dom.agQtyWrap.classList.toggle('d-none', failedIsWeight);
+        dom.agWeightWrap.classList.toggle('d-none', !failedIsWeight);
+        dom.agConfiguredRate.value = '';
+        dom.agRateOverride.value = '';
+        dom.agTaxDisplay.value = '';
+        dom.agLineTotalDisplay.value = '';
+        dom.agWeight.value = '';
+        dom.agWeight.disabled = true;
+        dom.agQuantity.value = '';
+        dom.agQuantity.disabled = true;
+        dom.agQtyMinus.disabled = true;
+        dom.agQtyPlus.disabled = true;
+        dom.agRateOverride.disabled = true;
+        dom.agConfiguredRate.disabled = true;
+        dom.agTaxDisplay.disabled = true;
+        dom.agLineTotalDisplay.disabled = true;
+        dom.agAddBtn.disabled = true;
+        resetManualOverrideUI();
+        manualOverrideConfiguredRate = null;
+        if (CAN_MANUAL_OVERRIDE_RATE) { onEnableManualOverrideClick(false); dom.agRateOverride.placeholder = 'Enter price'; }
+        return;
+      }
+      dom.agError.classList.add('d-none');
+      dom.agAddBtn.disabled = false;
+      agCurrentRate = data;
+      const isWeight = data.billing_unit === 'weight';
+      dom.agBillingUnitDisplay.value = isWeight ? 'Weight (KG)' : 'Quantity (Pieces)';
+      dom.agQtyWrap.classList.toggle('d-none', isWeight);
+      dom.agWeightWrap.classList.toggle('d-none', !isWeight);
+      dom.agWeight.disabled = !isWeight;
+      dom.agQuantity.disabled = isWeight;
+      dom.agQtyMinus.disabled = isWeight;
+      dom.agQtyPlus.disabled = isWeight;
+      dom.agRateOverride.disabled = false;
+      dom.agConfiguredRate.disabled = false;
+      dom.agTaxDisplay.disabled = false;
+      dom.agLineTotalDisplay.disabled = false;
+      const baseRate = isWeight ? data.weight_rate : data.piece_rate;
+      const zeroRate = Number(baseRate) === 0;
+      dom.agConfiguredRate.value = zeroRate ? 'Price at counter' : fmt(baseRate) + (isWeight ? ' / kg' : ' / pc');
+      dom.agRateOverride.value = zeroRate ? '' : baseRate;
+      dom.agRateOverride.placeholder = zeroRate ? 'Enter price' : '';
+      if (zeroRate) setTimeout(function () { dom.agRateOverride.focus(); }, 200);
+      dom.agTaxDisplay.value = data.tax_name ? (data.tax_name + ' ' + data.tax_percent + '%') : 'No tax';
+      recomputeLineTotal();
+      resetManualOverrideUI();
+      manualOverrideConfiguredRate = fmt(baseRate) + (isWeight ? ' / kg' : ' / pc');
+      dom.agManualOverrideOfferRow.classList.remove('d-none');
+    })
+    .catch(function () {
+      agCurrentRate = null;
+      dom.agError.textContent = 'Could not reach the server to fetch the price.';
+      dom.agError.classList.remove('d-none');
+      resetManualOverrideUI();
+      dom.agAddBtn.disabled = true;
+    });
+}
+
+// DISPLAY-ONLY estimate — the server independently recomputes this from PricingEngine +
+// the same rate-override value at save time; nothing here can change what's actually charged.
+function recomputeLineTotal() {
+  if (!agCurrentRate && !manualOverrideActive) { dom.agLineTotalDisplay.value = ''; return; }
+  const isWeight = !dom.agWeightWrap.classList.contains('d-none');
+  const rate = parseFloat(dom.agRateOverride.value) || 0;
+  let subtotal;
+  if (isWeight) {
+    const w = parseFloat(dom.agWeight.value) || 0;
+    subtotal = w * rate;
+    if (!manualOverrideActive && agCurrentRate && agCurrentRate.min_weight_charge && subtotal < agCurrentRate.min_weight_charge) subtotal = agCurrentRate.min_weight_charge;
+  } else {
+    const q = parseInt(dom.agQuantity.value, 10) || 0;
+    subtotal = q * rate;
+  }
+  dom.agLineTotalDisplay.value = fmt(subtotal);
+}
+
+function addToCart() {
+  if (!agCurrentRate && !manualOverrideActive) { alert('Price not configured for this garment/service — cannot add.'); return; }
+  if (manualOverrideActive && !CAN_MANUAL_OVERRIDE_RATE) { alert('You are not authorized to use Manual Rate Override.'); return; }
+  const isWeight = !dom.agWeightWrap.classList.contains('d-none');
+  const qty = parseInt(dom.agQuantity.value, 10) || 0;
+  const weight = parseFloat(dom.agWeight.value) || 0;
+  const rateOverride = parseFloat(dom.agRateOverride.value);
+  if (!isWeight && qty <= 0) { alert('Quantity must be greater than zero.'); return; }
+  if (isWeight && weight <= 0) { alert('Weight must be greater than zero.'); return; }
+  if (!manualOverrideActive && agCurrentRate && Number(isWeight ? agCurrentRate.weight_rate : agCurrentRate.piece_rate) === 0 && !(rateOverride > 0)) { alert('This item has no fixed rate. Enter the price.'); return; }
+  if (isNaN(rateOverride) || rateOverride < 0) { alert('Rate must be a non-negative number.'); return; }
+  if (manualOverrideActive && rateOverride <= 0) { alert('Manual Rate Override requires a rate greater than zero.'); return; }
+
+  const defectIds = Array.from(document.querySelectorAll('.ag-defect:checked')).map(cb => parseInt(cb.value, 10));
+  cart.push({
+    garment_id: pendingGarment.id, garment_name: pendingGarment.name, service_id: activeServiceId,
+    billing_unit: isWeight ? 'weight' : 'piece', quantity: isWeight ? null : qty, weight: isWeight ? weight : null,
+    rate_override: rateOverride, manual_override: manualOverrideActive,
+    brand_id: dom.agBrand.value || null, color_id: dom.agColor.value || null,
+    defect_ids: defectIds, remarks: dom.agRemarks.value,
+  });
+  agModal.hide();
+  renderCart();
+}
+
+function renderCart() {
+  dom.cartBody.innerHTML = '';
+  if (cart.length === 0) {
+    dom.cartBody.innerHTML = '<tr><td class="text-muted text-center py-3">No items added yet.</td></tr>';
+  } else {
+    cart.forEach(function (item, idx) {
+      const tr = document.createElement('tr');
+      const desc = item.billing_unit === 'weight' ? (item.weight + ' kg @ ' + fmt(item.rate_override)) : (item.quantity + ' pc @ ' + fmt(item.rate_override));
+      const overrideBadge = item.manual_override ? ' <span class="badge bg-warning text-dark">MANUAL OVERRIDE</span>' : '';
+      tr.innerHTML = '<td>' + escapeHtml(item.garment_name) + overrideBadge + '<div class="text-muted small">' + desc + '</div></td>'
+        + '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-remove="' + idx + '"><i class="fa-solid fa-trash"></i></button></td>';
+      dom.cartBody.appendChild(tr);
+    });
+  }
+  dom.cartBody.querySelectorAll('[data-remove]').forEach(function (btn) {
+    btn.addEventListener('click', function () { cart.splice(parseInt(btn.dataset.remove, 10), 1); renderCart(); });
+  });
+  dom.saveItemsBtn.disabled = cart.length === 0;
+}
+
+// Saves each cart line via the SAME OrderService::addItem() used everywhere else — each call is
+// its own independently transaction-safe, server-recalculated write (see OrderService.php).
+// Not a bulk/bypass endpoint; just this page adding several lines in sequence.
+function saveItems() {
+  dom.saveItemsBtn.disabled = true;
+  dom.saveItemsBtn.textContent = 'Saving...';
+  dom.saveError.classList.add('d-none');
+
+  const remaining = cart.slice();
+  const errors = [];
+
+  function next() {
+    if (remaining.length === 0) {
+      if (errors.length) {
+        dom.saveError.innerHTML = errors.map(escapeHtml).join('<br>');
+        dom.saveError.classList.remove('d-none');
+        dom.saveItemsBtn.disabled = false;
+        dom.saveItemsBtn.textContent = 'Save Items to Order';
+      } else {
+        window.location.href = API.orderView + '?id=' + ORDER_ID;
+      }
+      return;
+    }
+    const item = remaining.shift();
+    udcPost(API.addItem, {
+      order_id: ORDER_ID, garment_id: item.garment_id, service_id: item.service_id,
+      quantity: item.quantity, weight: item.weight, rate_override: item.rate_override, manual_override: !!item.manual_override,
+      brand_id: item.brand_id, color_id: item.color_id, defect_ids: item.defect_ids, remarks: item.remarks,
+    }).then(function (res) {
+      if (!res.success) errors.push(item.garment_name + ': ' + (res.errors || ['Could not add.']).join(' '));
+      next();
+    }).catch(function () {
+      errors.push(item.garment_name + ': network error.');
+      next();
+    });
+  }
+  next();
+}
+
+function fmt(n) { return 'Rs. ' + (Math.round((n || 0) * 100) / 100).toFixed(2); }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+});
+</script>`;

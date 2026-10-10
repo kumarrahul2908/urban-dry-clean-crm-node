@@ -174,4 +174,51 @@ describe.skipIf(!webEnabled)('orders pages: PHP ↔ Node parity', () => {
     expect(JSON.parse(g1.body)).toEqual(JSON.parse(g2.body));
     expect(g2.status).toBe(400);
   });
+
+  it('POS lookup APIs, add_items page, export CSV', async () => {
+    await seedRich(async (db) => { await prepare(db); await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('order.export','x'),('order.import','x'),('pos.create','x'),('pos.manual_rate_override','x')"); await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 3, id FROM permissions WHERE permission_key IN ('order.export','order.import','pos.create','pos.manual_rate_override')"); });
+    const { php, node } = await asBoss();
+    for (const path of ['/api/garments_for_pos.php?service_id=1', '/api/garments_for_pos.php?service_id=1&category_id=1&q=sh', '/api/garments_for_pos.php', '/api/pos_get_rate.php?garment_id=1&service_id=1&price_list_id=1', '/api/pos_get_rate.php?garment_id=2&service_id=2', '/api/pos_get_rate.php', '/api/pos_get_universal_rate.php?service_id=1&price_list_id=1', '/api/pos_get_universal_rate.php']) {
+      const a = await php.get(path), b = await node.get(path);
+      expect(b.status, path).toBe(a.status);
+      expect(b.body, path).toBe(a.body);
+    }
+    for (const id of [1, 2, 3, 999]) eq(await node.get(`/modules/orders/add_items.php?order_id=${id}`), await php.get(`/modules/orders/add_items.php?order_id=${id}`), `add_items ${id}`);
+    for (const q of ['', '?export=1', '?export=1&date_from=2020-01-01&customer=a', '?export=1&service_id=1', '?date_from=2020-01-01']) {
+      const a = await php.get(`/modules/orders/export.php${q}`), b = await node.get(`/modules/orders/export.php${q}`);
+      expect(b.status, q).toBe(a.status);
+      if (q.includes('export')) expect(b.body.replace(/\r?\n/g, '\n'), q).toBe(a.body.replace(/\r?\n/g, '\n'));
+      else eq(b, a, `export ${q}`);
+    }
+  });
+
+  it('import: template, preview identical; confirm — PHP aborts (nested tx), Node succeeds', async () => {
+    await seedRich(async (db) => { await prepare(db); await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('order.import','x')"); await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 3, id FROM permissions WHERE permission_key = 'order.import'"); });
+    const { php, node } = await asBoss();
+    const t1 = await php.get('/modules/orders/import.php?template=1'), t2 = await node.get('/modules/orders/import.php?template=1');
+    expect(t2.body).toBe(t1.body);
+    eq(await node.get('/modules/orders/import.php'), await php.get('/modules/orders/import.php'), 'upload page');
+    const csv = [
+      'order_ref,customer_mobile,customer_name,order_date,due_date,due_time,garment,service,quantity,weight,rate,order_discount,order_tax,order_urgent_charge,order_delivery_charge,amount_paid,payment_type,status,notes',
+      'H1,9999999999,Vip Cust,2026-01-05,2026-01-07,17:00,Shirt,Dry Clean,2,,100,0,10,0,0,100,Cash,delivered,old',
+      'H1,9999999999,Vip Cust,2026-01-05,2026-01-07,17:00,Suit,Dry Clean,1,,120,0,10,0,0,0,,delivered,',
+      'H2,12,Bad,2026-01-05,nope,,Nothing,Dry Clean,1,,50,,,,,,,,',
+      'H3,9111100000,Brand New,2026-02-01,2026-02-03,,Shirt,Dry Clean,1,,80,,,,,0,,delivered,',
+    ].join('\n');
+    const run = async (c: typeof php) => {
+      const up = await c.upload('/modules/orders/import.php', { step: 'upload' }, { field: 'file', filename: 'o.csv', content: csv });
+      return { up, token: /name="import_token" value="([0-9a-f]{32})"/.exec(up.body)?.[1]! };
+    };
+    const a = await run(php), b = await run(node);
+    eq(b.up, a.up, 'preview page');
+    expect(a.up.body).toContain('Preview');
+    const ca = await php.post('/modules/orders/import.php', { step: 'confirm', import_token: a.token });
+    const cb = await node.post('/modules/orders/import.php', { step: 'confirm', import_token: b.token });
+    expect(ca.body).toContain('active transaction');
+    expect(cb.body).toContain('Import Complete');
+    expect(cb.body).toContain('2 order(s) created (1 new customer(s)');
+    for (const [name, content] of [['x.txt', 'a,b'], ['e.csv', ''], ['h.csv', 'order_ref\n']] as const) {
+      eq(await node.upload('/modules/orders/import.php', { step: 'upload' }, { field: 'file', filename: name, content }), await php.upload('/modules/orders/import.php', { step: 'upload' }, { field: 'file', filename: name, content }), name);
+    }
+  });
 });

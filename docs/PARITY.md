@@ -82,4 +82,7 @@ back to a snapshot, then Node runs the same request; resulting rows and audit en
 * **PHP defect, not reproduced:** *Import Customers → Confirm* aborts with "There is already an active transaction" whenever
   at least one row has to be **created** (`generate_customer_code()` opens its own transaction inside the importer's). Updates
   and skips work. Node completes the import (the code counter simply joins the importer's transaction).
+* **PHP defect, not reproduced:** *Import Orders (historical) → Confirm* aborts the same way (order/invoice/customer number generators open their own
+  transaction inside the importer's) as soon as one valid order has to be created. Node runs the whole import in one transaction and completes it
+  (tests: PHP aborts, Node succeeds).
 * Audit rows written by Node store JSON without PHP's `\/` escaping (identical once parsed).
