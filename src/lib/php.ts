@@ -19,8 +19,45 @@ export function toInt(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+const roundHelper = (v: number): number => (v >= 0 ? Math.floor(v + 0.5) : Math.ceil(v - 0.5));
+
+/**
+ * PHP 7 round($value, $places) (_php_math_round with pre-rounding), so money rounds exactly as the
+ * PHP app did — e.g. round(1.005, 2) === 1.01, which naive Math.round(x*100)/100 gets wrong.
+ */
+export function phpRound(value: number, places = 2): number {
+  if (!Number.isFinite(value) || value === 0) return value;
+  const precisionPlaces = 14 - Math.floor(Math.log10(Math.abs(value)));
+  const f1 = 10 ** Math.abs(places);
+  let tmp: number;
+  if (precisionPlaces > places && precisionPlaces - 15 < places) {
+    let usePrecision = precisionPlaces;
+    tmp = usePrecision >= 0 ? value * 10 ** usePrecision : value / 10 ** -usePrecision;
+    tmp = roundHelper(tmp);
+    usePrecision = Math.max(-4 * 15, places - usePrecision);
+    tmp = tmp / 10 ** Math.abs(usePrecision);
+  } else {
+    tmp = places >= 0 ? value * f1 : value / f1;
+    if (!Number.isFinite(tmp)) return value;
+  }
+  if (Math.abs(tmp) >= 1e15) return value;
+  tmp = roundHelper(tmp);
+  return places >= 0 ? tmp / f1 : tmp * f1;
+}
+
 /** PHP round(x, 2). */
-export const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+export const round2 = (n: number): number => phpRound(n, 2);
+
+/** PHP is_numeric() for request values. */
+export function isNumeric(v: unknown): boolean {
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (typeof v !== 'string') return false;
+  return /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(v);
+}
+
+/** PHP number_format($n, 2). */
+export const numberFormat2 = (n: number): string =>
+  phpRound(n, 2).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function simText(a: string, b: string): number {
   if (!a.length || !b.length) return 0;

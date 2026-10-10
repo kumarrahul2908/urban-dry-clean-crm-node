@@ -2,8 +2,9 @@ import type { Db } from '../db/pool.js';
 import type { AuditLog } from '../audit/auditLog.js';
 import { round2 } from '../lib/php.js';
 
-export class IdempotencyConflictError extends Error {}
-export class WalletError extends Error {}
+import { BusinessError, IdempotencyConflictError } from '../lib/errors.js';
+export { IdempotencyConflictError };
+export class WalletError extends BusinessError {}
 
 type TxnType = 'Deposit' | 'Redeem' | 'Refund' | 'Adjustment';
 
@@ -17,6 +18,11 @@ export interface WalletResult { success: true; balance: number; idempotent_repla
  */
 export class CustomerWallet {
   constructor(private readonly db: Db, private readonly audit: AuditLog) {}
+
+  /** Same wallet bound to another Db (e.g. an open transaction), so ledger writes join it. */
+  using(db: Db): CustomerWallet {
+    return new CustomerWallet(db, this.audit.using(db));
+  }
 
   deposit(customerId: number, amount: number, paymentMode: string | null = null, remarks: string | null = null, orderId: number | null = null, actor: number | null = null) {
     return this.apply(customerId, 'Deposit', 0, amount, { paymentMode, remarks, orderId, actor });

@@ -4,6 +4,11 @@ import type { Db } from '../db/pool.js';
 export class AuditLog {
   constructor(private readonly db: Db, private readonly log: (msg: string) => void = console.error) {}
 
+  /** Audit writes that join an open transaction (rolled back with it, like the single PDO connection in PHP). */
+  using(db: Db): AuditLog {
+    return new AuditLog(db, this.log);
+  }
+
   async record(p: {
     action: string;
     module: string;

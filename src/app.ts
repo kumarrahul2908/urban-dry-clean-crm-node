@@ -12,10 +12,15 @@ import { Crypto } from './lib/crypto.js';
 import { NoDefaultPriceListError, PricingEngine } from './services/pricingEngine.js';
 import { CustomerService } from './services/customerService.js';
 import { CustomerWallet } from './services/customerWallet.js';
+import { OrderFinance } from './services/orderFinance.js';
+import { OrderService } from './services/orderService.js';
+import { NotificationService } from './services/notificationService.js';
+import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
 import { ApiError } from './lib/http.js';
 import { registerMobileAuthRoutes } from './routes/mobile/auth.js';
 import { registerMobileCatalogRoutes } from './routes/mobile/catalog.js';
 import { registerMobileCustomerRoutes } from './routes/mobile/customers.js';
+import { registerMobileOrderRoutes } from './routes/mobile/orders.js';
 
 export interface Services {
   env: Env;
@@ -27,6 +32,9 @@ export interface Services {
   pricing: PricingEngine;
   customers: CustomerService;
   wallet: CustomerWallet;
+  orders: OrderService;
+  finance: OrderFinance;
+  notifications: NotificationService;
 }
 
 declare module 'fastify' {
@@ -39,10 +47,14 @@ declare module 'fastify' {
   }
 }
 
-export function buildServices(env: Env, db: Db): Services {
+export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHooks): Services {
   const limiter = new LoginRateLimiter(db, env.LOGIN_LOCKOUT_MINUTES);
   const auth = new AuthService(db, limiter, { maxLoginAttempts: env.MAX_LOGIN_ATTEMPTS, lockoutMinutes: env.LOGIN_LOCKOUT_MINUTES });
   const audit = new AuditLog(db);
+  const wallet = new CustomerWallet(db, audit);
+  const pricing = new PricingEngine(db);
+  const finance = new OrderFinance(db, audit);
+  const notifications = new NotificationService(db);
   return {
     env,
     db,
@@ -50,9 +62,12 @@ export function buildServices(env: Env, db: Db): Services {
     auth,
     apiAuth: new ApiAuth(db, auth, env.API_TOKEN_LIFETIME_DAYS),
     crypto: new Crypto(env.APP_SECRET_KEY),
-    pricing: new PricingEngine(db),
+    pricing,
     customers: new CustomerService(db, audit),
-    wallet: new CustomerWallet(db, audit),
+    wallet,
+    finance,
+    notifications,
+    orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
 
@@ -95,7 +110,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
     }
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status >= 400 && status < 500) {
-      return reply.status(status).send({ success: false, error: { code: 'invalid_request', message: 'Invalid request.' } });
+      return reply.status(status).send({ success: false, error: { code: 'invalid_request', message: status === 400 ? 'Invalid request payload.' : 'Invalid request.' } });
     }
     req.log.error(err);
     return reply.status(500).send({ success: false, error: { code: 'server_error', message: 'Something went wrong.' } });
@@ -108,5 +123,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileAuthRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileCatalogRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileCustomerRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileOrderRoutes, { prefix: '/api/mobile' });
   return app;
 }
