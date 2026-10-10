@@ -37,3 +37,13 @@ the same MySQL, then switch routes over phase by phase.
 `db/migrations/` holds the 7 migrations found in the PHP backup. The **base schema (users, roles,
 orders, …) is not in the repo** — it must come from a `mysqldump --no-data` of the live DB
 (see `db/schema/README`). Phase 2 will generate typed models from it.
+
+## Schema (added)
+`db/schema/schema.sql` = structure-only export (64 tables, no data) of the live test DB
+(MariaDB 11.8, phpMyAdmin dump, 10 Oct 2026). Load it into an empty database:
+```bash
+mariadb -e "CREATE DATABASE udc CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+mariadb udc < db/schema/schema.sql
+TEST_DB_NAME=udc TEST_DB_USER=... TEST_DB_PASS=... TEST_DB_PORT=3306 npm test   # also runs integration tests
+```
+Never commit data dumps (customers, password hashes, tokens, WhatsApp secrets).
