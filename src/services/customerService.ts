@@ -34,9 +34,9 @@ export async function checkCustomerDuplicate(db: Db, mobile: string, name: strin
   const nameNorm = name.trim().toLowerCase();
   for (const m of matches) {
     const mNorm = m.full_name.trim().toLowerCase();
-    if (nameNorm === mNorm) return { action: 'block' as const, reason: 'exact_name_match' as const, matches, matched_customer: m };
+    if (nameNorm === mNorm) return { action: 'block' as const, matches, matched_customer: m, reason: 'exact_name_match' as const };
     if (nameNorm !== '' && mNorm !== '' && similarTextPercent(nameNorm, mNorm) >= 85) {
-      return { action: 'block' as const, reason: 'similar_name_match' as const, matches, matched_customer: m };
+      return { action: 'block' as const, matches, matched_customer: m, reason: 'similar_name_match' as const };
     }
   }
   return { action: 'warn' as const, matches };

@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Services } from '../app.js';
 import { parseCookies, serializeCookie } from './cookies.js';
 import { Raw } from './html.js';
+import { formatDate, formatDatetime } from './format.js';
 import { numberFormat2 } from '../lib/php.js';
 import { todayIn } from '../lib/dates.js';
 import type { SessionData } from './session.js';
@@ -43,6 +44,9 @@ export class WebCtx {
   }
   /** format_currency() */
   money(amount: unknown): string { return `${this.symbol ?? 'Rs.'} ${numberFormat2(parseFloat(String(amount ?? '')) || 0)}`; }
+  /** format_date() / format_datetime() in APP_TIMEZONE */
+  date(v: unknown, fmt?: string): string { return formatDate(v, this.svc.env.APP_TIMEZONE, fmt); }
+  datetime(v: unknown, fmt?: string): string { return formatDatetime(v, this.svc.env.APP_TIMEZONE, fmt); }
   /** date('Y-m-d') in APP_TIMEZONE */
   get today(): string { return todayIn(this.svc.env.APP_TIMEZONE); }
 

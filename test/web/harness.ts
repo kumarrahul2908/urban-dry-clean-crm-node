@@ -118,8 +118,8 @@ export function webHarness() {
 }
 
 /** Makes two pages comparable: random tokens, comments and insignificant whitespace are removed. */
-export function normalizeHtml(s: string, appUrl: string): string {
-  return s
+export function normalizeHtml(s: string, appUrl: string, sortRows = false): string {
+  const out = s
     .replace(/[0-9a-f]{64}/g, 'TOKEN')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\s+/g, ' ')
@@ -127,11 +127,12 @@ export function normalizeHtml(s: string, appUrl: string): string {
     .replace(/\s+\/>/g, '/>')
     .trim()
     .replaceAll(appUrl, 'BASE');
+  return sortRows ? out.replace(/<tbody>([\s\S]*?)<\/tbody>/g, (_m, inner: string) => `<tbody>${(inner.match(/<tr[\s\S]*?<\/tr>/g) ?? [inner]).sort().join('')}</tbody>`) : out;
 }
 
 /** Fails with the first differing region (±160 chars) instead of dumping two whole pages. */
-export function expectSameHtml(got: { status: number; location: string | null; body: string }, want: { status: number; location: string | null; body: string }, appUrl: string, label = '') {
-  const g = normalizeHtml(got.body, appUrl), w = normalizeHtml(want.body, appUrl);
+export function expectSameHtml(got: { status: number; location: string | null; body: string }, want: { status: number; location: string | null; body: string }, appUrl: string, label = '', sortRows = false) {
+  const g = normalizeHtml(got.body, appUrl, sortRows), w = normalizeHtml(want.body, appUrl, sortRows);
   if (got.status !== want.status) throw new Error(`${label} status ${got.status} ≠ PHP ${want.status}`);
   if ((got.location ?? null) !== (want.location ?? null)) throw new Error(`${label} location ${got.location} ≠ PHP ${want.location}`);
   if (g === w) return;
