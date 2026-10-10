@@ -19,6 +19,8 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { LocalDiskStorage } from './storage/localDisk.js';
 import { PhotoService } from './services/photoService.js';
+import { LaundryGarmentService } from './services/laundryGarmentService.js';
+import { QcService } from './services/qcService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
 import { ApiError } from './lib/http.js';
@@ -30,6 +32,7 @@ import { registerMobileReportRoutes } from './routes/mobile/reports.js';
 import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
+import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 
 export interface Services {
   env: Env;
@@ -47,6 +50,8 @@ export interface Services {
   expenses: ExpenseService;
   storage: LocalDiskStorage;
   photos: PhotoService;
+  laundry: LaundryGarmentService;
+  qc: QcService;
 }
 
 declare module 'fastify' {
@@ -68,6 +73,7 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
   const finance = new OrderFinance(db, audit);
   const notifications = new NotificationService(db);
   const storage = new LocalDiskStorage(env.UPLOAD_DIR, env.APP_URL);
+  const laundry = new LaundryGarmentService(db, hooks);
   return {
     env,
     db,
@@ -83,6 +89,8 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     expenses: new ExpenseService(db, audit, env.APP_TIMEZONE),
     storage,
     photos: new PhotoService(db, audit, storage, env.PHOTO_RETENTION_DAYS),
+    laundry,
+    qc: new QcService(db, audit, laundry, notifications, hooks),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
 }
@@ -151,5 +159,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   return app;
 }

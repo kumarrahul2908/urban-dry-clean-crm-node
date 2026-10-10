@@ -69,7 +69,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
 
   async function buildDataset() {
     await resetAndSeed(db);
-    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage', 'garment.view', 'garment.create', 'garment.edit', 'garment.delete', 'garments.manage', 'garment_tags.view'];
+    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage', 'garment.view', 'garment.create', 'garment.edit', 'garment.delete', 'garments.manage', 'garment_tags.view', 'qc.manage', 'rework.manage', 'packing.manage', 'pickup.manage', 'delivery.manage', 'workshop.manage'];
     await db.execute(`INSERT INTO permissions (id, permission_key, module) VALUES ${perms.map((p, i) => `(${i + 1}, '${p}', 'x')`).join(',')}`);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (3, 'Super Admin'), (4, 'Workshop Staff'), (5, 'Nobody')");
     const rolePerms = [1, 3].flatMap((r) => perms.map((k, i) => ({ r, i: i + 1, k }))).filter((x) => !(x.r === 1 && ['garment.delete', 'garments.manage'].includes(x.k)));
@@ -119,6 +119,16 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute("INSERT INTO income (income_date, source, description, amount, payment_mode, created_by) VALUES (CURDATE(), 'Scrap', 'hangers', 300, 'Cash', 1), (CURDATE(), 'Scrap', 'boxes', 120.25, NULL, 3)");
     await db.execute("INSERT INTO notification_logs (customer_id, order_id, user_id, template_key, channel, message, status, is_read) VALUES (1, NULL, NULL, 'a', 'In-App', 'shared unread', 'Sent', 0), (1, NULL, 1, 'b', 'In-App', 'mine unread', 'Sent', 0), (2, NULL, 3, 'c', 'In-App', 'boss only', 'Sent', 0), (2, NULL, 1, 'd', 'In-App', 'mine read', 'Sent', 1), (NULL, NULL, NULL, 'e', 'WhatsApp', 'not in-app', 'Sent', 0)");
     await db.execute("INSERT INTO feedback (customer_id, order_id, rating, comments, status) VALUES (2, NULL, 4, 'ok', 'Reviewed'), (1, NULL, 1, 'bad', 'Resolved')");
+    // ---- operations data: items waiting at QC / in rework / ready; laundry garments at QC
+    await db.execute("UPDATE order_items SET item_status = 'QC' WHERE order_id = ? ", [o3]);          // o3: 2 items at QC
+    await db.execute("UPDATE order_items SET item_status = 'Rework' WHERE id = ?", [(await db.query<any>('SELECT MIN(id) AS i FROM order_items WHERE order_id = ?', [o2]))[0].i]);
+    await db.execute("UPDATE order_items SET item_status = 'Ready' WHERE order_id = ?", [o4]);
+    const rwItem = (await db.query<any>("SELECT id FROM order_items WHERE item_status = 'Rework' LIMIT 1"))[0].id;
+    await db.execute("INSERT INTO rework_records (order_item_id, reason, rework_date, status) VALUES (?, 'stain', CURDATE(), 'Pending')", [rwItem]);
+    const lgs = await db.query<any>('SELECT id FROM laundry_garments ORDER BY id');
+    for (const g of lgs) await db.execute("INSERT INTO garment_status_history (laundry_garment_id, previous_status, new_status, changed_by, changed_at, module) VALUES (?, 'Pending', 'QC', 1, NOW() - INTERVAL 1 HOUR, 'workshop')", [g.id]);
+    await db.execute("INSERT INTO rework_records (laundry_garment_id, reason, rework_date, status) VALUES (?, 'crease', CURDATE(), 'In Progress')", [lgs[0].id]);
+    await db.execute("INSERT INTO garment_status_history (laundry_garment_id, previous_status, new_status, changed_by, changed_at, module) VALUES (?, 'QC', 'Rework', 1, NOW(), 'qc')", [lgs[0].id]);
   }
   beforeAll(async () => {
     await buildDataset();
@@ -183,10 +193,14 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     return norm({
       feedback: await q('SELECT id, customer_id, order_id, rating, comments, status FROM feedback ORDER BY id'),
       garments: await q('SELECT * FROM garments ORDER BY id'),
+      items: await q('SELECT id, order_id, item_status FROM order_items ORDER BY id'),
+      qc: await q('SELECT id, order_item_id, laundry_garment_id, checked_by, result, reason, remarks FROM qc_records ORDER BY id'),
+      rework: await q('SELECT id, order_item_id, laundry_garment_id, qc_record_id, reason, rework_date, status FROM rework_records ORDER BY id'),
+      history: await q('SELECT id, order_item_id, laundry_garment_id, previous_status, new_status, changed_by, remarks, module FROM garment_status_history ORDER BY id'),
       expenses: await q('SELECT * FROM expenses ORDER BY id'),
       income: await q('SELECT * FROM income ORDER BY id'),
       notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
-      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments")  ORDER BY id'))
+      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items")  ORDER BY id'))
         .map((a: any) => ({ ...a, user_id: a.action === 'lookup' ? null : a.user_id, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
     });
   }
@@ -293,4 +307,48 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     for (const c of cs) await check(c);
     expect((await db.query<any>("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'lookup'"))[0].n).toBeGreaterThan(10);
   });
+
+  const G = (endpoint: string, query: Record<string, string> = {}, who: Who = 'admin'): Case => ({ name: endpoint, endpoint, query, who });
+
+  scenario('QC + rework + packing: queue, pass/fail, laundry batch sync, state guards', [
+    // fixture: items 4,5 (order 3) at QC; item 3 in Rework (rework #1 Pending); item 6 Ready; laundry garment 1 in Rework (rework #2 In Progress), garment 2 at QC
+    G('qc_queue'),
+    G('qc_queue', { status: 'QC', customer: 'Vip', urgent_only: '1' }),
+    P('qc_action', { action: 'pass', order_item_id: 4 }),
+    P('qc_action', { action: 'pass', order_item_id: 4 }),
+    P('qc_action', { action: 'fail', order_item_id: 5 }),
+    P('qc_action', { action: 'fail', order_item_id: 5, reason: ' <b>colour bleed</b> ', remarks: 'check dye' }),
+    P('qc_action', { action: 'pass', order_item_id: 999 }),
+    P('qc_action', { action: 'pass', order_item_id: 3 }),
+    P('qc_action', { action: 'zap', order_item_id: 4 }),
+    P('qc_action', { action: 'pass', garment_type: 'weird', order_item_id: 4 }),
+    P('qc_action', { action: 'pass', order_item_id: 0 }),
+    P('qc_action', { action: 'fail', order_item_id: 6, reason: 'x'.repeat(501) }),
+    P('qc_action', { action: 'pass', garment_type: 'laundry', laundry_garment_id: 2, remarks: 'ok' }),
+    P('qc_action', { action: 'pass', garment_type: 'laundry', laundry_garment_id: 1 }),
+    P('qc_action', { action: 'fail', garment_type: 'laundry', laundry_garment_id: 2, reason: 'again' }),
+    P('qc_action', { action: 'pass', garment_type: 'laundry', laundry_garment_id: 999 }),
+    G('qc_queue'),
+    G('rework_list'),
+    P('rework_action', { action: 'start', rework_id: 1 }),
+    P('rework_action', { action: 'start', rework_id: 1 }),
+    P('rework_action', { action: 'complete', rework_id: 1 }),
+    P('rework_action', { action: 'complete', rework_id: 2 }),
+    P('rework_action', { action: 'complete', rework_id: 3 }),
+    P('rework_action', { action: 'start', rework_id: 3 }),
+    P('rework_action', { action: 'complete', rework_id: 3 }),
+    P('rework_action', { action: 'complete', rework_id: 999 }),
+    P('rework_action', { action: 'nope', rework_id: 1 }),
+    G('rework_list'),
+    G('packing_queue'),
+    G('packing_queue', { order: 'UDC', customer: 'Plain' }),
+    P('packing_action', { order_item_id: 6 }),
+    P('packing_action', { order_item_id: 6 }),
+    P('packing_action', { order_item_id: 4 }),
+    P('packing_action', { order_item_id: 1 }),
+    P('packing_action', { order_item_id: 0 }),
+    G('packing_queue'),
+    G('qc_queue', {}, 'viewer'),
+    P('qc_action', { action: 'pass', order_item_id: 3 }, 'viewer'),
+  ]);
 });
