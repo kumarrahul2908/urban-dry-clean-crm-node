@@ -3,6 +3,7 @@ import { buildApp, buildServices } from '../src/app.js';
 import { loadEnv } from '../src/config/env.js';
 import { createPool } from '../src/db/pool.js';
 import { hashPassword } from '../src/lib/password.js';
+import { resetTables } from './helpers.js';
 
 // Runs only when a database with db/schema/schema.sql loaded is available:
 //   TEST_DB_NAME=... TEST_DB_USER=... TEST_DB_PASS=... TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=3307 npm test
@@ -13,8 +14,8 @@ describe.skipIf(!enabled)('integration (real MariaDB schema)', () => {
     NODE_ENV: 'test',
     DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1',
     DB_PORT: process.env.TEST_DB_PORT ?? '3306',
-    DB_NAME: process.env.TEST_DB_NAME ?? '',
-    DB_USER: process.env.TEST_DB_USER ?? '',
+    DB_NAME: process.env.TEST_DB_NAME || 'unused',
+    DB_USER: process.env.TEST_DB_USER || 'unused',
     DB_PASS: process.env.TEST_DB_PASS ?? '',
     APP_SECRET_KEY: 'k',
     MAX_LOGIN_ATTEMPTS: '3',
@@ -23,8 +24,7 @@ describe.skipIf(!enabled)('integration (real MariaDB schema)', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeAll(async () => {
-    for (const t of ['api_tokens', 'login_ip_attempts', 'audit_logs', 'users', 'role_permissions', 'permissions', 'roles', 'stores', 'organizations'])
-      await db.execute(`DELETE FROM ${t}`);
+    await resetTables(db, ['api_tokens', 'login_ip_attempts', 'audit_logs', 'users', 'role_permissions', 'permissions', 'roles', 'stores', 'organizations']);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (1, 'Admin')");
     await db.execute("INSERT INTO permissions (id, permission_key, module) VALUES (1, 'orders.view', 'orders')");
     await db.execute('INSERT INTO role_permissions (role_id, permission_id) VALUES (1, 1)');

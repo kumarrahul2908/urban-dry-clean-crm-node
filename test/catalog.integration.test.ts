@@ -3,6 +3,7 @@ import { buildApp, buildServices } from '../src/app.js';
 import { loadEnv } from '../src/config/env.js';
 import { createPool } from '../src/db/pool.js';
 import { hashPassword } from '../src/lib/password.js';
+import { resetTables } from './helpers.js';
 
 const enabled = !!process.env.TEST_DB_NAME;
 
@@ -11,8 +12,8 @@ describe.skipIf(!enabled)('catalog + rates (real MariaDB schema)', () => {
     NODE_ENV: 'test',
     DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1',
     DB_PORT: process.env.TEST_DB_PORT ?? '3306',
-    DB_NAME: process.env.TEST_DB_NAME ?? '',
-    DB_USER: process.env.TEST_DB_USER ?? '',
+    DB_NAME: process.env.TEST_DB_NAME || 'unused',
+    DB_USER: process.env.TEST_DB_USER || 'unused',
     DB_PASS: process.env.TEST_DB_PASS ?? '',
     APP_SECRET_KEY: 'k',
     APP_URL: 'https://shop.example',
@@ -22,10 +23,7 @@ describe.skipIf(!enabled)('catalog + rates (real MariaDB schema)', () => {
   let headers: { authorization: string };
 
   beforeAll(async () => {
-    await db.execute('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of ['api_tokens', 'users', 'role_permissions', 'permissions', 'roles', 'price_list_items', 'price_list_service_rates', 'garments', 'services', 'categories', 'customers', 'price_lists', 'taxes', 'settings', 'urgent_levels'])
-      await db.execute(`DELETE FROM ${t}`);
-    await db.execute('SET FOREIGN_KEY_CHECKS = 1');
+    await resetTables(db, ['api_tokens', 'users', 'role_permissions', 'permissions', 'roles', 'price_list_items', 'price_list_service_rates', 'garments', 'services', 'categories', 'customers', 'price_lists', 'taxes', 'settings', 'urgent_levels']);
 
     await db.execute("INSERT INTO roles (id, role_name) VALUES (1, 'Admin')");
     await db.execute("INSERT INTO permissions (id, permission_key, module) VALUES (1, 'pos.create', 'pos'), (2, 'garments.manage', 'garments')");

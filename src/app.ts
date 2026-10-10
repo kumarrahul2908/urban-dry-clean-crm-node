@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import formbody from '@fastify/formbody';
 import type { Env } from './config/env.js';
 import type { Db } from './db/pool.js';
 import { AuditLog } from './audit/auditLog.js';
@@ -9,9 +10,12 @@ import { AuthService } from './auth/authService.js';
 import { ApiAuth, type UserContext } from './auth/apiAuth.js';
 import { Crypto } from './lib/crypto.js';
 import { NoDefaultPriceListError, PricingEngine } from './services/pricingEngine.js';
+import { CustomerService } from './services/customerService.js';
+import { CustomerWallet } from './services/customerWallet.js';
 import { ApiError } from './lib/http.js';
 import { registerMobileAuthRoutes } from './routes/mobile/auth.js';
 import { registerMobileCatalogRoutes } from './routes/mobile/catalog.js';
+import { registerMobileCustomerRoutes } from './routes/mobile/customers.js';
 
 export interface Services {
   env: Env;
@@ -21,6 +25,8 @@ export interface Services {
   apiAuth: ApiAuth;
   crypto: Crypto;
   pricing: PricingEngine;
+  customers: CustomerService;
+  wallet: CustomerWallet;
 }
 
 declare module 'fastify' {
@@ -36,14 +42,17 @@ declare module 'fastify' {
 export function buildServices(env: Env, db: Db): Services {
   const limiter = new LoginRateLimiter(db, env.LOGIN_LOCKOUT_MINUTES);
   const auth = new AuthService(db, limiter, { maxLoginAttempts: env.MAX_LOGIN_ATTEMPTS, lockoutMinutes: env.LOGIN_LOCKOUT_MINUTES });
+  const audit = new AuditLog(db);
   return {
     env,
     db,
-    audit: new AuditLog(db),
+    audit,
     auth,
     apiAuth: new ApiAuth(db, auth, env.API_TOKEN_LIFETIME_DAYS),
     crypto: new Crypto(env.APP_SECRET_KEY),
     pricing: new PricingEngine(db),
+    customers: new CustomerService(db, audit),
+    wallet: new CustomerWallet(db, audit),
   };
 }
 
@@ -61,6 +70,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
 
   await app.register(helmet);
   await app.register(cors, { origin: false });
+  await app.register(formbody); // PHP's $_POST fallback for form-encoded bodies
 
   app.decorate('requireToken', async (req: FastifyRequest) => {
     const token = bearerToken(req);
@@ -97,5 +107,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   app.get('/health', async () => ({ status: 'ok' }));
   await app.register(registerMobileAuthRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileCatalogRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileCustomerRoutes, { prefix: '/api/mobile' });
   return app;
 }

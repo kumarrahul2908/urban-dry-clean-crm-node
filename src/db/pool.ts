@@ -5,6 +5,8 @@ import type { Env } from '../config/env.js';
 export interface Db {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   execute(sql: string, params?: unknown[]): Promise<{ affectedRows: number; insertId: number }>;
+  /** Runs fn on one connection inside BEGIN/COMMIT (ROLLBACK if fn throws). */
+  tx<T>(fn: (db: Db) => Promise<T>): Promise<T>;
 }
 
 export function createPool(env: Env): { db: Db; close: () => Promise<void> } {
@@ -22,16 +24,33 @@ export function createPool(env: Env): { db: Db; close: () => Promise<void> } {
     namedPlaceholders: false,
   });
 
-  const db: Db = {
+  type Runner = Pick<mysql.Pool, 'query'>;
+  const wrap = (runner: Runner, inTx: boolean): Db => ({
     async query<T>(sql: string, params: unknown[] = []) {
-      const [rows] = await pool.query(sql, params);
+      const [rows] = await runner.query(sql, params);
       return rows as T[];
     },
     async execute(sql: string, params: unknown[] = []) {
-      const [res] = await pool.query(sql, params);
+      const [res] = await runner.query(sql, params);
       const r = res as mysql.ResultSetHeader;
       return { affectedRows: r.affectedRows, insertId: r.insertId };
     },
-  };
+    async tx<T>(fn: (db: Db) => Promise<T>): Promise<T> {
+      if (inTx) return fn(this); // already inside a transaction: join it
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        const out = await fn(wrap(conn, true));
+        await conn.commit();
+        return out;
+      } catch (e) {
+        await conn.rollback().catch(() => {});
+        throw e;
+      } finally {
+        conn.release();
+      }
+    },
+  });
+  const db = wrap(pool, false);
   return { db, close: () => pool.end() };
 }

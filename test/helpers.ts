@@ -18,6 +18,18 @@ export function fakeDb(handlers: [RegExp, Handler][]) {
       const r = find(sql, params);
       return r && !Array.isArray(r) ? r : { affectedRows: 1, insertId: 1 };
     },
+    async tx(fn) {
+      return fn(db);
+    },
   };
   return { db, calls };
+}
+
+/** Empties tables on ONE connection with FK checks off (pool.query alone may hop connections). */
+export async function resetTables(db: Db, tables: string[]): Promise<void> {
+  await db.tx(async (t) => {
+    await t.execute('SET FOREIGN_KEY_CHECKS = 0');
+    for (const tbl of tables) await t.execute(`DELETE FROM ${tbl}`);
+    await t.execute('SET FOREIGN_KEY_CHECKS = 1');
+  });
 }
