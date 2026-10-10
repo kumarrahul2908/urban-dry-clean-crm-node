@@ -49,3 +49,18 @@ export function formatDateOnly(v: unknown): string {
   if (!m) return '';
   return `${m[3]}-${dayMon(s).slice(3)}-${m[1]}`;
 }
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const parts = (d: string) => d.split('-').map(Number) as [number, number, number];
+/** PHP date('jMy') of a YYYY-MM-DD, e.g. 5Oct26 */
+export const fmtJMy = (d: string) => { const [y, m, dd] = parts(d); return `${dd}${MON[m - 1]}${String(y).slice(-2)}`; };
+/** PHP date('My') e.g. Oct26 */
+export const fmtMy = (d: string) => { const [y, m] = parts(d); return `${MON[m - 1]}${String(y).slice(-2)}`; };
+/** PHP date('j') */
+export const fmtJ = (d: string) => String(parts(d)[2]);
+/** PHP date('Ym') */
+export const fmtYm = (d: string) => d.slice(0, 7).replace('-', '');
+/** Whole days between two YYYY-MM-DD dates (a - b). */
+export const diffDays = (a: string, b: string) => Math.floor((Date.UTC(...(parts(a).map((v, i) => (i === 1 ? v - 1 : v)) as [number, number, number])) - Date.UTC(...(parts(b).map((v, i) => (i === 1 ? v - 1 : v)) as [number, number, number]))) / 86400000);
+/** PHP date('H:i:s') in tz */
+export const timeIn = (tz: string, now: Date = new Date()) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);

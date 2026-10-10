@@ -21,6 +21,8 @@ import { LocalDiskStorage } from './storage/localDisk.js';
 import { PhotoService } from './services/photoService.js';
 import { LaundryGarmentService } from './services/laundryGarmentService.js';
 import { FulfillmentService } from './services/fulfillmentService.js';
+import { WorkshopService } from './services/workshopService.js';
+import { WorkshopInvoice } from './services/workshopInvoice.js';
 import { QcService } from './services/qcService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
@@ -35,6 +37,7 @@ import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
+import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
 
 export interface Services {
   env: Env;
@@ -55,6 +58,8 @@ export interface Services {
   laundry: LaundryGarmentService;
   qc: QcService;
   fulfillment: FulfillmentService;
+  workshop: WorkshopService;
+  workshopInvoice: WorkshopInvoice;
   hooks: OrderHooks;
 }
 
@@ -78,6 +83,7 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
   const notifications = new NotificationService(db);
   const storage = new LocalDiskStorage(env.UPLOAD_DIR, env.APP_URL);
   const laundry = new LaundryGarmentService(db, hooks);
+  const workshop = new WorkshopService(db, audit);
   return {
     env,
     db,
@@ -96,6 +102,8 @@ export function buildServices(env: Env, db: Db, hooks: OrderHooks = noopOrderHoo
     laundry,
     qc: new QcService(db, audit, laundry, notifications, hooks),
     fulfillment: new FulfillmentService(db, audit, notifications),
+    workshop,
+    workshopInvoice: new WorkshopInvoice(db, audit, workshop, env.APP_TIMEZONE),
     hooks,
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };
@@ -167,5 +175,6 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });
   return app;
 }

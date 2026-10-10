@@ -15,7 +15,7 @@ import { resetAndSeed } from './helpers.js';
 const PHP_APP = process.env.PARITY_PHP_APP;
 const enabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
 
-const TOKENS = { admin: 'a'.repeat(64), boss: 'b'.repeat(64), ws: 'c'.repeat(64), viewer: 'd'.repeat(64), driver: 'e'.repeat(64) } as const;
+const TOKENS = { admin: 'a'.repeat(64), boss: 'b'.repeat(64), ws: 'c'.repeat(64), viewer: 'd'.repeat(64), driver: 'e'.repeat(64), wstaff: 'f'.repeat(64), orphan: '9'.repeat(64) } as const;
 type Who = keyof typeof TOKENS;
 interface Case { name: string; endpoint: string; who?: Who; method?: 'GET' | 'POST'; query?: Record<string, string>; body?: unknown }
 
@@ -69,7 +69,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
 
   async function buildDataset() {
     await resetAndSeed(db);
-    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage', 'garment.view', 'garment.create', 'garment.edit', 'garment.delete', 'garments.manage', 'garment_tags.view', 'qc.manage', 'rework.manage', 'packing.manage', 'pickup.manage', 'delivery.manage', 'workshop.manage'];
+    const perms = ['dashboard.view', 'reports.view', 'payments.view', 'payments.collect', 'accounts.view', 'customers.view', 'audit.view', 'pos.create', 'orders.view', 'feedback.manage', 'expenses.manage', 'notifications.manage', 'garment.view', 'garment.create', 'garment.edit', 'garment.delete', 'garments.manage', 'garment_tags.view', 'qc.manage', 'rework.manage', 'packing.manage', 'pickup.manage', 'delivery.manage', 'workshop.manage', 'workshop.billing'];
     await db.execute(`INSERT INTO permissions (id, permission_key, module) VALUES ${perms.map((p, i) => `(${i + 1}, '${p}', 'x')`).join(',')}`);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (3, 'Super Admin'), (4, 'Workshop Staff'), (5, 'Nobody')");
     const rolePerms = [1, 3].flatMap((r) => perms.map((k, i) => ({ r, i: i + 1, k }))).filter((x) => !(x.r === 1 && ['garment.delete', 'garments.manage'].includes(x.k)));
@@ -81,6 +81,11 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (6, 6, 'Driver', 'driver', 'x', 1, 1)");
     await db.execute("INSERT INTO role_permissions (role_id, permission_id) SELECT 6, id FROM permissions WHERE permission_key IN ('delivery.manage')");
     await tok(6, TOKENS.driver);
+    await db.execute("INSERT INTO workshops (id, workshop_name, commission_workshop_percent, is_active, invoice_prefix, invoice_next_number, payment_terms_days, state_code) VALUES (1, 'Alpha Cleaners', 60.00, 1, 'ALP', 1, 15, '07'), (2, 'Beta Works', 50.00, 1, NULL, 7, 0, NULL), (3, 'Closed', 50.00, 0, NULL, 1, 0, NULL)");
+    await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, workshop_id, is_active) VALUES (7, 4, 'Alpha Staff', 'wstaff', 'x', NULL, 1, 1), (8, 4, 'Orphan Staff', 'orphan', 'x', NULL, NULL, 1)");
+    await db.execute("INSERT INTO role_permissions (role_id, permission_id) SELECT 4, id FROM permissions WHERE permission_key IN ('workshop.manage','workshop.billing')");
+    await tok(7, TOKENS.wstaff);
+    await tok(8, TOKENS.orphan);
     await tok(1, TOKENS.admin); await tok(3, TOKENS.boss); await tok(4, TOKENS.ws); await tok(5, TOKENS.viewer);
     await db.execute('UPDATE users SET password_hash = ?', [await hashPassword('x')]);
 
@@ -190,7 +195,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
   for (const c of cases) it(c.name, async () => { await check(c); });
 
   // ---- write endpoints: same dataset, same calls, compare responses AND resulting rows ----------------
-  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at']);
+  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at', 'paid_at']);
   const strip = (v: any): any => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !TIME_KEYS.has(k)).map(([k, x]) => [k, strip(x)])) : v);
   async function state() {
     const q = (sql: string) => db.query<any>(sql).then((r) => r.map(strip));
@@ -203,11 +208,17 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       pickups: await q('SELECT id, pickup_number, customer_id, order_id, address, area, pincode, pickup_date, pickup_time, garment_count, notes, driver_id, status, created_by FROM pickup_orders ORDER BY id'),
       deliveries: await q('SELECT id, delivery_number, order_id, customer_id, phone, address, amount_due, delivery_date, time_slot, driver_id, status, payment_collected, remarks, created_by FROM delivery_orders ORDER BY id'),
       orderStatus: await q('SELECT id, status_id FROM orders ORDER BY id'),
+      wchallans: await q('SELECT id, challan_number, workshop_id, remarks, created_by FROM workshop_challans ORDER BY id'),
+      witems: await q('SELECT id, challan_id, order_item_id, laundry_garment_id, status, remarks FROM workshop_items ORDER BY id'),
+      bills: await q('SELECT id, bill_number, store_id, is_combined, workshop_id, period_start, period_end, invoice_date, due_date, terms_label, subject, item_count, total_value, share_percent, gst_mode, gst_rate, gst_amount, workshop_share, store_share, grand_total, amount_paid, status, payment_type_id, reference_no, paid_by, created_by, snapshot_json FROM workshop_bills ORDER BY id'),
+      billItems: await q('SELECT id, bill_id, order_item_id, item_value FROM workshop_bill_items ORDER BY id'),
+      billPayments: await q('SELECT id, bill_id, amount, payment_type_id, reference_no, paid_on, notes, received_by FROM workshop_bill_payments ORDER BY id'),
+      workshopsCounter: await q('SELECT id, invoice_next_number FROM workshops ORDER BY id'),
       history: await q('SELECT id, order_item_id, laundry_garment_id, previous_status, new_status, changed_by, remarks, module FROM garment_status_history ORDER BY id'),
       expenses: await q('SELECT * FROM expenses ORDER BY id'),
       income: await q('SELECT * FROM income ORDER BY id'),
       notifications: await q('SELECT id, user_id, template_key, channel, message, is_read FROM notification_logs ORDER BY id'),
-      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items","pickup_orders","delivery_orders")  ORDER BY id'))
+      audit: (await q('SELECT user_id, action, module, record_id, old_value, new_value FROM audit_logs WHERE module IN ("feedback","expenses","income","garments","qc_records","rework_records","order_items","pickup_orders","delivery_orders","workshop_challans","workshop_items","workshop_bills")  ORDER BY id'))
         .map((a: any) => ({ ...a, user_id: a.action === 'lookup' ? null : a.user_id, old_value: a.old_value ? strip(JSON.parse(a.old_value)) : null, new_value: a.new_value ? strip(JSON.parse(a.new_value)) : null })),
     });
   }
@@ -422,4 +433,108 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     G('pickup_list', {}, 'viewer'),
     G('my_deliveries_list', {}, 'viewer'),
   ], prepFulfillment);
+
+  const prepWorkshop = async () => {
+    // pending items (order 1), items already at the workshop in various states (orders 3-4), laundry garment 1 sent, 2 pending
+    await db.execute("UPDATE order_items SET item_status = 'Pending' WHERE id IN (1, 2, 3)");
+    await db.execute("UPDATE order_items SET item_status = 'Workshop' WHERE id = 4");
+    await db.execute("UPDATE order_items SET item_status = 'Processing' WHERE id = 5");
+    await db.execute("UPDATE order_items SET item_status = 'Workshop' WHERE id = 6");
+    await db.execute("DELETE FROM garment_status_history");
+    await db.execute("INSERT INTO workshop_challans (id, challan_number, workshop_id, challan_date, created_by) VALUES (1, 'CH-000001', 1, NOW(), 1), (2, 'CH-000002', 2, NOW(), 1)");
+    await db.execute("INSERT INTO workshop_items (id, challan_id, order_item_id, laundry_garment_id, status, sent_at) VALUES (1, 1, 4, NULL, 'Sent', NOW()), (2, 1, 5, NULL, 'Processing', NOW()), (3, 2, 6, NULL, 'Received', NOW()), (4, 1, NULL, 1, 'Sent', NOW())");
+    await db.execute("INSERT INTO garment_status_history (order_item_id, previous_status, new_status, changed_by, changed_at, module) VALUES (4, 'Pending', 'Workshop', 1, NOW() - INTERVAL 1 HOUR, 'workshop'), (5, 'Workshop', 'Processing', 1, NOW() - INTERVAL 1 HOUR, 'workshop')");
+    await db.execute("INSERT INTO garment_status_history (laundry_garment_id, previous_status, new_status, changed_by, changed_at, module) VALUES (1, 'Pending', 'Workshop', 1, NOW() - INTERVAL 1 HOUR, 'workshop')");
+    await db.execute("UPDATE settings SET setting_value = setting_value WHERE 1=0");
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_prefix', 'CH-') ON DUPLICATE KEY UPDATE setting_value = 'CH-'");
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_prefix_counter', '2') ON DUPLICATE KEY UPDATE setting_value = '2'");
+  };
+  const yday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const WA = (action: string, extra: Record<string, unknown> = {}, who: Who = 'admin') => P('workshop_action', { action, ...extra }, who);
+  scenario('workshop: queue, challans, item lifecycle, schedule, report, billing + permissions', [
+    G('workshop_queue'),
+    G('workshop_queue', { status: 'Workshop', garment: 'Suit', customer: 'Vip', urgent_only: '1', due_date: today }),
+    G('workshop_queue', { status: 'Bogus' }),
+    G('workshop_queue', { due_date: 'x' }),
+    G('workshop_queue', {}, 'wstaff'),
+    G('workshop_queue', { customer: 'Plain' }, 'wstaff'),
+    G('workshop_schedule'),
+    G('workshop_schedule', {}, 'wstaff'),
+    G('workshop_report'),
+    G('workshop_report', { period: '15days', store_id: '1' }),
+    G('workshop_report', { period: 'custom', from: yday, to: today }, 'wstaff'),
+    G('workshop_report', { period: 'zzz' }),
+    // challans
+    WA('create_challan', { workshop_id: 1, item_ids: [1, 2], remarks: ' <b>urgent</b> ' }),
+    WA('create_challan', { workshop_id: 1, item_ids: [1] }),
+    WA('create_challan', { workshop_id: 3, item_ids: [3] }),
+    WA('create_challan', { workshop_id: 2, item_ids: [999] }),
+    WA('create_challan', { workshop_id: 2, item_ids: [] }),
+    WA('create_challan', { workshop_id: 2, item_ids: [3], remarks: 'x'.repeat(501) }),
+    WA('create_challan', { workshop_id: 2, item_ids: [3] }, 'wstaff'),
+    WA('create_laundry_challan', { workshop_id: 2, laundry_garment_ids: [2], remarks: 'wash' }),
+    WA('create_laundry_challan', { workshop_id: 2, laundry_garment_ids: [999] }),
+    // item lifecycle (workshop items: 1 Sent, 2 Processing, 3 Received, 4 laundry Sent, then new ones)
+    WA('start_processing', { workshop_item_id: 1 }),
+    WA('start_processing', { workshop_item_id: 1 }),
+    WA('complete_processing', { workshop_item_id: 1, remarks: 'all done' }),
+    WA('complete_processing', { workshop_item_id: 2 }),
+    WA('return_to_store', { workshop_item_id: 1 }),
+    WA('return_to_store', { workshop_item_id: 3 }),
+    WA('accept', { workshop_item_id: 3, remarks: 'ok' }),
+    WA('accept', { workshop_item_id: 3 }),
+    WA('mark_unprocessed', { workshop_item_id: 4 }),
+    WA('mark_unprocessed', { workshop_item_id: 4, remarks: 'ab' }),
+    WA('mark_unprocessed', { workshop_item_id: 4, remarks: 'torn beyond repair' }),
+    WA('mark_unprocessed', { workshop_item_id: 4, remarks: 'again' }),
+    WA('resolve_unprocessed', { workshop_item_id: 4 }),
+    WA('resolve_unprocessed', { workshop_item_id: 4 }),
+    WA('start_processing', { workshop_item_id: 4 }, 'wstaff'),
+    WA('start_processing', { workshop_item_id: 3 }, 'wstaff'),
+    WA('store_receive', { workshop_item_id: 1 }),
+    WA('store_receive', { workshop_item_id: 2 }),
+    WA('store_receive', { workshop_item_id: 999 }),
+    WA('start_processing', { workshop_item_id: 0 }),
+    WA('explode', { workshop_item_id: 1 }),
+    G('workshop_queue'),
+    G('workshop_schedule'),
+    // billing
+    G('workshop_billing_list'),
+    G('workshop_billing_list', {}, 'wstaff'),
+    G('workshop_billing_list', {}, 'viewer'),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 1, from: yday, to: today }),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 1, from: yday, to: today }),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 2, from: yday, to: today }),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 1, from: today, to: yday }),
+    P('workshop_billing_generate', { store_id: 99, workshop_id: 1, from: yday, to: today }),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 9, from: yday, to: today }),
+    P('workshop_billing_generate', { workshop_id: 1 }),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 2, from: yday, to: today }, 'wstaff'),
+    P('workshop_billing_generate', { store_id: 1, workshop_id: 2, from: yday, to: today }, 'viewer'),
+    G('workshop_billing_list'),
+    G('workshop_billing_list', { status: 'Unpaid' }),
+    G('workshop_billing_detail', { id: '1' }),
+    G('workshop_billing_detail', { id: '1' }, 'wstaff'),
+    G('workshop_billing_detail', { id: '99' }),
+    G('workshop_billing_detail', {}),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 1, amount: 10, reference_no: 'R1' }),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 9, amount: 10 }),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 1, amount: 1000000 }),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 99, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 0, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }, 'viewer'),
+    G('workshop_billing_detail', { id: '1' }),
+    G('workshop_billing_list', { status: 'Paid' }),
+  ], prepWorkshop);
+
+  it('workshop staff not linked to a workshop sees nothing (deliberate: PHP showed every workshop)', async () => {
+    await buildDataset();
+    await prepWorkshop();
+    const r = await runNode({ name: 'q', endpoint: 'workshop_queue', who: 'orphan' });
+    expect(r.status).toBe(403);
+    expect((await runNode({ name: 's', endpoint: 'workshop_schedule', who: 'orphan' })).status).toBe(403);
+    expect((await runNode({ name: 'b', endpoint: 'workshop_billing_list', who: 'orphan' })).body.data.bills).toEqual([]);
+  });
 });
