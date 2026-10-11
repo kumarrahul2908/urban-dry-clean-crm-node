@@ -8,6 +8,9 @@ import { registerDashboardPages } from './pages/dashboard.js';
 import { registerCustomerPages } from './pages/customers.js';
 import { registerCustomerPortPages } from './pages/customerPorts.js';
 import { registerDailyDashboard } from './pages/dailyDashboard.js';
+import { registerAccountPages } from './pages/accounts.js';
+import { registerPosPages } from './pages/pos.js';
+import { registerPaymentPages } from './pages/payments.js';
 import { registerOrderPortPages } from './pages/orderPorts.js';
 import { registerPosApis } from './pages/posApis.js';
 import { registerOrderPages } from './pages/orders.js';
@@ -40,6 +43,9 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerCustomerPortPages(app);
   registerOrderPages(app);
   registerOrderPortPages(app);
+  registerPaymentPages(app);
+  registerPosPages(app);
+  registerAccountPages(app);
   registerPosApis(app);
 
   // api/set_active_store.php

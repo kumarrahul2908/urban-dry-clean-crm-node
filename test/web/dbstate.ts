@@ -41,6 +41,7 @@ const TS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 function norm(v: unknown): unknown {
   if (typeof v === 'string') {
     if (TS.test(v)) return 'TS';
+    if (/^[0-9a-f]{32}$/.test(v) || /^[0-9a-f]{64}$/.test(v)) return 'HEX'; // random tokens (qr_token …)
     if (/^[[{]/.test(v)) { try { return normObj(JSON.parse(v)); } catch { return v; } }
     return v;
   }

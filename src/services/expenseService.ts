@@ -72,6 +72,33 @@ export class ExpenseService {
     };
   }
 
+  async find(type: EntryType, id: number): Promise<Raw | null> {
+    const [r] = await this.db.query<Raw>(type === 'expense' ? 'SELECT * FROM expenses WHERE id = ?' : 'SELECT * FROM income WHERE id = ?', [id]);
+    return r ?? null;
+  }
+
+  async saveCategory(id: number | null, nameIn: string, active: boolean | null, userId: number, ip: string | null = null): Promise<{ success: boolean; id?: number; errors: string[] }> {
+    const name = nameIn.trim();
+    if ((id === null || name !== '') && (name === '' || [...name].length > 100)) return { success: false, errors: ['Category name is required (max 100 characters).'] };
+    try {
+      if (id === null) {
+        const ins = await this.db.execute('INSERT INTO expense_categories (category_name, is_active) VALUES (?, 1)', [name]);
+        await this.audit.record({ action: 'create', module: 'expense_categories', recordId: String(ins.insertId), newValue: { category_name: name }, userId, ip });
+        return { success: true, id: ins.insertId, errors: [] };
+      }
+      const [old] = await this.db.query<Raw>('SELECT * FROM expense_categories WHERE id = ?', [id]);
+      if (!old) return { success: false, errors: ['Category not found.'] };
+      const next = { category_name: name !== '' ? name : old.category_name, is_active: active === null ? Number(old.is_active) : (active ? 1 : 0) };
+      if (next.category_name === old.category_name && next.is_active === Number(old.is_active)) return { success: true, id, errors: [] };
+      await this.db.execute('UPDATE expense_categories SET category_name = ?, is_active = ? WHERE id = ?', [next.category_name, next.is_active, id]);
+      await this.audit.record({ action: 'edit', module: 'expense_categories', recordId: String(id), oldValue: { category_name: old.category_name, is_active: Number(old.is_active) }, newValue: next, userId, ip });
+      return { success: true, id, errors: [] };
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ER_DUP_ENTRY') return { success: false, errors: ['A category with that name already exists.'] };
+      throw e;
+    }
+  }
+
   private async validate(type: EntryType, input: Raw) {
     const errors: string[] = [];
     const str = (k: string, max: number) => chars(String(typeof input[k] === 'object' || input[k] === undefined || input[k] === null ? '' : input[k]).trim(), max);

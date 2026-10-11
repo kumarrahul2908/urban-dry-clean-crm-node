@@ -9,7 +9,7 @@ const num = (v: unknown) => parseFloat(String(v ?? "")) || 0;
 
 /** Web (session) POS lookup APIs: api/garments_for_pos.php, pos_get_rate.php, pos_get_universal_rate.php. */
 export function registerPosApis(app: FastifyInstance) {
-  const { db, pricing } = app.services;
+  const { db, pricing, wallet } = app.services;
   const json = (d: unknown, status = 200) => new WebText(jsonEncode(d), status, 'application/json');
 
   webPage(app, '/api/garments_for_pos', { auth: 'pos.create', methods: ['GET'] }, async (ctx, req) => {
@@ -75,6 +75,36 @@ export function registerPosApis(app: FastifyInstance) {
     return json({
       success: true, weight_rate: num(rate.weight_rate), min_weight_charge: rate.min_weight_charge !== null ? num(rate.min_weight_charge) : null,
       tax_name: rate.tax_name, tax_percent: num(rate.tax_percent ?? 0) || 0, source_list_type: rate.list_type, billing_unit: service.billing_unit, service_name: service.service_name,
+    });
+  });
+
+  webPage(app, '/api/customer_pos_summary', { auth: 'pos.create', methods: ['GET'] }, async (_ctx, req) => {
+    const customerId = int((req.query as Record<string, unknown>).customer_id);
+    if (!customerId) return json({ success: false, message: 'Customer required.' }, 400);
+    const customer = (await db.query<Row>('SELECT c.*, pl.price_list_name FROM customers c LEFT JOIN price_lists pl ON pl.id = c.price_list_id WHERE c.id = ? AND c.is_active = 1', [customerId]))[0];
+    if (!customer) return json({ success: false, message: 'Customer not found or inactive.' }, 404);
+    const outstanding = num((await db.query<Row>('SELECT COALESCE(SUM(due_amount),0) AS s FROM accounts_receivable WHERE customer_id = ? AND due_amount > 0', [customerId]))[0]!.s);
+    const walletBalance = await wallet.getBalance(customerId);
+    let resolvedId: number | null = null;
+    let resolvedName: string | null = null;
+    try {
+      resolvedId = await pricing.resolvePriceListId(customerId);
+      resolvedName = (await db.query<Row>('SELECT price_list_name, list_type FROM price_lists WHERE id = ?', [resolvedId]))[0]?.price_list_name ?? null;
+    } catch { resolvedId = null; resolvedName = null; }
+    return json({
+      success: true,
+      customer: {
+        id: customer.id,
+        name: `${customer.title ?? ''} ${customer.full_name}`.trim(),
+        mobile: customer.mobile,
+        address: `${customer.address ?? ''} ${customer.area ?? ''}`.trim(),
+        home_delivery: !!customer.home_delivery,
+        discount_percent: num(customer.discount_percent),
+      },
+      price_list_id: resolvedId,
+      price_list_name: resolvedName ?? 'No active Default price list configured',
+      outstanding,
+      wallet_balance: walletBalance,
     });
   });
 }
