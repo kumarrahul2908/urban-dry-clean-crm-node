@@ -11,6 +11,7 @@ import { registerDailyDashboard } from './pages/dailyDashboard.js';
 import { registerAccountPages } from './pages/accounts.js';
 import { registerBarcodeTagPages } from './pages/barcodeTags.js';
 import { registerBarcodePages } from './pages/barcode.js';
+import { registerMasterPages } from './pages/master.js';
 import { registerDeliveryPages } from './pages/delivery.js';
 import { registerWorkshopBillPrintPage } from './pages/workshopBillPrint.js';
 import { registerWorkshopBillingPage } from './pages/workshopBilling.js';
@@ -61,6 +62,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerWorkshopBillingPage(app);
   registerWorkshopBillPrintPage(app);
   registerDeliveryPages(app);
+  registerMasterPages(app);
   registerBarcodePages(app);
   registerBarcodeTagPages(app);
   registerAccountPages(app);
