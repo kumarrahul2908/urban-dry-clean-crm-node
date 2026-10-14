@@ -92,3 +92,9 @@ back to a snapshot, then Node runs the same request; resulting rows and audit en
   108 bytes yields a code most scanners cannot read. The Node port (`src/lib/qrEncoder.ts`) is byte-identical to the PHP SVG (property test against PHP,
   including `sprintf('%.3f')` round-half-even ties) so tags print exactly as before; tag payloads are well below that size.
 * Audit rows written by Node store JSON without PHP's `\/` escaping (identical once parsed).
+
+### Phase 5e notes
+* `modules/pricelist/import.php` still carries "TEMPORARY DIAGNOSTIC" panels and a blocking `alert()` on upload in PHP; the Node page omits them (the parity test strips them from the PHP HTML).
+* Web multipart uploads accept up to 200 files per request (bulk garment images); PHP's `max_file_uploads`/`post_max_size` silently cut such batches. The 8 MB `order_photo_upload` cap is not applied in Node (consistent with the mobile photo decision); WhatsApp media keeps its 10 MB cap (PHP's own 8 MB `post_max_size` rejects bigger bodies earlier, so that case cannot be compared).
+* Queries use PHP's exact `ORDER BY`; ties are unspecified in both.
+* Salted/random values (bcrypt hashes, AES-GCM ciphertexts, uploaded file names, tokens) are masked in the DB comparison.

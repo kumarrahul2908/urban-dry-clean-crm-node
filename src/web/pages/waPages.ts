@@ -7,6 +7,7 @@ import { CustomerSegments } from '../../services/customerSegments.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
 import { raw } from '../html.js';
 import { layout } from '../layout.js';
+import { sniffMime } from '../uploads.js';
 import { tplHelpers } from '../tplHelpers.js';
 import { tplWaAnalytics } from '../tpl/wa_analytics.js';
 import { tplWaCampaigns } from '../tpl/wa_campaigns.js';
@@ -26,19 +27,6 @@ const orNull = (s: string) => (phpEmpty(s) ? null : s);
 const sqlState = (e: unknown) => (e as { sqlState?: string }).sqlState;
 const msgOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const missingTable = (e: unknown) => /doesn't exist|Base table or view not found/.test(msgOf(e));
-
-/** finfo(FILEINFO_MIME_TYPE) for the handful of types that matter here. */
-function sniffMime(b: Buffer): string {
-  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
-  if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (b.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
-  if (b.subarray(0, 3).toString('latin1') === 'GIF') return 'image/gif';
-  if (b.length >= 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
-  if (b.subarray(0, 2).toString('latin1') === 'PK') return 'application/zip';
-  if (b.length === 0) return 'application/x-empty';
-  const text = b.every((c) => c === 9 || c === 10 || c === 13 || (c >= 32 && c < 127) || c >= 128);
-  return text ? 'text/plain' : 'application/octet-stream';
-}
 
 export function registerWaPages(app: FastifyInstance) {
   const { db, audit, whatsapp, crypto } = app.services;

@@ -58,7 +58,7 @@ function norm(v: unknown): unknown {
 function normObj(o: unknown): unknown {
   if (Array.isArray(o)) return o.map(normObj);
   if (o && typeof o === 'object') return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, normObj(x)]));
-  if (typeof o === 'string' && /^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(o)) return 'IMG';
+  if (typeof o === 'string' && /[0-9a-f]{32}\.(jpg|jpeg|png|webp)/.test(o)) return o.replace(/[0-9a-f]{32}\.(jpg|jpeg|png|webp)/g, 'IMG');
   if (typeof o === 'string' && /^[0-9a-f]{64}$/.test(o)) return 'HEX';
   return typeof o === 'string' && TS.test(o) ? 'TS' : o;
 }
