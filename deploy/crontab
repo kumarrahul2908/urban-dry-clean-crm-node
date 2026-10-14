@@ -1,0 +1,4 @@
+# crontab -u udc -e   (stop the PHP cron jobs first)
+* * * * *  cd /opt/udc && /usr/bin/node dist/jobs/whatsappWorker.js    >> /var/log/udc-wa-worker.log 2>&1
+30 9 * * * cd /opt/udc && /usr/bin/node dist/jobs/whatsappMarketing.js >> /var/log/udc-wa-marketing.log 2>&1
+15 3 * * * cd /opt/udc && /usr/bin/node dist/jobs/photoCleanup.js      >> /var/log/udc-photo-cleanup.log 2>&1
