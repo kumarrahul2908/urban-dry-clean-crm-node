@@ -12,7 +12,7 @@ const sel = (c: boolean) => (c ? 'selected' : '');
 const rawurlencode = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 const same = (a: unknown, b: unknown) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-function pager(query: Record<string, unknown>, page: number, totalPages: number): Raw | string {
+export function pager(query: Record<string, unknown>, page: number, totalPages: number): Raw | string {
   if (totalPages <= 1) return '';
   const qs: Record<string, unknown> = { ...query };
   delete qs.page;

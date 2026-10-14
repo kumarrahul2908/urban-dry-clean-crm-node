@@ -2,6 +2,8 @@ import type { Db } from '../../src/db/pool.js';
 
 type Snap = Record<string, Record<string, unknown>[]> & { __sums?: never };
 const sums = new WeakMap<object, Record<string, string>>();
+const autoInc = new WeakMap<object, Record<string, number>>();
+const readAutoInc = async (db: Db) => Object.fromEntries((await db.query<{ t: string; a: number | null }>('SELECT table_name AS t, auto_increment AS a FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = "BASE TABLE"')).filter((r) => r.a !== null).map((r) => [r.t, Number(r.a)]));
 const SKIP = new Set(['web_sessions', 'api_tokens', 'login_ip_attempts']);
 
 export async function dbSnapshot(db: Db): Promise<Snap> {
@@ -9,6 +11,7 @@ export async function dbSnapshot(db: Db): Promise<Snap> {
   const out: Snap = {};
   for (const t of tables) out[t] = await db.query(`SELECT * FROM \`${t}\``);
   sums.set(out, await checksums(db, tables));
+  autoInc.set(out, await readAutoInc(db));
   return out;
 }
 
@@ -35,6 +38,9 @@ export async function dbRestore(db: Db, snap: Snap): Promise<void> {
     }
     await t.execute('SET FOREIGN_KEY_CHECKS = 1');
   });
+  // ids burned by rolled-back statements must not leak into the next run either
+  const ai0 = autoInc.get(snap) ?? {}, ai1 = await readAutoInc(db);
+  for (const [table, v] of Object.entries(ai0)) if (ai1[table] !== v && snap[table]) await db.execute(`ALTER TABLE \`${table}\` AUTO_INCREMENT = ${v}`);
 }
 
 const TS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
