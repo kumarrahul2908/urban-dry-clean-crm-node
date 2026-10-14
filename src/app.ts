@@ -47,6 +47,7 @@ import { MetaCloudProvider, type WhatsAppProvider } from './whatsapp/provider.js
 import { whatsappOrderHooks } from './services/whatsappHooks.js';
 import { PrintConfigService } from './services/printConfig.js';
 import { WebSessionStore } from './web/session.js';
+import { PackingService } from './services/packingService.js';
 import { InvoicePdfService } from './services/invoicePdf.js';
 
 export interface Services {
@@ -74,6 +75,7 @@ export interface Services {
   whatsapp: WhatsAppService;
   passwordReset: PasswordResetService;
   printConfig: PrintConfigService;
+  packing: PackingService;
   web: { sessions: WebSessionStore; /** nav entries whose page exists in this app (is_file() in header.php) */ pages: Set<string>; navShowAll: boolean };
 }
 
@@ -136,6 +138,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     whatsapp,
     web: { sessions: new WebSessionStore(db), pages: new Set<string>(), navShowAll: !!options.navShowAll },
     printConfig: new PrintConfigService(db, audit),
+    packing: new PackingService(db, audit),
     passwordReset: new PasswordResetService(db, whatsapp, audit, env.APP_URL),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
   };

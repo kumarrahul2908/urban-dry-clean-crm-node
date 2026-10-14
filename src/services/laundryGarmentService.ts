@@ -49,7 +49,7 @@ export class LaundryGarmentService {
   async getHistory(laundryGarmentId: number): Promise<Raw[]> {
     return this.db.query<Raw>(
       `SELECT changed_at, previous_status, new_status, module, remarks, u.full_name AS changed_by_name
-       FROM garment_status_history gsh LEFT JOIN users u ON u.id = gsh.changed_by WHERE gsh.laundry_garment_id = ? ORDER BY changed_at ASC, id ASC`, [laundryGarmentId]);
+       FROM garment_status_history gsh LEFT JOIN users u ON u.id = gsh.changed_by WHERE gsh.laundry_garment_id = ? ORDER BY changed_at ASC, gsh.id ASC`, [laundryGarmentId]);
   }
 
   async isBatchFullyAtStatus(orderItemId: number, acceptable: string[]) {

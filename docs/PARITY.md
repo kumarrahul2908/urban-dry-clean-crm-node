@@ -85,4 +85,10 @@ back to a snapshot, then Node runs the same request; resulting rows and audit en
 * **PHP defect, not reproduced:** *Import Orders (historical) → Confirm* aborts the same way (order/invoice/customer number generators open their own
   transaction inside the importer's) as soon as one valid order has to be created. Node runs the whole import in one transaction and completes it
   (tests: PHP aborts, Node succeeds).
+* **PHP defect, fixed in Node:** `modules/barcode/garment_detail.php?laundry_garment_id=…` always dies with "Column 'id' in ORDER BY is ambiguous"
+  (`LaundryGarmentService::getHistory()` orders by an unqualified `id` over a join with `users`), so the Laundry garment detail page never worked in
+  PHP. Node orders by `gsh.id` and renders the page (test asserts PHP 500 / Node 200).
+* **PHP quirk kept on purpose:** `QrEncoder` treats QR versions 6–9 as a single Reed-Solomon block (the standard uses two), so a payload longer than
+  108 bytes yields a code most scanners cannot read. The Node port (`src/lib/qrEncoder.ts`) is byte-identical to the PHP SVG (property test against PHP,
+  including `sprintf('%.3f')` round-half-even ties) so tags print exactly as before; tag payloads are well below that size.
 * Audit rows written by Node store JSON without PHP's `\/` escaping (identical once parsed).

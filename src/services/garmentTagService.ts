@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import type { AuditLog } from '../audit/auditLog.js';
 import type { Db } from '../db/pool.js';
 import { getSetting } from './settings.js';
 
@@ -61,5 +62,25 @@ export class GarmentTagService {
     const { id, qrToken } = await this.insertBarcode('laundry', orderId, laundryGarmentId, sequence, value, shortQr);
     await this.db.execute('INSERT INTO garment_tags (laundry_garment_id, barcode_id, printed_count) VALUES (?, ?, 0)', [laundryGarmentId, id]);
     return { id, barcode_value: value, qr_token: qrToken, short_qr_payload: shortQr, order_id: orderId, laundry_garment_id: laundryGarmentId, item_sequence: sequence };
+  }
+
+  /** GarmentTagService::ensureBarcodeExists(): lazy fallback for an item without a barcode yet. */
+  async ensureBarcodeExists(orderItemId: number): Promise<BarcodeRow | null> {
+    const ex = await this.db.query<BarcodeRow>('SELECT * FROM barcodes WHERE order_item_id = ?', [orderItemId]);
+    if (ex[0]) return ex[0];
+    const [item] = await this.db.query<{ order_id: number; order_number: string }>('SELECT oi.order_id, o.order_number FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ?', [orderItemId]);
+    if (!item) return null;
+    const ids = (await this.db.query<{ id: number }>('SELECT id FROM order_items WHERE order_id = ? ORDER BY id', [item.order_id])).map((r) => Number(r.id));
+    const idx = ids.indexOf(orderItemId);
+    return this.generateForItem(Number(item.order_id), item.order_number, orderItemId, (idx > 0 ? idx : 0) + 1);
+  }
+
+  /** GarmentTagService::recordPrint(): bookkeeping once print/reprint is authorized. */
+  async recordPrint(barcodeId: number, userId: number, audit: AuditLog, ip: string | null = null): Promise<void> {
+    const [tag] = await this.db.query<Record<string, any>>('SELECT * FROM garment_tags WHERE barcode_id = ?', [barcodeId]);
+    if (!tag) return;
+    const isReprint = Number(tag.printed_count) > 0;
+    await this.db.execute('UPDATE garment_tags SET printed_count = printed_count + 1, last_printed_at = NOW(), last_printed_by = ? WHERE id = ?', [userId, tag.id]);
+    await audit.record({ action: isReprint ? 'reprint' : 'print', module: 'garment_tags', recordId: tag.order_item_id === null || tag.order_item_id === undefined ? '' : String(tag.order_item_id), newValue: { barcode_id: barcodeId, printed_count: Number(tag.printed_count) + 1 }, userId, ip });
   }
 }

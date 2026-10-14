@@ -49,7 +49,8 @@ describe.skipIf(!webEnabled)('payments / accounts / POS submit: PHP ↔ Node par
     const { php, node } = await asBoss();
     expect((await php.get('/modules/accounts/outstanding.php')).body).not.toContain('No outstanding balances found.');
     expect((await php.get('/modules/payments/list.php')).body).not.toContain('No payments found.');
-    expect((await php.get('/modules/accounts/daily-collection.php')).body).not.toContain('No transactions for this date.');
+    const payDay = (await h.db.query<any>('SELECT DATE(MAX(payment_date)) AS d FROM payments'))[0].d; // not "today": the app clock (IST) and the DB clock (UTC) disagree around midnight
+    expect((await php.get(`/modules/accounts/daily-collection.php?date=${payDay}`)).body).not.toContain('No transactions for this date.');
     for (const q of ['', '?payment_type_id=1', '?staff_id=1', '?order=2', '?customer=Vip', '?date=2020-01-01', '?date=garbage']) await both(php, node, `/modules/accounts/daily-collection.php${q}`, `daily ${q}`, true);
     const a = await php.get('/modules/accounts/daily-collection.php?export=1'), b = await node.get('/modules/accounts/daily-collection.php?export=1');
     expect(b.body).toBe(a.body);
