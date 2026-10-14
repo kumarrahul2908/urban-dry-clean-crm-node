@@ -14,6 +14,7 @@ import { registerBarcodePages } from './pages/barcode.js';
 import { registerGarmentBulkImagePage } from './pages/garmentsBulkImage.js';
 import { registerGarmentBulkImportPage } from './pages/garmentsBulkImport.js';
 import { registerGarmentPages } from './pages/garments.js';
+import { registerWaPages } from './pages/waPages.js';
 import { registerReportPages } from './pages/reports.js';
 import { registerMiscPages } from './pages/miscPages.js';
 import { registerAdminSettingsPages } from './pages/adminSettings.js';
@@ -80,6 +81,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerAdminSettingsPages(app);
   registerMiscPages(app);
   registerReportPages(app);
+  registerWaPages(app);
   registerPricelistImportPage(app);
   registerGarmentBulkImportPage(app);
   registerGarmentBulkImagePage(app);

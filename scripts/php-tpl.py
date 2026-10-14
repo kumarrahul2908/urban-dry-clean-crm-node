@@ -48,6 +48,7 @@ FUNCS = {
  'number_format2': 'numberFormat', 'intval': 'int', 'floatval': 'flt', 'date': 'phpDate', 'strtotime': 'strtotime', 'sprintf': 'sprintf', 'array_key_exists': 'arrayKeyExists', 'is_null': 'isNull',
  'array_merge': 'arrayMerge', 'ltrim': 'ltrim', 'rtrim': 'rtrim', 'strpos': 'strpos', 'str_contains': 'strContains', 'str_starts_with': 'strStartsWith', 'array_filter': 'arrayFilter',
  'json_decode': 'jsonDecode', 'array_values': 'arrayValues', 'array_map': 'arrayMap', 'array_flip': 'arrayFlip', 'array_search': 'arraySearch', 'is_string': 'isString', 'ucwords': 'ucwords', 'wordwrap': 'wordwrap',
+ 'addslashes': 'addslashes', 'mb_strimwidth': 'mbStrimwidth',
  'Auth::can': 'can', 'Auth::isDeliveryManager': 'isDeliveryManager', 'Auth::fixedStoreId': 'fixedStoreId', 'Auth::activeStoreId': 'activeStoreId', 'get_setting': 'getSetting', 'time': 'time', 'mt_rand': 'mtRand',
 }
 CTX = {'u', 'money', 'fdate', 'fdatetime', 'csrfField', 'csrfToken', 'can', 'isDeliveryManager', 'fixedStoreId', 'activeStoreId', 'getSetting', 'phpDate', 'strtotime', 'time', 'mtRand'}

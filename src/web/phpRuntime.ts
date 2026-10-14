@@ -111,3 +111,16 @@ export const arrayMap = (fn: (x: any) => any, a: any) => values(a).map(fn);
 export const arrayFlip = (a: any) => new Map(entries(a).map(([k, v]) => [v, k]));
 export const arraySearch = (n: any, a: any) => { const f = entries(a).find(([, v]) => v === n); return f ? f[0] : false; };
 export const wordwrap = (s: any) => S(s);
+
+export const addslashes = (s: any) => S(s).replace(/([\\'"])/g, '\\$1').replace(/\0/g, '\\0');
+const wide = (cp: number) => (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x20000 && cp <= 0x3fffd);
+/** mb_strimwidth($s, $start, $width, $trim): East-Asian wide characters count as 2 columns. */
+export function mbStrimwidth(str: any, start: number, width: number, trim = ''): string {
+  const chars = Array.from(S(str)).slice(start);
+  const w = (c: string) => (wide(c.codePointAt(0)!) ? 2 : 1);
+  if (chars.reduce((a, c) => a + w(c), 0) <= width) return chars.join('');
+  const limit = width - Array.from(trim).reduce((a, c) => a + w(c), 0);
+  let used = 0; let out = '';
+  for (const c of chars) { if (used + w(c) > limit) break; used += w(c); out += c; }
+  return out + trim;
+}

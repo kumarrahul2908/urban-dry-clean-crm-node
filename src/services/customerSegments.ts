@@ -7,7 +7,11 @@ type Row = Record<string, any>;
  * where Auth::allowedStoreIds() is null (no fixed store), so a store filter applies only when a rule names a store.
  */
 export class CustomerSegments {
-  constructor(private readonly db: Db) {}
+  /** `fixedStoreId` is the calling web user's own store (Auth::fixedStoreId()); null for Super Admin / the cron job. */
+  constructor(private readonly db: Db, private readonly fixedStoreId: number | null = null) {}
+
+  /** The same segments, evaluated for a web session whose user may be pinned to one store. */
+  forUser(fixedStoreId: number | null): CustomerSegments { return new CustomerSegments(this.db, fixedStoreId); }
 
   static readonly available: Record<string, string> = {
     '30_day_inactive': '30 Days Inactive',
@@ -23,9 +27,11 @@ export class CustomerSegments {
 
   private async storeFilter(alias: string, storeId: number | null): Promise<[string, unknown[]]> {
     if (storeId !== null) {
-      const ok = (await this.db.query('SELECT id FROM stores WHERE id = ? AND is_active = 1', [storeId])).length > 0;
+      // Auth::canActAsStore(): a fixed-store user may only act as their own store
+      const ok = this.fixedStoreId !== null ? this.fixedStoreId === storeId : (await this.db.query('SELECT id FROM stores WHERE id = ? AND is_active = 1', [storeId])).length > 0;
       return ok ? [` AND ${alias}.store_id = ?`, [storeId]] : [` AND ${alias}.store_id = -1`, []];
     }
+    if (this.fixedStoreId !== null) return [` AND ${alias}.store_id IN (?)`, [this.fixedStoreId]];
     return ['', []];
   }
 

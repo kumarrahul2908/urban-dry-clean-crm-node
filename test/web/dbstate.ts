@@ -72,7 +72,8 @@ export function dbDiff(a: Snap, b: Snap, ignoreTables: string[] = []): string[] 
     if (ra.length !== rb.length) { out.push(`${table}: ${ra.length} rows vs ${rb.length}`); continue; }
     ra.forEach((row, i) => {
       for (const k of Object.keys(row)) {
-        const x = JSON.stringify(norm(row[k])), y = JSON.stringify(norm(rb[i]![k]));
+        const nv = (v: unknown) => (typeof v === 'string' && /_encrypted$/.test(k) ? 'ENC' : norm(v)); // random-IV ciphertexts
+        const x = JSON.stringify(nv(row[k])), y = JSON.stringify(nv(rb[i]![k]));
         if (x !== y) out.push(`${table}[${i}].${k}: ${x} vs ${y}`);
       }
     });
