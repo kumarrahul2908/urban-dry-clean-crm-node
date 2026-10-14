@@ -98,3 +98,40 @@ describe.skipIf(!webEnabled)('price lists: PHP ↔ Node parity', () => {
     expect(true).toBe(true);
   });
 });
+
+describe.skipIf(!webEnabled)('bulk price update: PHP ↔ Node parity', () => {
+  const { h, seedRich, login } = webHarness();
+  const eq = (got: any, want: any, label: string, sortRows = false) => expectSameHtml(got, want, h.env.APP_URL, label, sortRows);
+  const write = writeCompare(h.db, h.env.APP_URL);
+  const prepare = async (db: Db) => {
+    for (const col of ['flat_weight_rate DECIMAL(10,2) NULL', 'flat_weight_tax_id INT NULL']) { try { await db.execute(`ALTER TABLE services ADD COLUMN ${col}`); } catch { /* exists */ } }
+    try { await db.execute('ALTER TABLE price_list_items ADD COLUMN min_weight_charge DECIMAL(10,2) NULL'); } catch { /* exists */ }
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('pricelist.manage','x'),('pricing.view','x'),('pricing.edit','x'),('pricing.bulk_update','x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 3, id FROM permissions WHERE permission_key IN ('pricelist.manage','pricing.view','pricing.edit','pricing.bulk_update')");
+  };
+  const asBoss = async () => { const c = await login('boss'); await c.php.get('/modules/dashboard/landing.php'); await c.node.get('/modules/dashboard/landing.php'); return c; };
+  const tok = (b: string) => /name="import_token" value="([0-9a-f]{32})"/.exec(b)?.[1] ?? '';
+
+  it('pricelist/bulk_update page + pricing/bulk_update flow', async () => {
+    await seedRich(prepare);
+    const { php, node } = await asBoss();
+    for (const p of ['/modules/pricelist/bulk_update.php?id=1', '/modules/pricelist/bulk_update.php?id=2', '/modules/pricelist/bulk_update.php?id=99999', '/modules/pricing/bulk_update.php', '/modules/pricing/bulk_update.php?template=1']) eq(await node.get(p), await php.get(p), p, true);
+    for (const who of ['admin', 'ws', 'nobody', null] as const) { const c = await login(who as any); for (const p of ['/modules/pricelist/bulk_update.php?id=1', '/modules/pricing/bulk_update.php']) eq(await c.node.get(p), await c.php.get(p), `${who} ${p}`); }
+    const it = (await h.db.query<any>('SELECT pli.price_list_id, pl.price_list_name pln, g.garment_name gn, g.sku, s.service_name sn, pli.piece_rate FROM price_list_items pli JOIN price_lists pl ON pl.id=pli.price_list_id JOIN garments g ON g.id=pli.garment_id JOIN services s ON s.id=pli.service_id ORDER BY pli.id LIMIT 1'))[0];
+    const other = (await h.db.query<any>('SELECT garment_name FROM garments WHERE garment_name <> ? ORDER BY id LIMIT 1', [it.gn]))[0];
+    const H = 'garment,service,price_list,piece_rate,weight_rate,min_weight_charge';
+    const csvs: Record<string, string> = {
+      mixed: [H, `${it.gn},${it.sn},${it.pln},${it.piece_rate},,`, `${it.sku ?? it.gn},${it.sn},${it.pln},${Number(it.piece_rate) + 5},12.5,30`, `${other.garment_name},${it.sn},${it.pln},44.5,,`, `Nope,${it.sn},${it.pln},1,,`, `${it.gn},Nope,${it.pln},1,,`, `${it.gn},${it.sn},Nope,1,,`, `,${it.sn},${it.pln},1,,`, `${it.gn},${it.sn},${it.pln},abc,,`, `${it.gn},${it.sn},${it.pln},1,-2,`, `${it.gn},${it.sn},${it.pln},1,,x`].join('\n'),
+      missing: 'garment,service\nx,y', empty: H, onlyUnchanged: [H, `${it.gn},${it.sn},${it.pln},${it.piece_rate},,`].join('\n'),
+    };
+    const up = (csv: string, name = 'p.csv') => (c: Client) => c.upload('/modules/pricing/bulk_update.php', { step: 'upload' }, { field: 'file', filename: name, content: csv });
+    for (const [label, csv] of Object.entries(csvs)) await write('pbu ' + label, php, node, up(csv), { sortRows: true });
+    await write('pbu bad ext', php, node, up(csvs.mixed!, 'p.txt'), { sortRows: true });
+    await write('pbu no file', php, node, (c) => c.post('/modules/pricing/bulk_update.php', { step: 'upload' }), { sortRows: true });
+    await write('pbu csrf', php, node, (c) => c.post('/modules/pricing/bulk_update.php', { step: 'upload' }, { csrf: false }), { sortRows: true });
+    const flow = (csv: string, action: string) => async (c: Client) => { const r = await c.upload('/modules/pricing/bulk_update.php', { step: 'upload' }, { field: 'file', filename: 'p.csv', content: csv }); return c.post('/modules/pricing/bulk_update.php', { step: action, import_token: tok(r.body) }); };
+    await write('pbu confirm', php, node, flow(csvs.mixed!, 'confirm'), { sortRows: true });
+    await write('pbu cancel', php, node, flow(csvs.mixed!, 'cancel'), { sortRows: true });
+    await write('pbu bad token', php, node, (c) => c.post('/modules/pricing/bulk_update.php', { step: 'confirm', import_token: 'zz' }), { sortRows: true });
+  });
+});
