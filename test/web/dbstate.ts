@@ -48,6 +48,7 @@ function norm(v: unknown): unknown {
   if (typeof v === 'string') {
     if (TS.test(v)) return 'TS';
     if (/^[0-9a-f]{32}$/.test(v) || /^[0-9a-f]{64}$/.test(v)) return 'HEX'; // random tokens (qr_token …)
+    if (/^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(v)) return 'IMG'; // uploaded file names
     if (/^[[{]/.test(v)) { try { return normObj(JSON.parse(v)); } catch { return v; } }
     return v;
   }

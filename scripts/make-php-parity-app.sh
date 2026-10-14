@@ -17,6 +17,7 @@ define('DB_NAME', getenv('UDC_DB_NAME')); define('DB_USER', getenv('UDC_DB_USER'
 define('DB_HOST', getenv('UDC_DB_HOST') ?: '127.0.0.1'); define('DB_PORT', getenv('UDC_DB_PORT') ?: '3306');
 define('APP_NAME', 'URBAN DRY CLEAN'); define('APP_URL', 'https://example.test'); define('APP_ENV', 'development');
 define('APP_TIMEZONE', 'Asia/Kolkata'); define('APP_SECRET_KEY', 'parity-test-key');
+define('MAX_UPLOAD_SIZE_MB', 5); define('ALLOWED_IMAGE_TYPES', ['jpg','jpeg','png','webp']);
 define('SESSION_LIFETIME_MINUTES', 120); define('MAX_LOGIN_ATTEMPTS', 5); define('LOGIN_LOCKOUT_MINUTES', 15);
 date_default_timezone_set(APP_TIMEZONE);
 PHP
