@@ -135,3 +135,58 @@ describe.skipIf(!webEnabled)('bulk price update: PHP ↔ Node parity', () => {
     await write('pbu bad token', php, node, (c) => c.post('/modules/pricing/bulk_update.php', { step: 'confirm', import_token: 'zz' }), { sortRows: true });
   });
 });
+
+// The PHP import page still carries "TEMPORARY DIAGNOSTIC" panels/alerts; the Node port deliberately omits them (see docs/PARITY.md).
+const stripDebug = (c: Client): Client => {
+  const strip = (r: any) => ({ ...r, body: String(r.body)
+    .replace(/<div class="col-12">\s*<div class="alert alert-dark[\s\S]*?<\/div>\s*<\/div>/, '')
+    .replace(/<div class="col-12">\s*<div class="card border-warning"[\s\S]*?<\/table>\s*<\/div>\s*<\/div>\s*<\/div>/, '')
+    .replace(/<div class="alert alert-secondary small d-none" id="clientDebugPanel"[^>]*><\/div>/, '')
+    .replace(/<script>\s*\/\/ TEMPORARY CLIENT-SIDE DIAGNOSTIC[\s\S]*?<\/script>/, '') });
+  return { ...c, get: async (p) => strip(await c.get(p)), post: async (p, f, o) => strip(await c.post(p, f, o)), upload: async (p, f, file) => strip(await c.upload(p, f, file)) };
+};
+
+describe.skipIf(!webEnabled)('pricelist import: PHP ↔ Node parity', () => {
+  const { h, seedRich, login } = webHarness();
+  const eq = (got: any, want: any, label: string, sortRows = false) => expectSameHtml(got, want, h.env.APP_URL, label, sortRows);
+  const write = writeCompare(h.db, h.env.APP_URL);
+  const prepare = async (db: Db) => {
+    for (const col of ['flat_weight_rate DECIMAL(10,2) NULL', 'flat_weight_tax_id INT NULL']) { try { await db.execute(`ALTER TABLE services ADD COLUMN ${col}`); } catch { /* exists */ } }
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('pricelist.manage','x'),('pricing.view','x'),('pricing.edit','x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 3, id FROM permissions WHERE permission_key IN ('pricelist.manage','pricing.view','pricing.edit')");
+  };
+  const tok = (b: string) => /name="import_token" value="([0-9a-f]{32})"/.exec(b)?.[1] ?? '';
+
+  it('pages, template, preview, confirm, error report', async () => {
+    await seedRich(prepare);
+    const raw = await login('boss'); await raw.php.get('/modules/dashboard/landing.php'); await raw.node.get('/modules/dashboard/landing.php');
+    const php = stripDebug(raw.php), node = raw.node;
+    for (const p of ['/modules/pricelist/import.php?id=1', '/modules/pricelist/import.php?id=99999', '/modules/pricelist/import.php?id=1&template=1', '/modules/pricelist/import.php?id=2&template=1', '/modules/pricelist/import.php?id=1&error_report=1&import_token=zz']) eq(await node.get(p), await php.get(p), p, true);
+    for (const who of ['admin', 'ws', 'nobody', null] as const) { const c = await login(who as any); const p = '/modules/pricelist/import.php?id=1'; eq(await c.node.get(p), await stripDebug(c.php).get(p), `${who}`); }
+    const items = await h.db.query<any>('SELECT pli.id, pli.garment_id, pli.service_id, pli.piece_rate, pli.weight_rate, g.garment_name, g.sku, c.category_name, s.service_name, s.billing_unit FROM price_list_items pli JOIN garments g ON g.id=pli.garment_id LEFT JOIN categories c ON c.id=g.category_id JOIN services s ON s.id=pli.service_id WHERE pli.price_list_id=1 ORDER BY pli.id LIMIT 4');
+    const usvc = (await h.db.query<any>("SELECT service_name FROM services WHERE pricing_scope='universal' ORDER BY id LIMIT 1"))[0];
+    const taxn = (await h.db.query<any>('SELECT tax_name FROM taxes WHERE is_active=1 ORDER BY id LIMIT 1'))[0];
+    const H = 'Rate Type,Garment ID,Garment Code / SKU,Garment Name,Category,Service,Billing Unit,Piece Rate,Weight Rate,Tax,Status';
+    const [a, b] = items;
+    const rateOf = (it: any) => (it.billing_unit === 'weight' ? [',', `${it.weight_rate}`] : [`${it.piece_rate}`, '']);
+    const gl = (it: any, rate: string, extra = '') => `GARMENT,${extra ? '' : it.garment_id},${it.sku ?? ''},${it.garment_name},${it.category_name ?? ''},${it.service_name},${it.billing_unit},${it.billing_unit === 'weight' ? '' : rate},${it.billing_unit === 'weight' ? rate : ''},${taxn.tax_name},Active`;
+    const csvs: Record<string, string> = {
+      good: [H, gl(a, '123.456'), gl(b, 'Not Configured'), usvc ? `SERVICE,,,,,${usvc.service_name},weight,,45.5,,Active` : ''].filter(Boolean).join('\n'),
+      unchanged: [H, gl(a, String(a.billing_unit === 'weight' ? a.weight_rate : a.piece_rate))].join('\n'),
+      errors: [H, 'BOGUS,,,x,,y,,,,,', `GARMENT,9999,,,,${a.service_name},,5,,,`, `GARMENT,,,Nope,,${a.service_name},,5,,,`, `GARMENT,${a.garment_id},,,,${a.service_name},,abc,,,`, `GARMENT,${a.garment_id},,,,${a.service_name},,5,,,`, `GARMENT,${a.garment_id},,,,Nope,,5,,,`, `GARMENT,${a.garment_id},,,,${a.service_name},kg,5,,Nope Tax,`, `GARMENT,,,,,${a.service_name},,5,,,`, `SERVICE,,,,,${a.service_name},,,5,,`, `SERVICE,,,,,${usvc?.service_name ?? 'x'},,,-3,,`, `SERVICE,,,,,${usvc?.service_name ?? 'x'},,,4,,`, `GARMENT,,${a.sku ?? 'ZZZ'},,,${a.service_name},,7,,,`, `GARMENT,,,${a.garment_name},,${a.service_name},,7,,,`].join('\n'),
+      missing: 'Rate Type,Service\nGARMENT,x', empty: H,
+    };
+    const up = (csv: string, name = 'i.csv') => (c: Client) => c.upload('/modules/pricelist/import.php?id=1', { step: 'upload', price_list_id: '1' }, { field: 'file', filename: name, content: csv });
+    for (const [label, csv] of Object.entries(csvs)) await write('imp ' + label, php, node, up(csv), { sortRows: true });
+    await write('imp bad ext', php, node, up(csvs.good!, 'i.txt'), { sortRows: true });
+    await write('imp no file field', php, node, (c) => c.post('/modules/pricelist/import.php?id=1', { step: 'upload', price_list_id: '1' }), { sortRows: true });
+    await write('imp csrf', php, node, (c) => c.post('/modules/pricelist/import.php?id=1', { step: 'upload' }, { csrf: false }), { sortRows: true });
+    const flow = (csv: string, action: string) => async (c: Client) => { const r = await c.upload('/modules/pricelist/import.php?id=1', { step: 'upload', price_list_id: '1' }, { field: 'file', filename: 'i.csv', content: csv }); return c.post('/modules/pricelist/import.php?id=1', { step: action, price_list_id: '1', import_token: tok(r.body) }); };
+    { const r = await write('imp confirm good', php, node, flow(csvs.good!, 'confirm'), { sortRows: true }); expect(r.body).toContain('Import Complete'); const pv = await up(csvs.errors!)(node); expect(pv.body).toContain('table-danger'); expect(pv.body).toContain('is ambiguous'.slice(0, 0) + 'Error'); }
+    await write('imp confirm errors', php, node, flow(csvs.errors!, 'confirm'), { sortRows: true });
+    await write('imp cancel', php, node, flow(csvs.good!, 'cancel'), { sortRows: true });
+    await write('imp bad token', php, node, (c) => c.post('/modules/pricelist/import.php?id=1', { step: 'confirm', price_list_id: '1', import_token: 'zz' }), { sortRows: true });
+    const rep = async (c: Client) => { const r = await c.upload('/modules/pricelist/import.php?id=1', { step: 'upload', price_list_id: '1' }, { field: 'file', filename: 'i.csv', content: csvs.errors! }); return c.get(`/modules/pricelist/import.php?id=1&error_report=1&import_token=${tok(r.body)}`); };
+    await write('imp error report', php, node, rep, { sortRows: true });
+  });
+});
