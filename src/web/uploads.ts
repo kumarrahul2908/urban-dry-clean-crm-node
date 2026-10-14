@@ -7,7 +7,7 @@ export const ALLOWED_IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'webp'];
 export const MAX_UPLOAD_SIZE_MB = 5;
 
 /** getimagesize() !== false for the formats the CRM accepts (header check). */
-function looksLikeImage(b: Buffer): boolean {
+export function looksLikeImage(b: Buffer): boolean {
   if (b.length < 12) return false;
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
   if (b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true; // PNG

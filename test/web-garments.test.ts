@@ -64,3 +64,75 @@ describe.skipIf(!webEnabled)('garments: PHP ↔ Node parity', () => {
     expect(true).toBe(true);
   });
 });
+
+describe.skipIf(!webEnabled)('garments bulk import / bulk image: PHP ↔ Node parity', () => {
+  const { h, seedRich, login } = webHarness();
+  const eq = (got: any, want: any, label: string, sortRows = false) => expectSameHtml(got, want, h.env.APP_URL, label, sortRows);
+  const write = writeCompare(h.db, h.env.APP_URL);
+  const asBoss = async () => { const c = await login('boss'); await c.php.get('/modules/dashboard/landing.php'); await c.node.get('/modules/dashboard/landing.php'); return c; };
+  const HEAD = 'Garment ID,Garment Code / SKU,Garment Name,Category,Unit,Default Service,Status,Description';
+  const tok = (b: string) => /name="(?:import|mapping)_token" value="([0-9a-f]{32})"/.exec(b)?.[1] ?? '';
+
+  it('bulk_import: pages, template, validation, confirm', async () => {
+    await seedRich();
+    const { php, node } = await asBoss();
+    const a = await php.get('/modules/garments/bulk_import.php'), b = await node.get('/modules/garments/bulk_import.php');
+    eq(b, a, 'upload page');
+    const ta = await php.get('/modules/garments/bulk_import.php?template=1'), tb = await node.get('/modules/garments/bulk_import.php?template=1');
+    eq(tb, ta, 'template');
+    const cat = (await h.db.query<any>('SELECT category_name FROM categories WHERE is_active=1 ORDER BY id LIMIT 1'))[0].category_name;
+    const svc = (await h.db.query<any>('SELECT service_name FROM services WHERE is_active=1 ORDER BY id LIMIT 1'))[0].service_name;
+    const g1 = (await h.db.query<any>('SELECT id, garment_name, sku, category_id FROM garments ORDER BY id LIMIT 2'));
+    const cases: Record<string, string> = {
+      'good new+update': [HEAD, `,NEWSKU1,Brand New Item,${cat},Pcs,${svc},Active,hello`, `${g1[0].id},,Renamed Row,${cat},Kg,,Inactive,upd`].join('\n'),
+      'row errors': [HEAD, `999,,X,${cat},Pcs,,Active,`, `,,,Nope Cat,Box,Nope Svc,Maybe,`, `abc,${g1[1].sku ?? 'SKUX'},Y,${cat},Pcs,,,`, `,,Dup,${cat},Pcs,,,`, `,,dup,${cat},Pcs,,,`, `${g1[0].id},,Z,${cat},Pcs,,,`, `${g1[0].id},,Z2,${cat},Pcs,,,`].join('\n'),
+      'missing column': 'Garment ID,Garment Name\n1,x',
+      'no rows': HEAD,
+      'dup existing name': [HEAD, `,,${g1[0].garment_name},${(await h.db.query<any>('SELECT category_name FROM categories WHERE id=?', [g1[0].category_id]))[0].category_name},Pcs,,,`].join('\n'),
+    };
+    const upload = (csv: string, name = 'g.csv') => async (c: Client) => c.upload('/modules/garments/bulk_import.php', { step: 'upload' }, { field: 'file', filename: name, content: csv });
+    for (const [label, csv] of Object.entries(cases)) await write('import ' + label, php, node, upload(csv));
+    await write('import bad ext', php, node, upload(cases['good new+update']!, 'g.txt'));
+    await write('import csrf', php, node, (c) => c.post('/modules/garments/bulk_import.php', { step: 'upload' }, { csrf: false }));
+    await write('import no file', php, node, (c) => c.post('/modules/garments/bulk_import.php', { step: 'upload' }));
+    // upload → confirm (own token per side)
+    const flow = (csv: string, action: string) => async (c: Client) => { const up = await c.upload('/modules/garments/bulk_import.php', { step: 'upload' }, { field: 'file', filename: 'g.csv', content: csv }); return c.post('/modules/garments/bulk_import.php', { step: action, import_token: tok(up.body) }); };
+    await write('import confirm ok', php, node, flow(cases['good new+update']!, 'confirm'));
+    await write('import confirm with errors', php, node, flow(cases['row errors']!, 'confirm'));
+    await write('import cancel', php, node, flow(cases['good new+update']!, 'cancel'));
+    await write('import confirm bad token', php, node, (c) => c.post('/modules/garments/bulk_import.php', { step: 'confirm', import_token: 'zz' }));
+    for (const who of ['admin', 'ws', 'nobody', null] as const) { const c = await login(who as any); for (const p of ['/modules/garments/bulk_import.php', '/modules/garments/bulk_import.php?template=1', '/modules/garments/bulk_image.php']) { const x = await c.php.get(p), y = await c.node.get(p); eq(y, x, `${who} ${p}`); } }
+  });
+
+  it('bulk_image: preview / confirm / cancel', async () => {
+    await seedRich();
+    const { php, node } = await asBoss();
+    eq(await node.get('/modules/garments/bulk_image.php'), await php.get('/modules/garments/bulk_image.php'), 'page');
+    await h.db.execute("UPDATE garments SET image='old.png' WHERE id=2");
+    const mk = (files: { name: string; data: Buffer | string }[], mapping?: string) => async (c: Client, action = 'upload', token?: string) => {
+      // the shared harness uploads one file; build a multi-file multipart by hand for both sides
+      const boundary = `----t${Math.random().toString(16).slice(2)}`;
+      const parts: Buffer[] = [];
+      const field = (k: string, v: string) => parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+      field('csrf_token', c.csrf() ?? ''); field('step', action); if (token) field('mapping_token', token);
+      for (const f of files) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="images[]"; filename="${f.name}"\r\nContent-Type: application/octet-stream\r\n\r\n`), Buffer.from(f.data), Buffer.from('\r\n'));
+      if (mapping !== undefined) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="mapping_file"; filename="m.csv"\r\nContent-Type: text/csv\r\n\r\n${mapping}\r\n`));
+      parts.push(Buffer.from(`--${boundary}--\r\n`));
+      const payload = Buffer.concat(parts);
+      const headers = { 'content-type': `multipart/form-data; boundary=${boundary}`, cookie: c.cookie() };
+      if (c === php) { const r = await fetch(`http://127.0.0.1:${h.port}/modules/garments/bulk_image.php`, { method: 'POST', redirect: 'manual', headers, body: payload }); return { status: r.status, location: r.headers.get('location'), body: await r.text(), type: r.headers.get('content-type') } as any; }
+      const r = await h.app.inject({ method: 'POST', url: '/modules/garments/bulk_image.php', headers, payload });
+      return { status: r.statusCode, location: (r.headers.location as string) ?? null, body: r.body, type: String(r.headers['content-type'] ?? '') } as any;
+    };
+    const send = (files: { name: string; data: Buffer | string }[], mapping?: string) => { const m = mk(files, mapping); return (c: Client) => m(c); };
+    const flow = (files: { name: string; data: Buffer | string }[], action: string, mapping?: string) => async (c: Client) => { const m = mk(files, mapping); const up = await m(c); return m(c, action, tok(up.body)); };
+    const ok = [{ name: '1.png', data: PNG }, { name: '2.png', data: PNG }];
+    await write('img preview ok', php, node, send(ok));
+    await write('img preview errors', php, node, send([{ name: 'abc.png', data: PNG }, { name: '99.png', data: PNG }, { name: '1.gif', data: PNG }, { name: '3.png', data: 'nope' }, { name: '4.png', data: PNG }, { name: '4.png', data: PNG }]));
+    await write('img mapping csv', php, node, send([{ name: 'front.png', data: PNG }, { name: 'back.png', data: PNG }], 'Garment ID,Image Filename\n1,front.png\n2,BACK.png\n'));
+    await write('img none', php, node, send([]));
+    await write('img confirm ok', php, node, flow(ok, 'confirm'));
+    await write('img confirm errors', php, node, flow([{ name: '99.png', data: PNG }], 'confirm'));
+    await write('img cancel', php, node, flow(ok, 'cancel'));
+  });
+});

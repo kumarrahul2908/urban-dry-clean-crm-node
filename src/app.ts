@@ -161,7 +161,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   await app.register(formbody); // PHP's $_POST fallback for form-encoded bodies
   // Photos are stored verbatim; the only limit is a generous safety ceiling (UPLOAD_MAX_MB, 0 = none).
   await app.register(multipart, {
-    limits: { fileSize: services.env.UPLOAD_MAX_MB > 0 ? services.env.UPLOAD_MAX_MB * 1024 * 1024 : Number.MAX_SAFE_INTEGER, files: 3, fields: 20, fieldSize: 64 * 1024 },
+    limits: { fileSize: services.env.UPLOAD_MAX_MB > 0 ? services.env.UPLOAD_MAX_MB * 1024 * 1024 : Number.MAX_SAFE_INTEGER, files: 200, fields: 40, fieldSize: 64 * 1024 },
   });
   if (services.env.SERVE_UPLOADS) {
     await app.register(fastifyStatic, { root: services.storage.root, prefix: '/uploads/', index: false, list: false, dotfiles: 'deny', setHeaders: (res) => { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); } });

@@ -64,11 +64,14 @@ export class WebCtx {
 
   /** Uploaded files of a multipart/form-data request (field name → file). Text fields end up in req.body, like $_POST. */
   files: Record<string, { filename: string; mimetype: string; buffer: Buffer }> = {};
+  /** every file part in arrival order (PHP "images[]" style multi-uploads); filename is "" when the browser sent no file. */
+  fileParts: { field: string; filename: string; buffer: Buffer }[] = [];
   async readMultipart() {
     const fields: Record<string, unknown> = {};
     for await (const part of this.req.parts()) {
       if (part.type === 'file') {
         const buffer = await part.toBuffer();
+        this.fileParts.push({ field: part.fieldname, filename: part.filename ?? '', buffer });
         if (part.filename) this.files[part.fieldname] = { filename: part.filename, mimetype: part.mimetype, buffer };
       } else {
         fields[part.fieldname] = part.value;
