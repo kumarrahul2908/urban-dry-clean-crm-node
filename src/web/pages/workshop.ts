@@ -19,7 +19,7 @@ const orDash = (v: unknown) => { const s = String(v ?? ''); return s === '' || s
 const flash = (ctx: WebCtx, r: { success: boolean; errors?: string[] }, ok: string) => ctx.flashSet(r.success ? 'success' : 'danger', r.success ? ok : (r.errors ?? []).join(' '));
 const isNumericStr = (s: string) => /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(s);
 /** PHP 8 string <=> string */
-const phpStrCmp = (a: string, b: string) => {
+export const phpStrCmp = (a: string, b: string) => {
   if (isNumericStr(a) && isNumericStr(b)) return Math.sign(parseFloat(a) - parseFloat(b));
   const x = Buffer.from(a), y = Buffer.from(b);
   const c = Buffer.compare(x, y);

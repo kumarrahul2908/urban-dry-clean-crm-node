@@ -209,3 +209,44 @@ export class WorkshopInvoice {
     return { ok: true };
   }
 }
+
+/** wi_words_int() */
+export function wiWordsInt(nIn: number): string {
+  let n = nIn;
+  if (n === 0) return 'Zero';
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const two = (x: number) => (x < 20 ? ones[x]! : tens[Math.trunc(x / 10)]! + (x % 10 ? '-' + ones[x % 10] : ''));
+  const parts: string[] = [];
+  const crore = Math.trunc(n / 10000000); n %= 10000000;
+  const lakh = Math.trunc(n / 100000); n %= 100000;
+  const thousand = Math.trunc(n / 1000); n %= 1000;
+  const hundred = Math.trunc(n / 100); const rest = n % 100;
+  if (crore) parts.push(wiWordsInt(crore) + ' Crore');
+  if (lakh) parts.push(two(lakh) + ' Lakh');
+  if (thousand) parts.push(two(thousand) + ' Thousand');
+  if (hundred) parts.push(ones[hundred] + ' Hundred');
+  if (rest) parts.push(two(rest));
+  return parts.join(' ');
+}
+
+/** wi_inr_in_words() */
+export function wiInrInWords(amountIn: number): string {
+  const amount = round2(amountIn);
+  let rupees = Math.floor(amount);
+  let paise = Math.round((amount - rupees) * 100);
+  if (paise === 100) { rupees++; paise = 0; }
+  let words = 'Indian Rupee ' + wiWordsInt(rupees);
+  if (paise > 0) words += ' and ' + wiWordsInt(paise) + ' Paise';
+  return words + ' Only';
+}
+
+/** wi_inr_format(): 123456.5 -> "1,23,456.50" */
+export function wiInrFormat(amount: number): string {
+  const neg = amount < 0;
+  const [int, dec] = Math.abs(amount).toFixed(2).split('.') as [string, string];
+  let last3 = int.slice(-3);
+  const rest = int.slice(0, -3);
+  if (rest !== '') last3 = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
+  return (neg ? '-' : '') + last3 + '.' + dec;
+}

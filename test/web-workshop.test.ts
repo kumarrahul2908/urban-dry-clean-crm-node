@@ -119,4 +119,87 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     await write('settings csrf', php, node, (c) => c.post(s, base, { csrf: false }), { sortRows: true });
     await write('settings ws login', ws.php, ws.node, post({ ...base, workshop_id: '2' }), { sortRows: true });
   });
+
+  it('workshop report', async () => {
+    await seedRich(prepare);
+    await h.db.execute("UPDATE workshop_items SET sent_at = NOW() - INTERVAL id DAY");
+    const { php, node } = await asBoss();
+    for (const q of ['', '?period=15days', '?period=30days', '?period=custom', '?period=custom&from=2020-01-01&to=2099-01-01', '?period=custom&from=bad&to=bad', '?period=zzz', '?store_id=1', '?store_id=2', '?store_id=9', '?period=30days&store_id=2']) await both(php, node, `/modules/workshop/report.php${q}`, `report ${q}`, true);
+    expect((await php.get('/modules/workshop/report.php?period=30days')).body).toContain('Combined total');
+    for (const who of ['ws', 'orphan', 'admin'] as const) { const c = await login(who); await both(c.php, c.node, '/modules/workshop/report.php?period=30days', `report ${who}`, true); }
+  });
+
+  const prepareBills = async (db: Db) => {
+    await prepare(db);
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 5, id FROM permissions WHERE permission_key = 'billing.view'");
+    const svc = buildServices(h.env, db, { hooks: noopOrderHooks });
+    const wi = await db.query<any>('SELECT id, laundry_garment_id FROM workshop_items ORDER BY id');
+    await db.execute('UPDATE workshop_items SET sent_at = NOW() - INTERVAL 20 DAY WHERE id = ?', [wi[1].id]);
+    await db.execute('UPDATE workshop_items SET sent_at = NOW() - INTERVAL 40 DAY WHERE laundry_garment_id IS NOT NULL');
+    await db.execute("INSERT IGNORE INTO workshop_items (id, challan_id, order_item_id, status, sent_at) SELECT 99, challan_id, order_item_id, 'Sent', NOW() FROM workshop_items WHERE id = 0");
+    const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+    const a = await svc.workshopInvoice.createInvoice(null, 1, day(25), day(15), day(0), null, 1, null, null, 'inclusive', 18) as any;
+    if (!a.ok) throw new Error(JSON.stringify(a));
+    await svc.workshopInvoice.recordPayment(a.bill_id, 5, 1, 'ref <1>', day(0), 'part', 1, null);
+    const b = await svc.workshopInvoice.createInvoice(null, 1, day(45), day(35), day(1), 'Laundry period', 1, null, null, 'exclusive', 18) as any;
+    if (!b.ok) throw new Error(JSON.stringify(b));
+    await h.db.execute("UPDATE workshop_bills SET due_date = CURDATE() - INTERVAL 3 DAY WHERE id = ?", [b.bill_id]);
+  };
+
+  it('workshop billing: list, new, review, detail, invoice print', async () => {
+    await seedRich(prepareBills);
+    for (const who of ['boss', 'admin', 'ws', 'orphan'] as const) {
+      const c = who === 'boss' ? await asBoss() : await login(who);
+      const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+      for (const p of ['', '?status=Unpaid', '?status=Partially%20Paid', '?status=Overdue', '?status=Paid', '?status=Void', '?status=bogus', '?id=1', '?id=2', '?id=99', '?new=1', '?new=1&store_id=all&workshop_id=1&period=custom&custom_from=2026-01-01',
+        '?preview=1', '?preview=1&store_id=all&workshop_id=1', '?preview=1&store_id=1&workshop_id=1&period=30days', '?preview=1&store_id=2&workshop_id=2&period=week', '?preview=1&store_id=all&workshop_id=1&period=custom&custom_from=bad&custom_to=bad',
+        `?preview=1&store_id=all&workshop_id=1&period=custom&custom_from=${day(60)}&custom_to=${day(0)}&changed=1`, '?created=1', '?preview=1&store_id=9&workshop_id=1',
+        '/../bill_print.php?id=1', '/../bill_print.php?id=2', '/../bill_print.php?id=99']) {
+        const path = p.startsWith('/') ? `/modules/workshop${p.slice(3)}` : `/modules/workshop/billing.php${p}`;
+        await both(c.php, c.node, path, `${who} ${path}`, true);
+      }
+    }
+    expect((await (await asBoss()).php.get('/modules/workshop/billing.php?id=1')).body).toContain('Payments received');
+    const nobody = await login('nobody');
+    for (const p of ['/modules/workshop/billing.php', '/modules/workshop/bill_print.php?id=1']) await both(nobody.php, nobody.node, p, `nobody ${p}`);
+    const anon = await login(null);
+    await both(anon.php, anon.node, '/modules/workshop/billing.php', 'anon billing');
+  });
+
+  it('workshop billing: generate, pay, void, unprocessed', async () => {
+    await seedRich(prepareBills);
+    const { php, node } = await asBoss();
+    const b = '/modules/workshop/billing.php';
+    const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+    const post = (form: Record<string, string>) => (c: Client) => c.post(b, form);
+    const o = { sortRows: true };
+    const items = await h.db.query<any>("SELECT wi.id FROM workshop_items wi ORDER BY wi.id");
+    await write('generate all stores', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0), subject: 'Charges X', expected_total: '-1', expected_count: '-1', gst_mode: 'none' }), o);
+    const bills = await h.db.query<any>('SELECT id FROM workshop_bills ORDER BY id');
+    await write('generate changed', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0), subject: 's', expected_total: '12345', expected_count: '9', gst_mode: 'inclusive' }), o);
+    await write('generate no items', php, node, post({ action: 'generate', store_id: '1', workshop_id: '1', from: day(100), to: day(90), invoice_date: day(0), subject: '', expected_total: '0', expected_count: '0', gst_mode: 'exclusive' }), o);
+    await write('generate bad dates', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: 'x', to: 'y', invoice_date: 'z', expected_total: '0', expected_count: '0' }), o);
+    await write('generate bad store', php, node, post({ action: 'generate', store_id: '99', workshop_id: '1', from: day(6), to: day(0) }), o);
+    await write('pay partial', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '10', payment_type_id: '1', reference_no: 'UPI-1', paid_on: day(0), notes: 'n <b>' }), o);
+    await write('pay too much', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '999999', payment_type_id: '1', paid_on: day(0) }), o);
+    await write('pay bad type', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '1', payment_type_id: '99', paid_on: day(0) }), o);
+    await write('pay future', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '1', payment_type_id: '1', paid_on: '2099-01-01' }), o);
+    await write('pay zero', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '0', payment_type_id: '1', paid_on: day(0) }), o);
+    await write('pay void/missing', php, node, post({ action: 'record_payment', bill_id: '99', amount: '1', payment_type_id: '1', paid_on: day(0) }), o);
+    await write('void', php, node, post({ action: 'void', bill_id: String(bills[1].id), reason: 'wrong period' }), o);
+    await write('void paid', php, node, post({ action: 'void', bill_id: String(bills[0].id), reason: 'oops' }), o);
+    await write('void short reason', php, node, post({ action: 'void', bill_id: String(bills[1].id), reason: 'x' }), o);
+    await write('unprocessed', php, node, post({ action: 'mark_unprocessed', workshop_item_id: String(items[0].id), reason: 'torn badly', redirect_to: `${h.env.APP_URL}/modules/workshop/billing.php?preview=1` }), o);
+    await write('unprocessed no redirect', php, node, post({ action: 'mark_unprocessed', workshop_item_id: String(items[0].id), reason: 'torn badly' }), o);
+    await write('unprocessed foreign redirect', php, node, post({ action: 'mark_unprocessed', workshop_item_id: String(items[0].id), reason: 'torn badly', redirect_to: 'https://evil.example/' }), o);
+    await write('resolve', php, node, post({ action: 'resolve_unprocessed', workshop_item_id: String(items[2].id) }), o);
+    await write('csrf', php, node, (c) => c.post(b, { action: 'void', bill_id: '1', reason: 'abc' }, { csrf: false }), o);
+    // workshop login (workshop 1): own bills only; orphan: blocked
+    const ws = await login('ws'), orphan = await login('orphan');
+    await write('ws pay', ws.php, ws.node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '1', payment_type_id: '1', paid_on: day(0) }), o);
+    await write('ws generate other workshop', ws.php, ws.node, post({ action: 'generate', store_id: 'all', workshop_id: '2', from: day(6), to: day(0), invoice_date: day(0), subject: '', expected_total: '-1', expected_count: '-1' }), o);
+    await write('orphan generate', orphan.php, orphan.node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0) }), o);
+    const viewer = await login('nobody');
+    await write('viewer cannot manage', viewer.php, viewer.node, post({ action: 'void', bill_id: String(bills[0].id), reason: 'abc' }), o);
+  });
 });
