@@ -38,6 +38,8 @@ export class WebCtx {
     }
     return this.settingsCache[key] ?? fallback;
   }
+  /** get_setting() for templates; call `await ctx.setting('x')` first so the cache is loaded. */
+  settingSync(key: string, fallback: string | null = null): string | null { return this.settingsCache?.[key] ?? fallback; }
   private symbol: string | null = null;
   /** Loads the currency symbol so money() can be used synchronously inside templates. */
   async loadMoney(): Promise<(amount: unknown) => string> {

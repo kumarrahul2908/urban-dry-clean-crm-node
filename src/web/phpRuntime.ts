@@ -6,7 +6,7 @@ export interface TplHelpers {
   u: (p: string) => string; money: (v: unknown) => string; fdate: (v: unknown, fmt?: string) => string; fdatetime: (v: unknown, fmt?: string) => string;
   csrfField: () => string; csrfToken: () => string; can: (k: string) => boolean;
   isDeliveryManager?: () => boolean; fixedStoreId?: () => number | null; activeStoreId?: () => number | null;
-  getSetting?: (k: string, d?: string) => string; phpDate?: (fmt: string, ts?: number) => string; strtotime?: (s: string) => number; time?: () => number;
+  getSetting: (k: string, d?: any) => any; phpDate?: (fmt: string, ts?: number) => string; strtotime?: (s: string) => number; time?: () => number;
   [k: string]: any;
 }
 

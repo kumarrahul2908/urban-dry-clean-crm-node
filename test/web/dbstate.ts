@@ -49,6 +49,7 @@ function norm(v: unknown): unknown {
     if (TS.test(v)) return 'TS';
     if (/^[0-9a-f]{32}$/.test(v) || /^[0-9a-f]{64}$/.test(v)) return 'HEX'; // random tokens (qr_token …)
     if (/^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(v)) return 'IMG'; // uploaded file names
+    if (/^\$2[aby]\$\d\d\$.{53}$/.test(v)) return 'BCRYPT'; // salted password hashes
     if (/^[[{]/.test(v)) { try { return normObj(JSON.parse(v)); } catch { return v; } }
     return v;
   }

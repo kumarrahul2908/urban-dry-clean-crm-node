@@ -16,6 +16,7 @@ export async function tplHelpers(ctx: WebCtx, extra: Record<string, any> = {}): 
     isDeliveryManager: () => ['Super Admin', 'Admin', 'Store Manager', 'Delivery Manager'].includes(ctx.roleName()),
     fixedStoreId: () => ctx.fixedStoreId(),
     activeStoreId: () => ctx.activeStoreId(),
+    getSetting: (k: string, d: any = null) => ctx.settingSync(k, d),
     ...extra,
   } as TplHelpers;
 }

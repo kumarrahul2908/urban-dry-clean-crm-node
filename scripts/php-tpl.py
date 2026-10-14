@@ -21,6 +21,8 @@ TOK = re.compile(r"""
 |(?P<op>===|!==|==|!=|<>|<=|>=|\?\?|\?:|&&|\|\||=>|->|[-+*/%.<>!?:,()\[\]=;&|{}])
 """, re.X)
 
+RESERVED = {'e', 'S', 'T', 'add', 'cmp', 'copy', 'count', 'elvis', 'entries', 'flt', 'int', 'looseEq', 'mod', 'num', 'phpEmpty', 'toArray', 'values', 'h', 'v', 'out'}
+
 def tokenize(s):
     pos, out = 0, []
     while pos < len(s):
@@ -29,7 +31,9 @@ def tokenize(s):
         pos = m.end()
         k = m.lastgroup
         if k == 'ws': continue
-        out.append((k, m.group(k)))
+        val = m.group(k)
+        if k == 'var' and val[1:] in RESERVED: val += '_'   # a PHP $e would shadow the e() escaper etc.
+        out.append((k, val))
     return out
 
 def js_str(s):
@@ -302,13 +306,14 @@ def statement(st, emit, depth):
         km = re.fullmatch(r'\$(\w+)\s*=>\s*\$(\w+)', target)
         dm = re.fullmatch(r'\[(.*)\]', target, re.S)
         vm = re.fullmatch(r'\$(\w+)', target)
+        rn = lambda n: n + '_' if n in RESERVED else n
         if km:
-            LOOP_VARS.extend([km.group(1), km.group(2)]); emit(f'for (const [{km.group(1)}, {km.group(2)}] of entries({arr})) {{')
+            LOOP_VARS.extend([rn(km.group(1)), rn(km.group(2))]); emit(f'for (const [{rn(km.group(1))}, {rn(km.group(2))}] of entries({arr})) {{')
         elif dm:
-            names = [x.strip()[1:] for x in dm.group(1).split(',')]; LOOP_VARS.extend(names)
+            names = [rn(x.strip()[1:]) for x in dm.group(1).split(',')]; LOOP_VARS.extend(names)
             emit(f'for (const [{", ".join(names)}] of values({arr})) {{')
         elif vm:
-            LOOP_VARS.append(vm.group(1)); emit(f'for (const {vm.group(1)} of values({arr})) {{')
+            LOOP_VARS.append(rn(vm.group(1))); emit(f'for (const {rn(vm.group(1))} of values({arr})) {{')
         else: raise Fail('foreach target ' + target)
         return depth + 1
     m = re.fullmatch(r'for\s*\(\s*\$(\w+)\s*=\s*(.*?);\s*\$(\w+)\s*(<=|<)\s*(.*?);\s*\$(\w+)\+\+\s*\)\s*:', st, re.S)
