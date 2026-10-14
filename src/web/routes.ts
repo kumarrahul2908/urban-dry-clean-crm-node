@@ -10,6 +10,8 @@ import { registerCustomerPortPages } from './pages/customerPorts.js';
 import { registerDailyDashboard } from './pages/dailyDashboard.js';
 import { registerAccountPages } from './pages/accounts.js';
 import { registerDeliveryPages } from './pages/delivery.js';
+import { registerWorkshopIndexPage } from './pages/workshopIndex.js';
+import { registerWorkshopPages } from './pages/workshop.js';
 import { registerOpsPages } from './pages/ops.js';
 import { registerPosPages } from './pages/pos.js';
 import { registerPaymentPages } from './pages/payments.js';
@@ -48,6 +50,8 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerPaymentPages(app);
   registerPosPages(app);
   registerOpsPages(app);
+  registerWorkshopPages(app);
+  registerWorkshopIndexPage(app);
   registerDeliveryPages(app);
   registerAccountPages(app);
   registerPosApis(app);
