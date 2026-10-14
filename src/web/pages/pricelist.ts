@@ -80,17 +80,17 @@ export function registerPricelistPages(app: FastifyInstance) {
       `SELECT pli.*, g.garment_name, g.sku, g.category_id, c.category_name, s.service_name, s.billing_unit, t.tax_name, t.tax_percent
        FROM price_list_items pli JOIN garments g ON g.id = pli.garment_id LEFT JOIN categories c ON c.id = g.category_id
        JOIN services s ON s.id = pli.service_id LEFT JOIN taxes t ON t.id = pli.tax_id
-       WHERE ${where} AND s.pricing_scope = 'garment' ORDER BY g.garment_name, s.service_name, pli.id`, params);
+       WHERE ${where} AND s.pricing_scope = 'garment' ORDER BY g.garment_name, s.service_name`, params);
     const universalItems = await db.query<Row>(
       `SELECT plsr.*, s.service_name, s.billing_unit, t.tax_name, t.tax_percent FROM price_list_service_rates plsr
-       JOIN services s ON s.id = plsr.service_id LEFT JOIN taxes t ON t.id = plsr.tax_id WHERE plsr.price_list_id = ? ORDER BY s.service_name, plsr.id`, [id]);
-    const garments = await db.query<Row>('SELECT g.id, g.garment_name, g.sku, g.category_id, g.default_service_id, c.category_name FROM garments g LEFT JOIN categories c ON c.id = g.category_id WHERE g.is_active=1 ORDER BY g.garment_name, g.id');
-    const services = await db.query<Row>("SELECT id, service_name, billing_unit FROM services WHERE is_active=1 AND pricing_scope='garment' ORDER BY sort_order, id");
+       JOIN services s ON s.id = plsr.service_id LEFT JOIN taxes t ON t.id = plsr.tax_id WHERE plsr.price_list_id = ? ORDER BY s.service_name`, [id]);
+    const garments = await db.query<Row>('SELECT g.id, g.garment_name, g.sku, g.category_id, g.default_service_id, c.category_name FROM garments g LEFT JOIN categories c ON c.id = g.category_id WHERE g.is_active=1 ORDER BY g.garment_name');
+    const services = await db.query<Row>("SELECT id, service_name, billing_unit FROM services WHERE is_active=1 AND pricing_scope='garment' ORDER BY sort_order");
     const configured = universalItems.map((u) => Number(u.service_id));
-    const universalServices = await db.query<Row>("SELECT id, service_name, billing_unit FROM services WHERE is_active=1 AND pricing_scope='universal' ORDER BY sort_order, id");
+    const universalServices = await db.query<Row>("SELECT id, service_name, billing_unit FROM services WHERE is_active=1 AND pricing_scope='universal' ORDER BY sort_order");
     const universalServicesAvailable = universalServices.filter((s) => !configured.includes(Number(s.id)));
     const taxes = await db.query<Row>('SELECT id, tax_name, tax_percent FROM taxes WHERE is_active=1 ORDER BY id');
-    const categories = await db.query<Row>('SELECT id, category_name FROM categories WHERE is_active=1 ORDER BY sort_order, id');
+    const categories = await db.query<Row>('SELECT id, category_name FROM categories WHERE is_active=1 ORDER BY sort_order');
     const nameCounts: Record<string, number> = {};
     for (const g of garments) nameCounts[g.garment_name] = (nameCounts[g.garment_name] ?? 0) + 1;
     const garmentDisplayLabel = (g: Row, counts: Record<string, number>): string => {

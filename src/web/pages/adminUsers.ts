@@ -92,7 +92,7 @@ export function registerAdminUsersPage(app: FastifyInstance) {
     const users = await db.query<Row>(
       `SELECT u.id, u.full_name, u.username, u.email, u.mobile, u.employee_code, u.is_active, u.created_at, u.store_id, u.workshop_id,
        r.id AS role_id, r.role_name, s.store_name, w.workshop_name FROM users u JOIN roles r ON r.id = u.role_id
-       LEFT JOIN stores s ON s.id = u.store_id LEFT JOIN workshops w ON w.id = u.workshop_id ORDER BY u.full_name, u.id`);
+       LEFT JOIN stores s ON s.id = u.store_id LEFT JOIN workshops w ON w.id = u.workshop_id ORDER BY u.full_name`);
     const h = await tplHelpers(ctx);
     return layout(ctx, { title: 'Users & Roles' }, raw(tplAdminUsers({ _SESSION: { user_id: ctx.data.user_id }, errors, roles, stores, users, workshopsList }, h)));
   });

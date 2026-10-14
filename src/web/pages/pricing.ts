@@ -24,9 +24,9 @@ export function registerPricingPages(app: FastifyInstance) {
     const id = int((req.query as Record<string, unknown>).id);
     const priceList = (await db.query<Row>('SELECT * FROM price_lists WHERE id = ?', [id]))[0];
     if (!priceList) { ctx.flashSet('danger', 'Price list not found.'); return new WebRedirect('modules/pricelist/list.php'); }
-    const garments = await db.query<Row>('SELECT g.id, g.garment_name, g.category_id, c.category_name FROM garments g LEFT JOIN categories c ON c.id = g.category_id WHERE g.is_active=1 ORDER BY g.garment_name, g.id');
-    const services = await db.query<Row>('SELECT id, service_name, billing_unit FROM services WHERE is_active=1 ORDER BY sort_order, id');
-    const categories = await db.query<Row>('SELECT id, category_name FROM categories WHERE is_active=1 ORDER BY sort_order, id');
+    const garments = await db.query<Row>('SELECT g.id, g.garment_name, g.category_id, c.category_name FROM garments g LEFT JOIN categories c ON c.id = g.category_id WHERE g.is_active=1 ORDER BY g.garment_name');
+    const services = await db.query<Row>('SELECT id, service_name, billing_unit FROM services WHERE is_active=1 ORDER BY sort_order');
+    const categories = await db.query<Row>('SELECT id, category_name FROM categories WHERE is_active=1 ORDER BY sort_order');
     const nameCounts: Record<string, number> = {};
     for (const g of garments) nameCounts[g.garment_name] = (nameCounts[g.garment_name] ?? 0) + 1;
     const garmentDisplayLabel = (g: Row, counts: Record<string, number>): string => {
