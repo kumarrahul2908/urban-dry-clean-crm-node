@@ -1,25 +1,21 @@
 import { loadEnv } from '../config/env.js';
-import { createPool } from '../db/pool.js';
 import { Crypto } from '../lib/crypto.js';
 import { todayIn } from '../lib/dates.js';
 import { CustomerSegments } from '../services/customerSegments.js';
 import { getSetting } from '../services/settings.js';
 import { WhatsAppService } from '../services/whatsappService.js';
+import { forEachBusiness } from '../tenancy/runtime.js';
 import { MetaCloudProvider } from '../whatsapp/provider.js';
 
-/** Port of cron/whatsapp_marketing_automation.php — run once a day. Idempotent per rule/customer/day via event_ref. */
-const env = loadEnv();
-const { db, close } = createPool(env);
-try {
+/** Port of cron/whatsapp_marketing_automation.php — run once a day. Idempotent per rule/customer/day via event_ref. Once per active business in SaaS mode. */
+await forEachBusiness(loadEnv(), async (env, db) => {
   const today = todayIn(env.APP_TIMEZONE);
   let rules: Record<string, any>[];
   try {
     rules = await db.query('SELECT * FROM whatsapp_marketing_rules WHERE is_active = 1');
   } catch {
     console.log(`[${today}] Marketing automation: whatsapp_marketing_rules table does not exist yet — nothing to run.`);
-    rules = [];
-    await close();
-    process.exit(0);
+    return;
   }
   const wa = new WhatsAppService(db, new Crypto(env.APP_SECRET_KEY), new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE });
   const segments = new CustomerSegments(db);
@@ -35,6 +31,4 @@ try {
     }
   }
   console.log(`[${today}] Marketing automation: ${queued} queued, ${skipped} skipped (already sent today or ineligible), ${rules.length} active rule(s).`);
-} finally {
-  await close();
-}
+});

@@ -17,7 +17,8 @@
     "job:whatsapp-worker": "node dist/jobs/whatsappWorker.js",
     "job:whatsapp-marketing": "node dist/jobs/whatsappMarketing.js",
     "migrate": "node dist/jobs/migrate.js",
-    "preflight": "node dist/jobs/preflight.js"
+    "preflight": "node dist/jobs/preflight.js",
+    "tenant": "node dist/jobs/tenant.js"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

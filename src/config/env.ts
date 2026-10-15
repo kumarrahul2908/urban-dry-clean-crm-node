@@ -33,6 +33,15 @@ const schema = z.object({
   SERVE_UPLOADS: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   ALLOWED_IMAGE_TYPES: z.string().default('jpg,jpeg,png,webp'),
 
+  // Multi-tenant mode (SaaS, one database per business). Unset CONTROL_DB_NAME = classic single-business mode.
+  CONTROL_DB_NAME: z.string().default(''),
+  CONTROL_DB_HOST: z.string().optional(),
+  CONTROL_DB_PORT: z.coerce.number().optional(),
+  CONTROL_DB_USER: z.string().optional(),
+  CONTROL_DB_PASS: z.string().optional(),
+  /** Encrypts per-tenant DB passwords / app secrets stored in the control DB. */
+  CONTROL_MASTER_KEY: z.string().default(''),
+
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 

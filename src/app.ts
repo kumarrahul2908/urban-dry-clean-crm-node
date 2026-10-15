@@ -149,12 +149,13 @@ export function bearerToken(req: FastifyRequest): string | null {
   return /^bearer /i.test(h) ? h.slice(7).trim() : null;
 }
 
-export async function buildApp(services: Services): Promise<FastifyInstance> {
+export async function buildApp(services: Services, tenancy?: { install(app: FastifyInstance): void }): Promise<FastifyInstance> {
   const app = Fastify({
     logger: services.env.NODE_ENV !== 'test',
     trustProxy: services.env.TRUST_PROXY,
   });
   app.decorate('services', services);
+  tenancy?.install(app); // multi-tenant mode: bind every request to its business (by hostname) before anything else runs
 
   await app.register(helmet, { contentSecurityPolicy: false }); // the CRM pages use inline scripts/styles and CDN assets (as the PHP app did)
   await app.register(cors, { origin: false });

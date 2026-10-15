@@ -1,6 +1,6 @@
 # SaaS design (dry-clean / laundry businesses only)
 
-Status: **plan only — nothing built.** Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
+Status: **S1 built (tenant resolver, control DB, per-business pool/secret/uploads/cron) — off by default; S2–S6 not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
 pickup/delivery, WhatsApp, reports) stays exactly as migrated; SaaS adds *tenancy, signup and billing around it*.
 
 ## 1. Tenancy model — recommendation: one database per tenant (shared app)
@@ -58,3 +58,15 @@ web pages, `api/*.php`, `api/mobile/*`, uploads, WhatsApp webhook, cron).
 3. Domain: `*.something.in` subdomains and/or customers' own domains.
 4. Is the existing Urban Dry Clean data tenant #1 (recommended) and does it keep its own domain?
 5. Support model: self-serve only, or onboarding help (affects the super-admin console scope).
+
+## 6. S1 as built
+* **Off unless `CONTROL_DB_NAME` is set** → the app behaves exactly as before (single business, all 231 tests unchanged). Set `CONTROL_DB_NAME`, `CONTROL_MASTER_KEY` (encrypts per-business DB password/app secret) and optionally `CONTROL_DB_HOST/PORT/USER/PASS`.
+* `npm run tenant -- init | add | list | suspend | resume | cancel | host-add` (control tables in `db/control/schema.sql`: `tenants`, `tenant_domains`, `tenant_events`).
+  `add` needs the business's database to exist already (S3 will create + seed it).
+* Request → business by hostname (`onRequest` hook + AsyncLocalStorage). Unknown host 404, `suspended` 402, `cancelled` 404. Host lookups cached 60 s; up to 50 live pools (LRU).
+* `src/tenancy/aware.ts`: every object reachable from `app.services` (db, audit, orders, `web.sessions`, `env`, crypto, storage …) is a forwarding proxy resolved per call against the current business, so none of the ~100 pages/APIs changed.
+  (First version only proxied top-level members; the isolation test caught `svc.web.sessions` captured at registration time still pointing at the base DB — fixed by proxying the whole object path.)
+* Per business: database, `APP_URL`, `APP_SECRET_KEY` (WhatsApp tokens), `UPLOAD_DIR`, timezone, sessions (table lives in its DB), API tokens, WhatsApp webhook (by host).
+* Cron jobs (`whatsappWorker`, `whatsappMarketing`, `photoCleanup`) run once per active business via `forEachBusiness()`.
+* `test/tenancy.test.ts` (needs `TEST_DB2_NAME` + `TEST_CONTROL_DB_NAME`): two businesses behind one app — own data per host, users don't exist across businesses, a session cookie from A is rejected by B, unknown/suspended hosts, 24 concurrent mixed requests never mix, db/uploads/secret/URL per business.
+* Still open for S2+: tenant-aware `APP_NAME` captured at construction in a few services (falls back to the `business_name` setting everywhere it matters), nginx uploads path per business, provisioning, signup, billing, super-admin.
