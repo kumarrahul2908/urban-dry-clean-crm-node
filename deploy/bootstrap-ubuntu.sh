@@ -8,7 +8,7 @@ REPO=${REPO:-https://github.com/kumarrahul2908/urban-dry-clean-crm-node.git}; BR
 APP=/opt/udc; UPLOADS=/var/www/udc/uploads
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get install -y curl git nginx certbot python3-certbot-nginx ufw rsync mariadb-client
+apt-get update -y && apt-get install -y curl git nginx certbot python3-certbot-nginx rsync mariadb-client
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
 fi
@@ -29,9 +29,10 @@ su - udc -c "cd $APP && npm ci --no-audit --no-fund && npm run build"
 
 # nginx (HTTP first; certbot adds TLS)
 sed "s/test.urbandryclean.in/$DOMAIN/" "$APP/deploy/nginx.conf" > /etc/nginx/sites-available/udc
-ln -sf /etc/nginx/sites-available/udc /etc/nginx/sites-enabled/udc; rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/udc /etc/nginx/sites-enabled/udc   # existing sites are left untouched (only our own vhost is added)
 nginx -t && systemctl reload nginx
-ufw allow OpenSSH >/dev/null; ufw allow 'Nginx Full' >/dev/null; ufw --force enable >/dev/null
+# firewall: only open ports if ufw is already active; never switch it on from here (could lock you out)
+if ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow OpenSSH >/dev/null; ufw allow 'Nginx Full' >/dev/null; fi
 certbot --nginx -d "$DOMAIN" -m "$EMAIL" --agree-tos --no-eff-email --redirect -n || echo "certbot failed — point DNS at this server and re-run"
 
 [ -n "${NEED_ENV:-}" ] && exit 0
