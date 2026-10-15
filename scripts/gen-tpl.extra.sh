@@ -31,3 +31,4 @@ for n in analytics marketing rate_list campaigns; do gen reports/whatsapp/$n.php
 gen reports/whatsapp/inbox.php wa_inbox tplWaInbox 28 199
 genpre reports/whatsapp/templates.php "s/implode(', ', array_map(fn(\\\$v) => '{' . \\\$v . '}', \\\$knownVariables))/\\\$knownVariablesStr/" wa_templates tplWaTemplates
 genpre reports/whatsapp/settings.php 's/\$fv(/fv(/g' wa_settings tplWaSettings
+gen ../track.php track_page tplTrackPage 71 143

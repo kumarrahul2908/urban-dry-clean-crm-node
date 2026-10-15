@@ -9,7 +9,7 @@ cp -r "$SRC/includes" "$OUT/includes"
 cp -r "$SRC/api" "$OUT/api"
 cp -r "$SRC/modules" "$OUT/modules"
 cp -r "$SRC/assets" "$OUT/assets"
-cp "$SRC/index.php" "$OUT/index.php"
+cp "$SRC/index.php" "$OUT/index.php"; cp "$SRC/track.php" "$OUT/track.php"
 mkdir -p "$OUT/config"
 cat > "$OUT/config/config.php" <<'PHP'
 <?php

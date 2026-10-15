@@ -7,6 +7,7 @@ rm -f /tmp/smoke.jar
 chk /modules/auth/login.php 200
 chk /modules/dashboard/index.php 302
 chk /api/whatsapp_webhook 403
+chk "/track.php?token=00000000000000000000000000000000" 200
 [ -n "$U" ] && {
   tok=$(curl -s -c /tmp/smoke.jar -b /tmp/smoke.jar "$BASE/modules/auth/login.php" | sed -n 's/.*name="csrf_token" value="\([0-9a-f]*\)".*/\1/p' | head -1)
   curl -s -o /dev/null -c /tmp/smoke.jar -b /tmp/smoke.jar -d "csrf_token=$tok" --data-urlencode "username=$U" --data-urlencode "password=$P" "$BASE/modules/auth/login.php"
