@@ -50,6 +50,16 @@ const schema = z.object({
   /** Parent folder of per-business upload folders (<dir>/<slug>) for newly provisioned businesses. */
   TENANT_UPLOAD_ROOT: z.string().default('/var/www/udc/uploads'),
 
+  /** Host that serves the public signup page (e.g. crm.example.com). Empty = signup disabled. */
+  CONTROL_ROOT_HOST: z.string().default(''),
+  /** Every business lives at <slug>.<TENANT_BASE_DOMAIN>. */
+  TENANT_BASE_DOMAIN: z.string().default(''),
+  /** Template database new businesses are cloned from (see docs/SAAS-DESIGN.md §7). */
+  SIGNUP_TEMPLATE_DB: z.string().default(''),
+  /** true = provision instantly on signup; false = park as "pending" until approved (`tenant approve <id>`). */
+  SIGNUP_AUTO_APPROVE: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  SIGNUP_TRIAL_DAYS: z.coerce.number().int().min(0).default(14),
+
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 

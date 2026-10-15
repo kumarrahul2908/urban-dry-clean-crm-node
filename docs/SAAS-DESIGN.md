@@ -1,6 +1,6 @@
 # SaaS design (dry-clean / laundry businesses only)
 
-Status: **S1–S3 built (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S4–S6 (signup, billing, super-admin) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
+Status: **S1–S4 built (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S5–S6 (billing, super-admin console) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
 pickup/delivery, WhatsApp, reports) stays exactly as migrated; SaaS adds *tenancy, signup and billing around it*.
 
 ## 1. Tenancy model — recommendation: one database per tenant (shared app)
@@ -52,7 +52,11 @@ If tenants ever reach thousands, the same app can move to schema-per-tenant on b
 Every tenant runs the same, PHP-verified code; tenancy tests are added on top (two seeded tenants, assert no leakage on every route family:
 web pages, `api/*.php`, `api/mobile/*`, uploads, WhatsApp webhook, cron).
 
-## 5. Open decisions (need the owner's answer before S1)
+## 5. Decisions
+Answered by the owner: **~20–30 businesses** (database per business is right), **pricing later**, **one domain, one subdomain per business** (`<slug>.<TENANT_BASE_DOMAIN>`).
+Still open: is Urban Dry Clean tenant #1 on its own domain (assumed yes), and the support model.
+
+### Original questions
 1. Expected size: tens or thousands of businesses? (decides DB-per-tenant vs schema-per-tenant hosting.)
 2. Pricing/plans and whether a free trial is wanted; payment gateway (Razorpay assumed).
 3. Domain: `*.something.in` subdomains and/or customers' own domains.
@@ -81,3 +85,13 @@ needs an admin MariaDB account (`PROVISION_DB_USER/PASS[/HOST/PORT]`: CREATE DAT
 5. Registered in the control DB (own random `APP_SECRET_KEY`, upload folder `TENANT_UPLOAD_ROOT/<slug>`), trial end if `--trial-days`.
 Any failure drops the new database and user. `npm run tenant -- migrate-all [--dry]` applies `db/migrations` to every business (stops at the first failure).
 `test/provision.test.ts` covers clone contents, per-business DB-user isolation, a real login on the new host, duplicates and rollback.
+
+## 8. S4 as built — public signup + trial
+* Host `CONTROL_ROOT_HOST` (e.g. `apps.example.com`) serves only `GET/POST /signup` and `/health`; any other path there → 404. Businesses live at `<slug>.<TENANT_BASE_DOMAIN>` (one wildcard nginx vhost + wildcard TLS: `deploy/nginx-saas.conf`).
+* Form: business name, owner, mobile, email, web address (slug), password. Slug rules + reserved words (www, admin, api, …), duplicates (existing or pending) rejected.
+* Bot protection without sessions: honeypot field, HMAC-signed form token (valid 2 h, rejected if submitted in <2 s), 5 attempts / hour / IP.
+* Stored in `signup_requests` with a bcrypt hash only (never the plain password).
+* `SIGNUP_AUTO_APPROVE=false` (default): request waits; operator runs `npm run tenant -- requests | approve <id> | reject <id>`. `true`: provisioned instantly (from `SIGNUP_TEMPLATE_DB`) and the browser is redirected to the new business's login. Trial length `SIGNUP_TRIAL_DAYS` (default 14; `0` = no trial → status active). Login: username `owner` + the chosen password.
+* Trial expiry is stored (`tenants.trial_ends_at`) but **not enforced yet** — that comes with plans/billing (S5), together with the "suspend on non-payment" flow.
+* `test/signup.test.ts`: validation, root-host routing, bot protections, manual approval → real owner login, auto-approve redirect.
+* Security note: auto-approve means the web process holds the `PROVISION_DB_*` admin account (CREATE DATABASE / CREATE USER). With manual approval only the operator's CLI needs it — prefer that until abuse controls (email/WhatsApp OTP) are added.

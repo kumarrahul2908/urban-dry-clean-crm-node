@@ -6,6 +6,7 @@ import { buildServices } from '../app.js';
 import { tenantAwareServices } from './aware.js';
 import { tenantStorage } from './als.js';
 import { TenantRegistry, controlEnv } from './registry.js';
+import { registerSignup } from './signup.js';
 
 export interface MultiTenant { services: Services; registry: TenantRegistry; install(app: FastifyInstance): void; close(): Promise<void> }
 
@@ -20,7 +21,13 @@ export function createMultiTenant(env: Env, options: BuildOptions = {}): MultiTe
     services,
     registry,
     install(app) {
+      const root = env.CONTROL_ROOT_HOST.toLowerCase();
+      if (root) registerSignup(app, env, registry);
       app.addHook('onRequest', (req, reply, done) => {
+        if (root && req.hostname.toLowerCase().replace(/:\d+$/, '') === root) { // the marketing/signup host belongs to no business
+          if (req.url === '/signup' || req.url.startsWith('/signup?') || req.url === '/health') { done(); return; }
+          reply.code(404).type('text/plain').send('Not found.'); return;
+        }
         registry.resolveHost(req.hostname).then(async (row) => {
           if (!row || row.status === 'cancelled') { reply.code(404).type('text/plain').send('Unknown business.'); return; }
           if (row.status === 'suspended') { reply.code(402).type('text/html; charset=utf-8').send('<h2>Account suspended</h2><p>Please contact support to reactivate this account.</p>'); return; }

@@ -33,3 +33,20 @@ CREATE TABLE IF NOT EXISTS tenant_events (
   detail VARCHAR(500) NULL,
   created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS signup_requests (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  business_name VARCHAR(150) NOT NULL,
+  owner_name VARCHAR(100) NOT NULL,
+  mobile VARCHAR(20) NOT NULL,
+  email VARCHAR(150) NOT NULL,
+  slug VARCHAR(40) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  status ENUM('pending','approved','rejected','failed') NOT NULL DEFAULT 'pending',
+  tenant_id INT UNSIGNED NULL,
+  note VARCHAR(500) NULL,
+  ip VARCHAR(45) NULL,
+  created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_signup_slug (slug),
+  KEY idx_signup_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

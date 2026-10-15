@@ -21,7 +21,7 @@ const SKIP_SETTINGS = ['order_photo_retention_days'];
 export interface ProvisionInput {
   slug: string; name: string; host: string;
   templateDb: string;
-  admin: { username: string; password: string; fullName: string; mobile?: string; email?: string };
+  admin: { username: string; password?: string; passwordHash?: string; fullName: string; mobile?: string; email?: string };
   catalog?: boolean; timezone?: string; status?: 'trial' | 'active'; trialDays?: number;
 }
 export interface ProvisionResult { tenantId: number; dbName: string; dbUser: string; host: string }
@@ -39,7 +39,7 @@ export async function provisionTenant(env: Env, registry: TenantRegistry, input:
   if (!SLUG.test(input.slug)) throw new Error('slug: 3-30 chars, a-z 0-9 and "-"');
   const host = input.host.toLowerCase();
   if (!HOST.test(host)) throw new Error('invalid host name');
-  if (input.admin.password.length < 8) throw new Error('admin password must be at least 8 characters');
+  if (!input.admin.passwordHash && (input.admin.password ?? '').length < 8) throw new Error('admin password must be at least 8 characters');
   if ((await registry.control.query('SELECT id FROM tenants WHERE slug = ?', [input.slug])).length) throw new Error(`slug "${input.slug}" already exists`);
   if ((await registry.control.query('SELECT hostname FROM tenant_domains WHERE hostname = ?', [host])).length) throw new Error(`host "${host}" already registered`);
 
@@ -91,7 +91,7 @@ export async function provisionTenant(env: Env, registry: TenantRegistry, input:
       const role = (await tp.db.query<{ id: number }>("SELECT id FROM roles WHERE role_name = 'Super Admin' LIMIT 1"))[0];
       if (!role) throw new Error('template has no "Super Admin" role');
       await tp.db.execute('INSERT INTO users (role_id, full_name, username, email, mobile, password_hash, store_id, is_active) VALUES (?,?,?,?,?,?,NULL,1)',
-        [role.id, input.admin.fullName, input.admin.username, input.admin.email ?? null, input.admin.mobile ?? '', await hashPassword(input.admin.password)]);
+        [role.id, input.admin.fullName, input.admin.username, input.admin.email ?? null, input.admin.mobile ?? '', input.admin.passwordHash ?? await hashPassword(input.admin.password!)]);
       await tp.db.execute('CREATE TABLE IF NOT EXISTS udc_migrations (name VARCHAR(190) NOT NULL PRIMARY KEY, applied_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP, note VARCHAR(255) NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     } finally { await tp.close(); }
 
