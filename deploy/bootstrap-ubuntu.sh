@@ -28,6 +28,7 @@ chown -R udc:udc "$APP"
 if [ ! -f "$APP/.env" ]; then
   cp "$APP/.env.example" "$APP/.env"
   sed -i "s#^APP_URL=.*#APP_URL=https://$DOMAIN#; s#^TRUST_PROXY=.*#TRUST_PROXY=true#; s#^UPLOAD_DIR=.*#UPLOAD_DIR=$UPLOADS#; s#^PORT=.*#PORT=$PORT#; s#^HOST=.*#HOST=127.0.0.1#" "$APP/.env"
+  if [ -f /root/.udc_db_pass ]; then sed -i "s#^DB_HOST=.*#DB_HOST=127.0.0.1#; s#^DB_NAME=.*#DB_NAME=udc_staging#; s#^DB_USER=.*#DB_USER=udc#; s#^DB_PASS=.*#DB_PASS=$(cat /root/.udc_db_pass)#" "$APP/.env"; fi
   chown udc:udc "$APP/.env"; chmod 600 "$APP/.env"
   echo ">>> Edit $APP/.env (DB_*, APP_SECRET_KEY = SAME as PHP) then re-run this script."
   NEED_ENV=1
