@@ -4,7 +4,17 @@ State: every PHP page and `api/*.php` / `api/mobile/*.php` endpoint has a Node t
 verified against the real PHP app on the same DB (`docs/PARITY.md`, `npm test`). Nothing in the live database schema is changed except one
 additive table, `web_sessions` (`db/migrations`).
 
-## 0. Prerequisites (VPS)
+## 0. Fast path (fresh Ubuntu VPS)
+```bash
+# as root on the VPS (DNS A record of DOMAIN must already point to it)
+curl -fsSL https://raw.githubusercontent.com/kumarrahul2908/urban-dry-clean-crm-node/main/deploy/bootstrap-ubuntu.sh | DOMAIN=staging.example.com EMAIL=you@example.com bash
+nano /opt/udc/.env          # DB_*, APP_SECRET_KEY (same as PHP). Re-run the command above.
+```
+The script installs Node 22/nginx/pm2/certbot, builds the app, issues TLS, then runs **`npm run preflight`** (read-only checks: env, uploads dir,
+assets, required tables, permission keys, bcrypt hashes, WhatsApp tokens decryptable with the key), **`npm run migrate`** (additive `db/migrations`,
+recorded in `udc_migrations`; `--dry` previews, `--baseline` marks all as applied) and starts pm2. Crontab (`deploy/crontab`) is installed only at cutover.
+
+## 0b. Prerequisites (manual route)
 Node 22, nginx, pm2, MariaDB access (or the same Hostinger DB over remote access), a copy of the PHP `config/config.php` values.
 `/opt/udc` = this repo (`npm ci && npm run build`), `/opt/udc/.env` from `.env.example` — **`APP_SECRET_KEY` identical to PHP**, `TRUST_PROXY=true`.
 Apply the migration(s) in `db/migrations` once. `rsync` the PHP `uploads/` to `UPLOAD_DIR`. Then `deploy/ecosystem.config.cjs`, `deploy/nginx.conf`.
