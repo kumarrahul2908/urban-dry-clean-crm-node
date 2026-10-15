@@ -2,6 +2,7 @@ import { loadEnv } from '../config/env.js';
 import { createPool } from '../db/pool.js';
 import { applyMigrations } from '../db/migrations.js';
 import { provisionTenant } from '../tenancy/provision.js';
+import { addSuperAdmin } from '../tenancy/console.js';
 import { approveSignup } from '../tenancy/signup.js';
 import { TenantRegistry, controlEnv, initControlSchema } from '../tenancy/registry.js';
 
@@ -12,6 +13,7 @@ import { TenantRegistry, controlEnv, initControlSchema } from '../tenancy/regist
  *   create --slug s --name "N" --host h --template-db DB --admin-user u --admin-pass p [--plan code] [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14 --timezone]
  *          (new database + DB user, schema + reference data cloned from the template DB, default store, first Super Admin; needs PROVISION_DB_* admin account)
  *   requests | approve <id> | reject <id> [note]   signup requests (public /signup page; see SIGNUP_* env)
+ *   admin-add <username> <password>       create / reset an operator-console login (CONTROL_ADMIN_HOST; password >= 12 chars)
  *   plans | plan <slug> <code> [--until YYYY-MM-DD] | extend <slug> <days> | usage   plans, paid-through dates, usage vs limits
  *   migrate-all [--dry]                   apply db/migrations to the control-plane-listed businesses (stops at the first failing business)
  *   list | suspend <slug> | resume <slug> | cancel <slug> | host-add <slug> <hostname>
@@ -51,6 +53,8 @@ try {
     } else if (cmd === 'reject') {
       const r = await control.db.execute("UPDATE signup_requests SET status = 'rejected', note = ? WHERE id = ? AND status IN ('pending','failed')", [rest.slice(1).join(' ') || null, Number(rest[0])]);
       console.log(r.affectedRows ? 'rejected' : 'no such pending request');
+    } else if (cmd === 'admin-add') {
+      await addSuperAdmin(reg, rest[0] ?? '', rest[1] ?? ''); console.log('operator login saved');
     } else if (cmd === 'plans') {
       for (const p of await control.db.query<any>('SELECT * FROM plans ORDER BY id')) console.log(`${p.code.padEnd(8)} ${p.name.padEnd(8)} stores=${p.max_stores || '∞'} users=${p.max_users || '∞'} orders/mo=${p.max_orders_month || '∞'} price=${p.price_monthly ?? 'unset'}/mo ${p.price_yearly ?? 'unset'}/yr${p.is_active ? '' : ' (inactive)'}`);
     } else if (cmd === 'plan') {

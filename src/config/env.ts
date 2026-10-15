@@ -52,6 +52,8 @@ const schema = z.object({
 
   /** Host that serves the public signup page (e.g. crm.example.com). Empty = signup disabled. */
   CONTROL_ROOT_HOST: z.string().default(''),
+  /** Host of the operator console (e.g. admin.example.com). Empty = console disabled. Serves only /console/*. */
+  CONTROL_ADMIN_HOST: z.string().default(''),
   /** Every business lives at <slug>.<TENANT_BASE_DOMAIN>. */
   TENANT_BASE_DOMAIN: z.string().default(''),
   /** Template database new businesses are cloned from (see docs/SAAS-DESIGN.md §7). */

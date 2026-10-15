@@ -1,6 +1,6 @@
 # SaaS design (dry-clean / laundry businesses only)
 
-Status: **S1–S5 built (billing gateway deferred until pricing is decided) (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S6 (super-admin console) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
+Status: **S1–S6 built (billing gateway deferred until pricing is decided) (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; all phases done except the payment gateway (waits for pricing).** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
 pickup/delivery, WhatsApp, reports) stays exactly as migrated; SaaS adds *tenancy, signup and billing around it*.
 
 ## 1. Tenancy model — recommendation: one database per tenant (shared app)
@@ -104,3 +104,12 @@ Any failure drops the new database and user. `npm run tenant -- migrate-all [--d
 * Operator CLI: `plan <slug> <code> [--until YYYY-MM-DD]` (moves trial/suspended → active), `extend <slug> <days>`, `usage` (stores/users/orders-this-month vs limits + dates), `suspend/resume/cancel`. New signups get plan `trial` (or `starter` when `SIGNUP_TRIAL_DAYS=0`).
 * **Not built (waiting for pricing):** payment gateway (Razorpay subscriptions + webhook that calls the same "set plan / paid-through" update), invoices, dunning e-mails/WhatsApp reminders before expiry. The enforcement above is gateway-agnostic: a webhook only has to set `plan_id` + `plan_ends_at`.
 * `test/plans.test.ts`: date logic, limits for users/stores/orders in a running app, expired → 402 (pages + API) with login still allowed, renew → writable again.
+
+## 10. S6 as built — operator console (`CONTROL_ADMIN_HOST`)
+* Own host (e.g. `admin.apps.example.com`) serving only `/console/*`; own login (`super_admins` in the control DB, bcrypt, 8-hour server-side sessions stored hashed, per-session CSRF token, 10 attempts / 15 min / IP, failed logins logged to `tenant_events`). Create / reset an operator: `npm run tenant -- admin-add <user> <password≥12>`.
+* **Businesses** page: status (trial / active / read-only / suspended), plan, stores / users / orders-this-month vs the plan limits, customers, trial / paid-through dates; banner when signup requests wait.
+* **Business detail:** suspend / resume / cancel, set plan + paid-through date, extend days, **open as owner** (single-use 60-second link; creates a normal session for that business's Super Admin; audited in the business's own `audit_logs` *and* in `tenant_events`), **database backup** (`mysqldump | gzip`, streamed; needs `mysqldump` on the server), last 15 events.
+* **Signup requests:** approve (provisions) / reject. **Plans:** edit limits and prices.
+* Host isolation: `/console` and `/signup` return 404 on every business host; the console host serves nothing else; the signup host serves only `/signup`. (A leak found while building this: `/signup` was previously reachable on business hosts — fixed.)
+* `test/console.test.ts`: login / bad login, host separation, CSRF, suspend ↔ resume effect on the business host, plan + extend + plan edit, impersonation (single use, audited both sides), gzip SQL backup, logout.
+* Deliberately not included: deleting a business's data (cancel keeps it; drop the database by hand after a retention period), billing screens (no gateway yet), in-console user management (use the business's own Users page via "open as owner").

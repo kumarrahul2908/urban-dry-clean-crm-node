@@ -6,6 +6,8 @@ import { buildServices } from '../app.js';
 import { tenantAwareServices } from './aware.js';
 import { tenantStorage } from './als.js';
 import { TenantRegistry, controlEnv } from './registry.js';
+import { registerConsole } from './console.js';
+import { registerImpersonation } from './impersonate.js';
 import { registerSignup } from './signup.js';
 
 /** Still allowed when a subscription has lapsed: signing in/out and Meta's inbound webhook (so the account can be viewed and exported). */
@@ -26,11 +28,22 @@ export function createMultiTenant(env: Env, options: BuildOptions = {}): MultiTe
     install(app) {
       const root = env.CONTROL_ROOT_HOST.toLowerCase();
       if (root) registerSignup(app, env, registry);
+      const adminHost = env.CONTROL_ADMIN_HOST.toLowerCase();
+      if (adminHost) registerConsole(app, env, registry);
+      registerImpersonation(app, registry);
+      const bare = (h: string) => h.toLowerCase().replace(/:\d+$/, '');
       app.addHook('onRequest', (req, reply, done) => {
-        if (root && req.hostname.toLowerCase().replace(/:\d+$/, '') === root) { // the marketing/signup host belongs to no business
+        const host = bare(req.hostname);
+        if (adminHost && host === adminHost) { // operator console host: /console/* only
+          if (req.url.startsWith('/console') || req.url === '/health') { done(); return; }
+          reply.code(404).type('text/plain').send('Not found.'); return;
+        }
+        if (root && host === root) { // the marketing/signup host belongs to no business
           if (req.url === '/signup' || req.url.startsWith('/signup?') || req.url === '/health') { done(); return; }
           reply.code(404).type('text/plain').send('Not found.'); return;
         }
+        // the public signup and operator console belong to their own hosts only — never reachable on a business's host
+        if (/^\/(signup|console)(\/|\?|$)/.test(req.url)) { reply.code(404).type('text/plain').send('Not found.'); return; }
         registry.resolveHost(req.hostname).then(async (row) => {
           if (!row || row.status === 'cancelled') { reply.code(404).type('text/plain').send('Unknown business.'); return; }
           if (row.status === 'suspended') { reply.code(402).type('text/html; charset=utf-8').send('<h2>Account suspended</h2><p>Please contact support to reactivate this account.</p>'); return; }
