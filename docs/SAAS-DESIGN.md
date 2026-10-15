@@ -1,6 +1,6 @@
 # SaaS design (dry-clean / laundry businesses only)
 
-Status: **S1 built (tenant resolver, control DB, per-business pool/secret/uploads/cron) — off by default; S2–S6 not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
+Status: **S1–S3 built (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S4–S6 (signup, billing, super-admin) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
 pickup/delivery, WhatsApp, reports) stays exactly as migrated; SaaS adds *tenancy, signup and billing around it*.
 
 ## 1. Tenancy model — recommendation: one database per tenant (shared app)
@@ -70,3 +70,14 @@ web pages, `api/*.php`, `api/mobile/*`, uploads, WhatsApp webhook, cron).
 * Cron jobs (`whatsappWorker`, `whatsappMarketing`, `photoCleanup`) run once per active business via `forEachBusiness()`.
 * `test/tenancy.test.ts` (needs `TEST_DB2_NAME` + `TEST_CONTROL_DB_NAME`): two businesses behind one app — own data per host, users don't exist across businesses, a session cookie from A is rejected by B, unknown/suspended hosts, 24 concurrent mixed requests never mix, db/uploads/secret/URL per business.
 * Still open for S2+: tenant-aware `APP_NAME` captured at construction in a few services (falls back to the `business_name` setting everywhere it matters), nginx uploads path per business, provisioning, signup, billing, super-admin.
+
+## 7. S3 as built — `npm run tenant -- create`
+`create --slug acme --name "Acme Dry Clean" --host acme.udcrm.in --template-db <db> --admin-user owner --admin-pass '…' [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14]`
+needs an admin MariaDB account (`PROVISION_DB_USER/PASS[/HOST/PORT]`: CREATE DATABASE, CREATE USER, GRANT) and a **template database** (any business DB whose reference data you want to hand out — typically a cleaned copy of the live one).
+1. `udc_t_<slug>` database + its own DB user (granted on that database only) with a random password; both encrypted into the control DB.
+2. Schema cloned table-by-table from the template (`SHOW CREATE TABLE`); reference data copied: roles, permissions, role_permissions, order_statuses, payment_types, urgent_levels, taxes, notification_templates, and (unless `--no-catalog`) categories, services, garments, brands, colors, defects, discounts, expense_categories, price lists + rates. **No customers/orders/users/payments are copied.**
+3. Settings copied from the template; document counters reset to 0, logo cleared, `business_name` = the new name.
+4. Organisation + default store "Main" + first Super Admin (bcrypt) created through the new business's own DB account.
+5. Registered in the control DB (own random `APP_SECRET_KEY`, upload folder `TENANT_UPLOAD_ROOT/<slug>`), trial end if `--trial-days`.
+Any failure drops the new database and user. `npm run tenant -- migrate-all [--dry]` applies `db/migrations` to every business (stops at the first failure).
+`test/provision.test.ts` covers clone contents, per-business DB-user isolation, a real login on the new host, duplicates and rollback.

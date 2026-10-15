@@ -42,6 +42,14 @@ const schema = z.object({
   /** Encrypts per-tenant DB passwords / app secrets stored in the control DB. */
   CONTROL_MASTER_KEY: z.string().default(''),
 
+  /** Admin MariaDB account used ONLY by `tenant create` (CREATE DATABASE / CREATE USER / GRANT). Defaults to the DB_* account. */
+  PROVISION_DB_HOST: z.string().optional(),
+  PROVISION_DB_PORT: z.coerce.number().optional(),
+  PROVISION_DB_USER: z.string().optional(),
+  PROVISION_DB_PASS: z.string().optional(),
+  /** Parent folder of per-business upload folders (<dir>/<slug>) for newly provisioned businesses. */
+  TENANT_UPLOAD_ROOT: z.string().default('/var/www/udc/uploads'),
+
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 

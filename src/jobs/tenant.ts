@@ -1,11 +1,16 @@
 import { loadEnv } from '../config/env.js';
 import { createPool } from '../db/pool.js';
+import { applyMigrations } from '../db/migrations.js';
+import { provisionTenant } from '../tenancy/provision.js';
 import { TenantRegistry, controlEnv, initControlSchema } from '../tenancy/registry.js';
 
 /**
  * `npm run tenant -- <command>` — manage businesses in SaaS mode (needs CONTROL_DB_NAME + CONTROL_MASTER_KEY).
  *   init                                  create the control tables
  *   add --slug s --name "N" --host h --db-name d --db-user u --db-pass p --secret K [--db-host --db-port --app-url --upload-dir --timezone --status]
+ *   create --slug s --name "N" --host h --template-db DB --admin-user u --admin-pass p [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14 --timezone]
+ *          (new database + DB user, schema + reference data cloned from the template DB, default store, first Super Admin; needs PROVISION_DB_* admin account)
+ *   migrate-all [--dry]                   apply db/migrations to the control-plane-listed businesses (stops at the first failing business)
  *   list | suspend <slug> | resume <slug> | cancel <slug> | host-add <slug> <hostname>
  */
 const env = loadEnv();
@@ -27,6 +32,22 @@ try {
       await control.db.execute('INSERT INTO tenant_domains (hostname, tenant_id, is_primary) VALUES (?,?,1)', [host, r.insertId]);
       await control.db.execute('INSERT INTO tenant_events (tenant_id, event, detail) VALUES (?,?,?)', [r.insertId, 'created', host]);
       console.log(`tenant #${r.insertId} added → ${host}`);
+    } else if (cmd === 'create') {
+      const trial = flag('trial-days');
+      const r = await provisionTenant(env, reg, {
+        slug: need('slug'), name: need('name'), host: need('host'), templateDb: need('template-db'),
+        admin: { username: need('admin-user'), password: need('admin-pass'), fullName: flag('admin-name') ?? 'Owner', mobile: flag('admin-mobile'), email: flag('admin-email') },
+        catalog: !rest.includes('--no-catalog'), timezone: flag('timezone'), status: trial ? 'trial' : 'active', trialDays: trial ? Number(trial) : undefined,
+      });
+      console.log(`business #${r.tenantId} ready → https://${r.host}  (database ${r.dbName})`);
+    } else if (cmd === 'migrate-all') {
+      for (const t of await reg.list()) {
+        if (t.status === 'cancelled') continue;
+        const { db, close } = createPool(reg.tenantEnv(t));
+        try { const m = await applyMigrations(db, { dry: rest.includes('--dry'), log: (x) => console.log(`[${t.slug}] ${x}`) }); console.log(`[${t.slug}] ok (${m.applied} applied)`); }
+        catch (e) { console.error(`[${t.slug}] FAILED: ${(e as Error).message}`); process.exitCode = 1; await close(); break; }
+        await close();
+      }
     } else if (cmd === 'list') {
       for (const t of await reg.list()) console.log(`#${t.id} ${t.slug.padEnd(16)} ${t.status.padEnd(10)} ${t.db_name}  ${t.app_url}`);
     } else if (cmd === 'suspend' || cmd === 'resume' || cmd === 'cancel') {
@@ -38,6 +59,6 @@ try {
       if (!t) throw new Error('no such tenant');
       await control.db.execute('INSERT INTO tenant_domains (hostname, tenant_id) VALUES (?,?)', [String(rest[1]).toLowerCase(), t.id]);
       console.log('host added');
-    } else console.log('commands: init | add | list | suspend | resume | cancel | host-add');
+    } else console.log('commands: init | add | create | migrate-all | list | suspend | resume | cancel | host-add');
   }
 } catch (e) { console.error((e as Error).message); process.exitCode = 1; } finally { await control.close(); }
