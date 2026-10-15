@@ -1,6 +1,6 @@
 # SaaS design (dry-clean / laundry businesses only)
 
-Status: **S1–S4 built (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S5–S6 (billing, super-admin console) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
+Status: **S1–S5 built (billing gateway deferred until pricing is decided) (tenant resolver, control DB, per-business pool/secret/uploads/cron, provisioning from a template DB, migrate-all) — off by default; S6 (super-admin console) not started.** Details in §6. Scope is fixed to one industry, so the product itself (orders, garments, QC, workshop,
 pickup/delivery, WhatsApp, reports) stays exactly as migrated; SaaS adds *tenancy, signup and billing around it*.
 
 ## 1. Tenancy model — recommendation: one database per tenant (shared app)
@@ -95,3 +95,12 @@ Any failure drops the new database and user. `npm run tenant -- migrate-all [--d
 * Trial expiry is stored (`tenants.trial_ends_at`) but **not enforced yet** — that comes with plans/billing (S5), together with the "suspend on non-payment" flow.
 * `test/signup.test.ts`: validation, root-host routing, bot protections, manual approval → real owner login, auto-approve redirect.
 * Security note: auto-approve means the web process holds the `PROVISION_DB_*` admin account (CREATE DATABASE / CREATE USER). With manual approval only the operator's CLI needs it — prefer that until abuse controls (email/WhatsApp OTP) are added.
+
+## 9. S5 as built — plans, limits, trial / subscription enforcement
+* Control DB: `plans` (code, name, optional `price_monthly/yearly` — **unset until pricing is decided**, `max_stores`, `max_users`, `max_orders_month`; `0` = unlimited) seeded with `trial`, `starter`, `pro`, `chain`; `tenants.plan_id`, `plan_ends_at` (paid-through date), `grace_days` (default 5).
+  Edit limits/prices with plain SQL on `plans` for now (`npm run tenant -- plans` lists them).
+* **Limits** (`src/tenancy/limits.ts`, no effect in single-business mode): orders per calendar month (dry-clean + laundry order creation, web and mobile API — enforced in `OrderService`), active users (Users & Roles → create), active stores (Master Data → stores). Message tells the owner to upgrade.
+* **Read-only mode** when a trial has ended, or a paid plan is past `plan_ends_at` + grace: every non-GET request answers `402` ("subscription expired") — HTML message for pages, `{success:false,error:{code:"subscription_expired"}}` for `/api/*` — while viewing, exporting, signing in/out, password reset and Meta's inbound WhatsApp webhook keep working. State is recomputed per request, so changing dates takes effect within a minute (host cache).
+* Operator CLI: `plan <slug> <code> [--until YYYY-MM-DD]` (moves trial/suspended → active), `extend <slug> <days>`, `usage` (stores/users/orders-this-month vs limits + dates), `suspend/resume/cancel`. New signups get plan `trial` (or `starter` when `SIGNUP_TRIAL_DAYS=0`).
+* **Not built (waiting for pricing):** payment gateway (Razorpay subscriptions + webhook that calls the same "set plan / paid-through" update), invoices, dunning e-mails/WhatsApp reminders before expiry. The enforcement above is gateway-agnostic: a webhook only has to set `plan_id` + `plan_ends_at`.
+* `test/plans.test.ts`: date logic, limits for users/stores/orders in a running app, expired → 402 (pages + API) with login still allowed, renew → writable again.

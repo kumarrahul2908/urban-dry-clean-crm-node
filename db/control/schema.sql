@@ -50,3 +50,24 @@ CREATE TABLE IF NOT EXISTS signup_requests (
   KEY idx_signup_slug (slug),
   KEY idx_signup_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS plans (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(30) NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  price_monthly DECIMAL(10,2) NULL,
+  price_yearly DECIMAL(10,2) NULL,
+  max_stores INT UNSIGNED NOT NULL DEFAULT 0,
+  max_users INT UNSIGNED NOT NULL DEFAULT 0,
+  max_orders_month INT UNSIGNED NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_plans_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO plans (code, name, max_stores, max_users, max_orders_month) VALUES ('trial', 'Trial', 1, 3, 200), ('starter', 'Starter', 1, 5, 1000), ('pro', 'Pro', 3, 15, 5000), ('chain', 'Chain', 0, 0, 0);
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan_id INT UNSIGNED NULL;
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan_ends_at DATE NULL;
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS grace_days INT UNSIGNED NOT NULL DEFAULT 5;

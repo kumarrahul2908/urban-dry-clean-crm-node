@@ -87,7 +87,7 @@ export async function approveSignup(env: Env, registry: TenantRegistry, id: numb
     const out = await provisionTenant(env, registry, {
       slug: req.slug, name: req.business_name, host: `${req.slug}.${env.TENANT_BASE_DOMAIN}`, templateDb: env.SIGNUP_TEMPLATE_DB,
       admin: { username: 'owner', passwordHash: req.password_hash, fullName: req.owner_name, mobile: req.mobile, email: req.email },
-      status: env.SIGNUP_TRIAL_DAYS > 0 ? 'trial' : 'active', trialDays: env.SIGNUP_TRIAL_DAYS,
+      status: env.SIGNUP_TRIAL_DAYS > 0 ? 'trial' : 'active', trialDays: env.SIGNUP_TRIAL_DAYS, planCode: env.SIGNUP_TRIAL_DAYS > 0 ? 'trial' : 'starter',
     });
     await registry.control.execute("UPDATE signup_requests SET status = 'approved', tenant_id = ?, note = NULL WHERE id = ?", [out.tenantId, id]);
     return out;

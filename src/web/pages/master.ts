@@ -3,6 +3,7 @@ import { phpEmpty } from '../../lib/php.js';
 import { WebText, forbiddenPage, webPage } from '../context.js';
 import { int } from '../format.js';
 import { html, jsonEncode, raw } from '../html.js';
+import { limitError } from '../../tenancy/limits.js';
 import { layout } from '../layout.js';
 import { tplHelpers } from '../tplHelpers.js';
 import { tplBrands } from '../tpl/master_brands.js';
@@ -153,6 +154,7 @@ ${tiles.map(([label, icon, url, count]) => html`
     switch (action) {
       case 'create': {
         const errors = await validate(null);
+        if (entity === 'stores') { const lim = await limitError(db, 'stores'); if (lim) errors.push(lim); }
         if (errors.length) return json({ success: false, message: errors.join(' ') }, 422);
         const cols = [ent.nameCol, ...Object.keys(ent.extra)];
         const vals = [str(input[ent.nameCol]).trim(), ...Object.entries(ent.extra).map(([c, m]) => cast(c, m))];

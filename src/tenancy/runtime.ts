@@ -8,6 +8,9 @@ import { tenantStorage } from './als.js';
 import { TenantRegistry, controlEnv } from './registry.js';
 import { registerSignup } from './signup.js';
 
+/** Still allowed when a subscription has lapsed: signing in/out and Meta's inbound webhook (so the account can be viewed and exported). */
+const READONLY_OK = /^\/(modules\/auth\/(login|logout|forgot-password|reset-password)(\.php)?|api\/mobile\/(login|logout|password_reset_request)(\.php)?|api\/whatsapp_webhook(\.php)?)$/;
+
 export interface MultiTenant { services: Services; registry: TenantRegistry; install(app: FastifyInstance): void; close(): Promise<void> }
 
 /** Builds the tenant-aware Services plus the Fastify hook that binds each request to its business by hostname. */
@@ -32,7 +35,14 @@ export function createMultiTenant(env: Env, options: BuildOptions = {}): MultiTe
           if (!row || row.status === 'cancelled') { reply.code(404).type('text/plain').send('Unknown business.'); return; }
           if (row.status === 'suspended') { reply.code(402).type('text/html; charset=utf-8').send('<h2>Account suspended</h2><p>Please contact support to reactivate this account.</p>'); return; }
           const rt = await registry.runtimeFor(row);
-          tenantStorage.run({ tenant: rt.info, services: rt.services }, done);
+          const info = registry.infoFor(row); // recomputed per request: trial / paid-through dates move while the runtime stays cached
+          if (info.access === 'readonly' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !READONLY_OK.test(req.url.split('?')[0]!)) {
+            const msg = 'Your subscription has expired — the account is read-only. Please renew to continue.';
+            if (req.url.startsWith('/api/')) reply.code(402).send({ success: false, error: { code: 'subscription_expired', message: msg } });
+            else reply.code(402).type('text/html; charset=utf-8').send(`<h2>Subscription expired</h2><p>${msg}</p>`);
+            return;
+          }
+          tenantStorage.run({ tenant: info, services: rt.services }, done);
         }).catch((e) => { req.log.error(e); reply.code(500).type('text/plain').send('Service unavailable.'); });
       });
     },

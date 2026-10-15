@@ -22,7 +22,7 @@ export interface ProvisionInput {
   slug: string; name: string; host: string;
   templateDb: string;
   admin: { username: string; password?: string; passwordHash?: string; fullName: string; mobile?: string; email?: string };
-  catalog?: boolean; timezone?: string; status?: 'trial' | 'active'; trialDays?: number;
+  catalog?: boolean; planCode?: string; timezone?: string; status?: 'trial' | 'active'; trialDays?: number;
 }
 export interface ProvisionResult { tenantId: number; dbName: string; dbUser: string; host: string }
 
@@ -98,10 +98,12 @@ export async function provisionTenant(env: Env, registry: TenantRegistry, input:
     // 5. register
     const uploadDir = join(env.TENANT_UPLOAD_ROOT, input.slug);
     await mkdir(uploadDir, { recursive: true }).catch(() => {}); // best effort (nginx user / permissions are an ops matter)
+    const planId = input.planCode ? (await registry.control.query<{ id: number }>('SELECT id FROM plans WHERE code = ?', [input.planCode]))[0]?.id ?? null : null;
+    if (input.planCode && planId === null) throw new Error(`unknown plan "${input.planCode}"`);
     const trialEnds = input.status === 'trial' ? new Date(Date.now() + (input.trialDays ?? 14) * 86400_000).toISOString().slice(0, 19).replace('T', ' ') : null;
     const r = await registry.control.execute(
-      'INSERT INTO tenants (slug, name, status, db_host, db_port, db_name, db_user, db_pass_enc, app_url, app_secret_enc, upload_dir, timezone, trial_ends_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      [input.slug, input.name, input.status ?? 'active', tenv.DB_HOST, tenv.DB_PORT, dbName, dbUser, registry.encrypt(dbPass), `https://${host}`, registry.encrypt(secret), uploadDir, input.timezone ?? 'Asia/Kolkata', trialEnds]);
+      'INSERT INTO tenants (slug, name, status, db_host, db_port, db_name, db_user, db_pass_enc, app_url, app_secret_enc, upload_dir, timezone, trial_ends_at, plan_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [input.slug, input.name, input.status ?? 'active', tenv.DB_HOST, tenv.DB_PORT, dbName, dbUser, registry.encrypt(dbPass), `https://${host}`, registry.encrypt(secret), uploadDir, input.timezone ?? 'Asia/Kolkata', trialEnds, planId]);
     await registry.control.execute('INSERT INTO tenant_domains (hostname, tenant_id, is_primary) VALUES (?,?,1)', [host, r.insertId]);
     await registry.control.execute('INSERT INTO tenant_events (tenant_id, event, detail) VALUES (?,?,?)', [r.insertId, 'provisioned', `db=${dbName} template=${input.templateDb}`]);
     registry.invalidate();

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { hashPassword } from '../../lib/password.js';
 import { phpEmpty, toInt } from '../../lib/php.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
+import { limitError } from '../../tenancy/limits.js';
 import { raw } from '../html.js';
 import { layout } from '../layout.js';
 import { tplHelpers } from '../tplHelpers.js';
@@ -42,6 +43,7 @@ export function registerAdminUsersPage(app: FastifyInstance) {
         if (roleName !== 'Workshop Staff') workshopId = null;
         if (workshopId !== null && !workshopsList.some((w) => Number(w.id) === workshopId)) errors.push('Please select a valid, active workshop.');
         if (storeId !== null && !stores.some((s) => Number(s.id) === storeId)) errors.push('Please select a valid, active store.');
+        if (action === 'create') { const lim = await limitError(db, 'users'); if (lim) errors.push(lim); }
         if (action === 'create' && Buffer.byteLength(password) < 8) errors.push('Password must be at least 8 characters.');
         if (action === 'update' && password !== '' && Buffer.byteLength(password) < 8) errors.push('New password must be at least 8 characters (leave blank to keep the current password).');
         if (action === 'update' && userId === sessionUser && !isActive) errors.push('You cannot deactivate your own account while logged in as it.');

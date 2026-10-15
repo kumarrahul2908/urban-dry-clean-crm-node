@@ -11,6 +11,8 @@ export interface TenantRow {
   id: number; slug: string; name: string; status: 'trial' | 'active' | 'suspended' | 'cancelled';
   db_host: string; db_port: number; db_name: string; db_user: string; db_pass_enc: string;
   app_url: string; app_secret_enc: string; upload_dir: string; timezone: string; trial_ends_at: string | null;
+  plan_id: number | null; plan_ends_at: string | null; grace_days: number;
+  plan_code?: string | null; max_stores?: number | null; max_users?: number | null; max_orders_month?: number | null;
 }
 export interface TenantRuntime { info: TenantInfo; services: Services; row: TenantRow }
 
@@ -43,9 +45,19 @@ export class TenantRegistry {
     const host = hostname.toLowerCase().replace(/:\d+$/, '');
     const hit = this.hostCache.get(host);
     if (hit && Date.now() - hit.at < SERVICE_TTL_MS) return hit.row;
-    const row = (await this.control.query<TenantRow>('SELECT t.* FROM tenants t JOIN tenant_domains d ON d.tenant_id = t.id WHERE d.hostname = ?', [host]))[0] ?? null;
+    const row = (await this.control.query<TenantRow>('SELECT t.*, p.code AS plan_code, p.max_stores, p.max_users, p.max_orders_month FROM tenants t JOIN tenant_domains d ON d.tenant_id = t.id LEFT JOIN plans p ON p.id = t.plan_id WHERE d.hostname = ?', [host]))[0] ?? null;
     this.hostCache.set(host, { at: Date.now(), row });
     return row;
+  }
+
+  /** Per-request view of a business: plan limits (0 = unlimited) and whether the subscription still allows changes. */
+  infoFor(row: TenantRow, now = Date.now()): TenantInfo {
+    const day = 86400_000;
+    let access: 'full' | 'readonly' = 'full';
+    if (row.status === 'trial' && row.trial_ends_at && now > Date.parse(row.trial_ends_at.replace(' ', 'T') + 'Z')) access = 'readonly';
+    if (row.status === 'active' && row.plan_ends_at && now > Date.parse(String(row.plan_ends_at).slice(0, 10) + 'T23:59:59Z') + (row.grace_days ?? 0) * day) access = 'readonly';
+    return { id: row.id, slug: row.slug, name: row.name, status: row.status, appUrl: row.app_url, access, planCode: row.plan_code ?? null,
+      limits: { stores: Number(row.max_stores ?? 0), users: Number(row.max_users ?? 0), ordersPerMonth: Number(row.max_orders_month ?? 0) } };
   }
 
   invalidate() { this.hostCache.clear(); }
@@ -68,7 +80,7 @@ export class TenantRegistry {
     const { db, close } = createPool(env);
     const services = buildServices(env, db, this.options);
     if (this.sharedPages) services.web.pages = this.sharedPages; // registered page list is global, not per business
-    const rt: TenantRuntime = { info: { id: row.id, slug: row.slug, name: row.name, status: row.status, appUrl: row.app_url }, services, row };
+    const rt: TenantRuntime = { info: this.infoFor(row), services, row };
     this.runtimes.set(row.id, { rt, close, used: Date.now() });
     if (this.runtimes.size > MAX_POOLS) await this.evict();
     return rt;

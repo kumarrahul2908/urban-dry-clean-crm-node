@@ -9,9 +9,10 @@ import { TenantRegistry, controlEnv, initControlSchema } from '../tenancy/regist
  * `npm run tenant -- <command>` — manage businesses in SaaS mode (needs CONTROL_DB_NAME + CONTROL_MASTER_KEY).
  *   init                                  create the control tables
  *   add --slug s --name "N" --host h --db-name d --db-user u --db-pass p --secret K [--db-host --db-port --app-url --upload-dir --timezone --status]
- *   create --slug s --name "N" --host h --template-db DB --admin-user u --admin-pass p [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14 --timezone]
+ *   create --slug s --name "N" --host h --template-db DB --admin-user u --admin-pass p [--plan code] [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14 --timezone]
  *          (new database + DB user, schema + reference data cloned from the template DB, default store, first Super Admin; needs PROVISION_DB_* admin account)
  *   requests | approve <id> | reject <id> [note]   signup requests (public /signup page; see SIGNUP_* env)
+ *   plans | plan <slug> <code> [--until YYYY-MM-DD] | extend <slug> <days> | usage   plans, paid-through dates, usage vs limits
  *   migrate-all [--dry]                   apply db/migrations to the control-plane-listed businesses (stops at the first failing business)
  *   list | suspend <slug> | resume <slug> | cancel <slug> | host-add <slug> <hostname>
  */
@@ -39,7 +40,7 @@ try {
       const r = await provisionTenant(env, reg, {
         slug: need('slug'), name: need('name'), host: need('host'), templateDb: need('template-db'),
         admin: { username: need('admin-user'), password: need('admin-pass'), fullName: flag('admin-name') ?? 'Owner', mobile: flag('admin-mobile'), email: flag('admin-email') },
-        catalog: !rest.includes('--no-catalog'), timezone: flag('timezone'), status: trial ? 'trial' : 'active', trialDays: trial ? Number(trial) : undefined,
+        planCode: flag('plan'), catalog: !rest.includes('--no-catalog'), timezone: flag('timezone'), status: trial ? 'trial' : 'active', trialDays: trial ? Number(trial) : undefined,
       });
       console.log(`business #${r.tenantId} ready → https://${r.host}  (database ${r.dbName})`);
     } else if (cmd === 'requests') {
@@ -50,6 +51,30 @@ try {
     } else if (cmd === 'reject') {
       const r = await control.db.execute("UPDATE signup_requests SET status = 'rejected', note = ? WHERE id = ? AND status IN ('pending','failed')", [rest.slice(1).join(' ') || null, Number(rest[0])]);
       console.log(r.affectedRows ? 'rejected' : 'no such pending request');
+    } else if (cmd === 'plans') {
+      for (const p of await control.db.query<any>('SELECT * FROM plans ORDER BY id')) console.log(`${p.code.padEnd(8)} ${p.name.padEnd(8)} stores=${p.max_stores || '∞'} users=${p.max_users || '∞'} orders/mo=${p.max_orders_month || '∞'} price=${p.price_monthly ?? 'unset'}/mo ${p.price_yearly ?? 'unset'}/yr${p.is_active ? '' : ' (inactive)'}`);
+    } else if (cmd === 'plan') {
+      const pl = (await control.db.query<{ id: number }>('SELECT id FROM plans WHERE code = ?', [rest[1]]))[0];
+      if (!pl) throw new Error('unknown plan code (see `plans`)');
+      const until = flag('until') ?? null;
+      const r = await control.db.execute("UPDATE tenants SET plan_id = ?, plan_ends_at = ?, status = IF(status IN ('trial','suspended'), 'active', status) WHERE slug = ?", [pl.id, until, rest[0]]);
+      await control.db.execute('INSERT INTO tenant_events (tenant_id, event, detail) SELECT id, ?, ? FROM tenants WHERE slug = ?', ['plan_set', `${rest[1]} until ${until ?? '-'}`, rest[0]]);
+      console.log(r.affectedRows ? `${rest[0]} → plan ${rest[1]}${until ? ' paid through ' + until : ' (no end date)'}` : 'no such tenant');
+    } else if (cmd === 'extend') {
+      const d = Number(rest[1]);
+      const r = await control.db.execute("UPDATE tenants SET trial_ends_at = IF(status = 'trial', DATE_ADD(GREATEST(COALESCE(trial_ends_at, NOW()), NOW()), INTERVAL ? DAY), trial_ends_at), plan_ends_at = IF(status = 'active', DATE_ADD(GREATEST(COALESCE(plan_ends_at, CURDATE()), CURDATE()), INTERVAL ? DAY), plan_ends_at) WHERE slug = ?", [d, d, rest[0]]);
+      console.log(r.affectedRows ? `${rest[0]} extended by ${d} days` : 'no such tenant');
+      reg.invalidate();
+    } else if (cmd === 'usage') {
+      for (const t of await reg.list()) {
+        const info = reg.infoFor({ ...t, ...((await control.db.query<any>('SELECT code AS plan_code, max_stores, max_users, max_orders_month FROM plans WHERE id = ?', [t.plan_id]))[0] ?? {}) });
+        const { db, close } = createPool(reg.tenantEnv(t));
+        try {
+          const n = async (sql: string) => Number((await db.query<{ n: number }>(sql))[0]!.n);
+          const lim = (v: number) => (v ? `/${v}` : '');
+          console.log(`${t.slug.padEnd(16)} ${t.status.padEnd(9)} ${info.access.padEnd(8)} plan=${info.planCode ?? '-'}  stores=${await n('SELECT COUNT(*) AS n FROM stores WHERE is_active=1')}${lim(info.limits.stores)} users=${await n('SELECT COUNT(*) AS n FROM users WHERE is_active=1')}${lim(info.limits.users)} orders(month)=${await n("SELECT COUNT(*) AS n FROM orders WHERE order_date >= DATE_FORMAT(NOW(), '%Y-%m-01')")}${lim(info.limits.ordersPerMonth)}  ${t.plan_ends_at ? 'paid→' + String(t.plan_ends_at).slice(0, 10) : t.trial_ends_at ? 'trial→' + t.trial_ends_at.slice(0, 10) : ''}`);
+        } catch (e) { console.log(`${t.slug}: ${(e as Error).message}`); } finally { await close(); }
+      }
     } else if (cmd === 'migrate-all') {
       for (const t of await reg.list()) {
         if (t.status === 'cancelled') continue;

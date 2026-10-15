@@ -17,6 +17,7 @@ type Raw = Record<string, any>;
 export interface Actor { userId: number; ip?: string | null }
 export interface Result { success: boolean; errors?: string[]; [k: string]: any }
 
+import { limitError } from '../tenancy/limits.js';
 const clean = (v: unknown): string => String(v ?? '').trim();
 
 /**
@@ -185,6 +186,7 @@ export class OrderService {
   // createOrder (per-piece)
   // ---------------------------------------------------------------------------------------
   async createOrder(input: Raw, actor: Actor, canOverrideDiscount: boolean, storeId: number, canManualOverrideRate = false, clientRequestId: string | null = null): Promise<Result> {
+    { const lim = await limitError(this.db, 'orders'); if (lim) return { success: false, errors: [lim] }; }
     const errors: string[] = [];
     let warnings: string[] = [];
     const customerId = toInt(input.customer_id);
@@ -577,6 +579,7 @@ export class OrderService {
   // Laundry (per-weight) order
   // ---------------------------------------------------------------------------------------
   async createLaundryOrder(input: Raw, actor: Actor, canOverrideDiscount: boolean, storeId: number, clientRequestId: string | null = null): Promise<Result> {
+    { const lim = await limitError(this.db, 'orders'); if (lim) return { success: false, errors: [lim] }; }
     const errors: string[] = [];
     let warnings: string[] = [];
     const customerId = toInt(input.customer_id);
