@@ -7,7 +7,7 @@ additive table, `web_sessions` (`db/migrations`).
 ## 0. Fast path (fresh Ubuntu VPS)
 ```bash
 # as root on the VPS (DNS A record of DOMAIN must already point to it)
-curl -fsSL https://raw.githubusercontent.com/kumarrahul2908/urban-dry-clean-crm-node/main/deploy/bootstrap-ubuntu.sh | DOMAIN=staging.example.com EMAIL=you@example.com bash
+curl -fsSL https://raw.githubusercontent.com/kumarrahul2908/urban-dry-clean-crm-node/main/deploy/bootstrap-ubuntu.sh | PORT=3100 INSTALL_DB=1 DOMAIN=staging.example.com EMAIL=you@example.com bash
 nano /opt/udc/.env          # DB_*, APP_SECRET_KEY (same as PHP). Re-run the command above.
 ```
 The script installs Node 22/nginx/pm2/certbot, builds the app, issues TLS, then runs **`npm run preflight`** (read-only checks: env, uploads dir,
