@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# The repository is PRIVATE, so there are two ways to get the code onto the server:
+#   A) tarball (simplest):  scp udc-node.tar.gz root@SERVER:/root/ ; then  SRC_TARBALL=/root/udc-node.tar.gz DOMAIN=... EMAIL=... bash deploy/bootstrap-ubuntu.sh
+#      (extract the tarball once first:  mkdir -p /opt/udc && tar xzf /root/udc-node.tar.gz -C /opt/udc && bash /opt/udc/deploy/bootstrap-ubuntu.sh)
+#   B) deploy key: ssh-keygen -t ed25519 -f ~/.ssh/udc_deploy -N '' ; add ~/.ssh/udc_deploy.pub as a read-only Deploy key in GitHub → Settings → Deploy keys ;
+#      GIT_SSH_COMMAND='ssh -i ~/.ssh/udc_deploy -o StrictHostKeyChecking=accept-new' REPO=git@github.com:kumarrahul2908/urban-dry-clean-crm-node.git bash bootstrap-ubuntu.sh
 # One-shot server setup for a fresh Ubuntu 22.04/24.04 VPS (run as root):
 #   curl -fsSL https://raw.githubusercontent.com/kumarrahul2908/urban-dry-clean-crm-node/main/deploy/bootstrap-ubuntu.sh | DOMAIN=staging.example.com EMAIL=you@example.com bash
 # Idempotent: safe to re-run (pulls, rebuilds, restarts). Does NOT touch your database; fill /opt/udc/.env afterwards.
@@ -23,7 +28,9 @@ if [ "${INSTALL_DB:-0}" = 1 ] && ! command -v mariadb >/dev/null; then
 fi
 id udc >/dev/null 2>&1 || useradd -r -m -s /bin/bash udc
 mkdir -p "$UPLOADS" && chown -R udc:udc /var/www/udc
-if [ -d "$APP/.git" ]; then git -C "$APP" fetch -q origin "$BRANCH" && git -C "$APP" reset -q --hard "origin/$BRANCH"; else git clone -q -b "$BRANCH" "$REPO" "$APP"; fi
+if [ -n "${SRC_TARBALL:-}" ]; then mkdir -p "$APP" && tar xzf "$SRC_TARBALL" -C "$APP"
+elif [ -f "$APP/package.json" ] && [ ! -d "$APP/.git" ]; then echo "Using the code already extracted in $APP"
+elif [ -d "$APP/.git" ]; then git -C "$APP" fetch -q origin "$BRANCH" && git -C "$APP" reset -q --hard "origin/$BRANCH"; else git clone -q -b "$BRANCH" "$REPO" "$APP"; fi
 chown -R udc:udc "$APP"
 if [ ! -f "$APP/.env" ]; then
   cp "$APP/.env.example" "$APP/.env"
