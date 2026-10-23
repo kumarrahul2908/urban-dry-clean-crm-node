@@ -1,0 +1,61 @@
+name: Deploy to VPS
+
+# Manual only — never on push. Uses a DEDICATED deploy key (secrets.DEPLOY_SSH_KEY) whose
+# private half never passes through chat/Claude: it is pasted straight into this repo's
+# GitHub secret by whoever runs the one-time setup in deploy/CI_SETUP.md. The public half
+# goes to the server's authorized_keys, alongside (not replacing) any personal key already
+# there.
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: "Domain this deploy serves"
+        required: true
+        default: "bill.urbandryclean.in"
+      port:
+        description: "App port (must NOT already be listening — e.g. 3000 is the existing Next.js site on this VPS)"
+        required: true
+        default: "3100"
+      install_db:
+        description: "First run only: install MariaDB server + create the app's db/user"
+        type: boolean
+        default: true
+      email:
+        description: "Email for Let's Encrypt"
+        required: true
+        default: "kumar.rahul2908@gmail.com"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: "129.121.143.169"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deploy key into ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust this host's key (pinned, not accept-new)
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Sync repo to the server (code only — never touches /opt/udc/.env or uploads)
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
+            -e "ssh -o StrictHostKeyChecking=yes" \
+            ./ "root@${DEPLOY_HOST}:/opt/udc/"
+
+      - name: Run bootstrap (idempotent — safe to re-run; never touches the database beyond migrations)
+        run: |
+          ssh "root@${DEPLOY_HOST}" "
+            DOMAIN='${{ inputs.domain }}' \
+            EMAIL='${{ inputs.email }}' \
+            PORT='${{ inputs.port }}' \
+            INSTALL_DB='${{ inputs.install_db == true && '1' || '0' }}' \
+            bash /opt/udc/deploy/bootstrap-ubuntu.sh
+          "
