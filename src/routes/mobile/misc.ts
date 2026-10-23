@@ -28,8 +28,8 @@ export async function registerMobileMiscRoutes(app: FastifyInstance) {
   route('GET', 'feedback_list', 'feedback.manage', async (req) => {
     const q = req.query as Q;
     if (q.orders_for_customer !== undefined) {
-      const orders = await db.query<Raw>('SELECT id, order_number, order_date FROM orders WHERE customer_id = ? ORDER BY order_date DESC, id DESC LIMIT 50', [qInt(q.orders_for_customer)]);
-      return ok({ orders: orders.map((o) => ({ id: num(o.id), order_number: o.order_number, order_date: o.order_date })) });
+      const orders = await db.query<Raw>('SELECT id, order_number, short_order_code, order_date FROM orders WHERE customer_id = ? ORDER BY order_date DESC, id DESC LIMIT 50', [qInt(q.orders_for_customer)]);
+      return ok({ orders: orders.map((o) => ({ id: num(o.id), order_number: o.short_order_code ?? o.order_number, order_date: o.order_date })) });
     }
     const rating = qInt(q.rating);
     const status = qStr(q.status);
@@ -40,9 +40,9 @@ export async function registerMobileMiscRoutes(app: FastifyInstance) {
     if (rating) { where += ' AND f.rating = ?'; params.push(rating); }
     if (status !== '') { where += ' AND f.status = ?'; params.push(status); }
     if (customer !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customer}%`, `%${customer}%`); }
-    if (order !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${order}%`); }
+    if (order !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${order}%`, `%${order}%`); }
     const rows = await db.query<Raw>(
-      `SELECT f.*, c.full_name AS customer_name, c.mobile, o.order_number FROM feedback f JOIN customers c ON c.id = f.customer_id
+      `SELECT f.*, c.full_name AS customer_name, c.mobile, o.order_number, o.short_order_code FROM feedback f JOIN customers c ON c.id = f.customer_id
        LEFT JOIN orders o ON o.id = f.order_id WHERE ${where} ORDER BY f.created_at DESC, f.id DESC LIMIT 100`, params);
     const [s] = await db.query<Raw>(
       `SELECT COUNT(*) AS total, AVG(rating) AS avg_rating, SUM(rating=5) AS r5, SUM(rating=4) AS r4, SUM(rating=3) AS r3, SUM(rating=2) AS r2, SUM(rating=1) AS r1,
@@ -50,7 +50,7 @@ export async function registerMobileMiscRoutes(app: FastifyInstance) {
     return ok({
       feedback: rows.map((f) => ({
         id: num(f.id), customer_id: num(f.customer_id), customer_name: f.customer_name, mobile: f.mobile,
-        order_id: f.order_id !== null ? num(f.order_id) : null, order_number: f.order_number, rating: num(f.rating),
+        order_id: f.order_id !== null ? num(f.order_id) : null, order_number: f.short_order_code ?? f.order_number, rating: num(f.rating),
         comments: f.comments, status: f.status, created_at: f.created_at,
       })),
       summary: {
@@ -140,14 +140,14 @@ export async function registerMobileMiscRoutes(app: FastifyInstance) {
     let where = "nl.channel = 'In-App' AND (nl.user_id = ? OR nl.user_id IS NULL)";
     if (filter === 'unread') where += ' AND nl.is_read = 0';
     const rows = await db.query<Raw>(
-      `SELECT nl.id, nl.template_key, nl.message, nl.is_read, nl.created_at, nl.order_id, nl.customer_id, o.order_number, c.full_name AS customer_name
+      `SELECT nl.id, nl.template_key, nl.message, nl.is_read, nl.created_at, nl.order_id, nl.customer_id, o.order_number, o.short_order_code, c.full_name AS customer_name
        FROM notification_logs nl LEFT JOIN orders o ON o.id = nl.order_id LEFT JOIN customers c ON c.id = nl.customer_id
        WHERE ${where} ORDER BY nl.created_at DESC LIMIT 100`, [ctx.id]);
     const [u] = await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM notification_logs WHERE channel = 'In-App' AND (user_id = ? OR user_id IS NULL) AND is_read = 0", [ctx.id]);
     return ok({
       items: rows.map((r) => ({
         id: num(r.id), template_key: r.template_key, message: r.message, is_read: !!r.is_read, created_at: r.created_at,
-        order_id: r.order_id !== null ? num(r.order_id) : null, order_number: r.order_number,
+        order_id: r.order_id !== null ? num(r.order_id) : null, order_number: r.short_order_code ?? r.order_number,
         customer_id: r.customer_id !== null ? num(r.customer_id) : null, customer_name: r.customer_name,
       })),
       unread_count: num(u!.n),

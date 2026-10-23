@@ -208,7 +208,7 @@ export async function registerMobileCustomerRoutes(app: FastifyInstance) {
 
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM wallet_transactions wt JOIN customers c ON c.id = wt.customer_id WHERE ${w}`, params)) as [{ n: number }];
     const rows = await db.query<Record<string, any>>(
-      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, o.order_number,
+      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, o.order_number, o.short_order_code,
               wt.txn_type, wt.debit, wt.credit, wt.balance_after, wt.remarks, wt.payment_mode, wt.created_at,
               u.full_name AS created_by_name
        FROM wallet_transactions wt
@@ -225,7 +225,7 @@ export async function registerMobileCustomerRoutes(app: FastifyInstance) {
     return ok({
       transactions: rows.map((t) => ({
         id: num(t.id), customer_id: num(t.customer_id), customer_name: t.customer_name, mobile: t.mobile,
-        order_id: t.order_id !== null ? num(t.order_id) : null, order_number: t.order_number, txn_type: t.txn_type,
+        order_id: t.order_id !== null ? num(t.order_id) : null, order_number: t.short_order_code ?? t.order_number, txn_type: t.txn_type,
         debit: num(t.debit), credit: num(t.credit), balance_after: num(t.balance_after), remarks: t.remarks,
         payment_mode: t.payment_mode, created_at: t.created_at, created_by_name: t.created_by_name,
       })),

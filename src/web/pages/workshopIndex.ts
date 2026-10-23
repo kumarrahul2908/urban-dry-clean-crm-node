@@ -146,7 +146,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
                   <input type="hidden" name="workshop_item_id" value="${id}">
                   <input type="hidden" name="reason" value="">
                   <input type="hidden" name="redirect_qs" value="${qsForRedirect}">
-                  <button type="submit" class="ws-btn ws-btn--xs ws-btn--danger" title="Mark this garment unprocessed">Unprocessed</button>
+                  <button type="submit" class="ws-btn ws-btn--xs ws-btn--danger" title="Click to mark this garment unprocessed">Mark Unprocessed</button>
                 </form>`;
     const rowActions = (r: Row) => html`
                 ${r.item_status === 'Workshop' && r.workshop_item_id ? html`

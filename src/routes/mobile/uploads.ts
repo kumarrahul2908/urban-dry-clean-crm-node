@@ -3,6 +3,8 @@ import { ApiError, num, ok } from '../../lib/http.js';
 import { phpEmpty, toInt } from '../../lib/php.js';
 import { qInt } from '../../lib/query.js';
 import { ORDER_PHOTOS } from '../../services/photoService.js';
+import { wsScope } from '../../services/workshopScope.js';
+import { timeIn, todayIn } from '../../lib/dates.js';
 import { sniffImage, type ImageKind } from '../../storage/imageSniff.js';
 import type { StoredTemp } from '../../storage/localDisk.js';
 
@@ -110,6 +112,73 @@ export async function registerMobileUploadRoutes(app: FastifyInstance) {
     await storage.remove(ORDER_PHOTOS, row.file_path);
     await audit.record({ action: 'delete', module: 'order_photos', recordId: String(photoId), oldValue: { order_id: row.order_id }, userId: ctx.id, ip: req.ip });
     return ok({ deleted: true });
+  });
+
+  // ---- workshop invoice photos (workshop.billing): whole bill (no bill_item_id) or one garment line ----------------
+  const WS_BILL_PHOTOS = 'workshop_bill_photos';
+  /** A workshop login linked to a workshop only ever touches its OWN bills (null = unrestricted). */
+  const myWorkshop = async (ctx: { id: number; role_name: string }): Promise<number | null> => (await wsScope(db, ctx.id, ctx.role_name))[1];
+
+  route('GET', 'workshop_billing_photos', async (req) => {
+    const ctx = await auth(req, 'workshop.billing');
+    const billId = qInt((req.query as Raw).bill_id);
+    if (!billId) throw new ApiError('invalid_request', 'A valid bill_id is required.', 422);
+    const myWs = await myWorkshop(ctx);
+    const [bill] = await db.query<Raw>('SELECT id, workshop_id FROM workshop_bills WHERE id = ?', [billId]);
+    if (!bill || (myWs !== null && Number(bill.workshop_id) !== myWs)) throw new ApiError('not_found', 'Invoice not found.', 404);
+    const rows = await db.query<Raw>('SELECT id, bill_item_id, file_path, uploaded_at FROM workshop_bill_photos WHERE bill_id = ? ORDER BY uploaded_at DESC', [billId]);
+    return ok({ photos: rows.map((r) => ({ id: num(r.id), bill_id: billId, bill_item_id: r.bill_item_id !== null ? num(r.bill_item_id) : null, photo_url: storage.url(WS_BILL_PHOTOS, r.file_path), uploaded_at: r.uploaded_at })) });
+  });
+
+  route('POST', 'workshop_billing_photo_upload', async (req) => {
+    const ctx = await auth(req, 'workshop.billing');
+    const { fields, file } = await readUpload(req, 'Photo is too large.');
+    try {
+      const billId = toInt(fields.bill_id);
+      const billItemId = toInt(fields.bill_item_id) || null;
+      if (!billId) throw new ApiError('invalid_request', 'A valid bill_id is required.', 422);
+      const myWs = await myWorkshop(ctx);
+      const [bill] = await db.query<Raw>('SELECT id, workshop_id FROM workshop_bills WHERE id = ?', [billId]);
+      if (!bill || (myWs !== null && Number(bill.workshop_id) !== myWs)) throw new ApiError('not_found', 'Invoice not found.', 404);
+      if (billItemId && !(await db.query('SELECT id FROM workshop_bill_items WHERE id = ? AND bill_id = ?', [billItemId, billId])).length) {
+        throw new ApiError('invalid_request', 'That garment line does not belong to this invoice.', 422);
+      }
+      if (!file || (file.bytes === 0 && !file.tooLarge)) throw new ApiError('invalid_request', 'No photo was received.', 422);
+      if (file.tooLarge) throw new ApiError('invalid_request', 'Photo is too large.', 422);
+      const kind = sniffImage(file.head);
+      const ext = kind ? PHOTO_TYPES[kind] : undefined;
+      if (!ext) throw new ApiError('invalid_request', 'Only JPEG, PNG, or WEBP photos are allowed.', 422);
+
+      const filename = await storage.commit(file.tmpPath, WS_BILL_PHOTOS, ext);
+      file.tmpPath = '';
+      let photoId: number;
+      try {
+        const ins = await db.execute('INSERT INTO workshop_bill_photos (bill_id, bill_item_id, file_path, uploaded_by) VALUES (?, ?, ?, ?)', [billId, billItemId, filename, ctx.id]);
+        photoId = ins.insertId;
+      } catch (e) {
+        await storage.remove(WS_BILL_PHOTOS, filename);
+        throw e;
+      }
+      await audit.record({ action: 'create', module: 'workshop_bill_photos', recordId: String(photoId), newValue: { bill_id: billId, bill_item_id: billItemId }, userId: ctx.id, ip: req.ip });
+      return ok({ id: photoId, bill_id: billId, bill_item_id: billItemId, photo_url: storage.url(WS_BILL_PHOTOS, filename), uploaded_at: `${todayIn(env.APP_TIMEZONE)} ${timeIn(env.APP_TIMEZONE)}` });
+    } finally {
+      await discard(file);
+    }
+  });
+
+  route('POST', 'workshop_billing_photo_delete', async (req) => {
+    const ctx = await auth(req, 'workshop.billing');
+    const payload = (req.body && typeof req.body === 'object' ? req.body : {}) as Raw;
+    const photoId = toInt(payload.photo_id);
+    if (!photoId) throw new ApiError('invalid_request', 'A valid photo_id is required.', 422);
+    const [row] = await db.query<Raw>('SELECT p.id, p.bill_id, p.file_path, wb.workshop_id FROM workshop_bill_photos p JOIN workshop_bills wb ON wb.id = p.bill_id WHERE p.id = ?', [photoId]);
+    if (!row) throw new ApiError('not_found', 'Photo not found.', 404);
+    const myWs = await myWorkshop(ctx);
+    if (myWs !== null && Number(row.workshop_id) !== myWs) throw new ApiError('not_found', 'Photo not found.', 404);
+    await db.execute('DELETE FROM workshop_bill_photos WHERE id = ?', [photoId]);
+    await storage.remove(WS_BILL_PHOTOS, row.file_path);
+    await audit.record({ action: 'delete', module: 'workshop_bill_photos', recordId: String(photoId), oldValue: { bill_id: row.bill_id }, userId: ctx.id, ip: req.ip });
+    return ok({ deleted: true, message: 'Photo removed.' });
   });
 
   // ---- retention: "delete old images" ------------------------------------------------------------

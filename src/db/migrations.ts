@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import type { Db } from './pool.js';
 
-const ALREADY = /already exists|Duplicate (column|key|index)|Duplicate foreign key|errno: ?121|errno 121/i;
+const ALREADY = /already exists|Duplicate (column|key|index)|Duplicate foreign key|errno: ?121|errno 121|Can't DROP|check that (column|key) exists/i;
 
 /** Splits a SQL file into statements (handles `--` comments and quotes; the migrations contain no stored procedures). */
 export function statements(sql: string): string[] {

@@ -10,6 +10,26 @@ cp -r "$SRC/api" "$OUT/api"
 cp -r "$SRC/modules" "$OUT/modules"
 cp -r "$SRC/assets" "$OUT/assets"
 cp "$SRC/index.php" "$OUT/index.php"; cp "$SRC/track.php" "$OUT/track.php"
+# The live CRM's mobile pos_garments.php also returns pieces_per_unit (changelog 2026-10-22, section 9) but the backup repo predates that
+# edit, so mirror it in this throwaway copy; the Node port follows the changelog.
+sed -i "s/g\.unit, g\.default_service_id FROM garments g/g.unit, g.pieces_per_unit, g.default_service_id FROM garments g/; s/'unit' => \$g\['unit'\],/'unit' => \$g['unit'], 'pieces_per_unit' => max(1, (int)\$g['pieces_per_unit']),/" "$OUT/api/mobile/pos_garments.php"
+# Web POS defaults (changelog section 8): the live PHP web POS does not have them yet and the Node port does (improvement), so the same
+# script block (test/parity/pos-defaults.js, kept identical to src/web/pages/pos.static.ts) is inserted into this throwaway copy to keep the
+# HTML parity comparison meaningful.
+python3 - "$OUT/modules/pos/index.php" "$(dirname "$0")/../test/parity/pos-defaults.js" <<'PY'
+import sys
+php_path, js_path = sys.argv[1], sys.argv[2]
+php = open(php_path).read()
+marker = "if (PRESELECT_CUSTOMER_ID) {"
+assert php.count(marker) == 1
+open(php_path, 'w').write(php.replace(marker, open(js_path).read() + marker))
+PY
+# PHP leaves the order of tied rows unspecified (MariaDB may flip it between two executions as table statistics change), so add the same
+# explicit tie-breakers to this throwaway copy that the Node port has; otherwise a parity run could flake on ordering alone.
+sed -i "s/ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number\"/ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number, t.wi_id\"/" "$OUT/includes/WorkshopScope.php"
+sed -i "s/ORDER BY store_name, order_number\"/ORDER BY store_name, order_number, oi.id\"/" "$OUT/includes/WorkshopInvoice.php"
+sed -i "s/WHERE wbi.bill_id = ? ORDER BY o.order_number\"/WHERE wbi.bill_id = ? ORDER BY o.order_number, wbi.id\"/" "$OUT/api/mobile/workshop_billing_detail.php"
+sed -i "s/     ORDER BY ar.due_date\"/     ORDER BY ar.due_date, ar.id\"/" "$OUT/api/mobile/outstanding_list.php"
 mkdir -p "$OUT/config"
 cat > "$OUT/config/config.php" <<'PHP'
 <?php

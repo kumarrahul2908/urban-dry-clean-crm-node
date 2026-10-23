@@ -29,7 +29,7 @@ export class LaundryGarmentService {
   /** Over-fetches 4x the limit then filters by current status, exactly like the PHP original. */
   async listByStatus(statuses: string[], limit = 200): Promise<Raw[]> {
     const rows = await this.db.query<Raw>(
-      `SELECT lg.id, lg.sequence, g.garment_name, oi.quantity AS total_garments, oi.id AS order_item_id, o.id AS order_id, o.order_number, o.due_date,
+      `SELECT lg.id, lg.sequence, g.garment_name, oi.quantity AS total_garments, oi.id AS order_item_id, o.id AS order_id, o.order_number, o.short_order_code, o.due_date,
               c.full_name AS customer_name, s.service_name, s.id AS service_id, os.status_key AS order_status_key
        FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id
@@ -39,6 +39,7 @@ export class LaundryGarmentService {
       const status = await this.getCurrentStatus(Number(r.id));
       if (statuses.includes(status)) {
         r.status = status;
+        r.order_number = r.short_order_code ?? r.order_number;
         matched.push(r);
         if (matched.length >= limit) break;
       }

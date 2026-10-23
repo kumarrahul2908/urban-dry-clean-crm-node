@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { code128Svg } from '../../lib/barcodeCode128.js';
 import { phpEmpty, phpRound } from '../../lib/php.js';
 import { WebRedirect, WebText, forbiddenPage, webPage, type WebCtx } from '../context.js';
 import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
@@ -193,13 +194,13 @@ ${raw(orderListStyle(u, jsonEncode, e))}
     const canEditItems = isEditable && ctx.can('orders.edit');
     const ucfirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-    return layout(ctx, { title: `Order ${order.order_number}` }, html`
+    return layout(ctx, { title: `Order ${order.short_order_code ?? order.order_number}` }, html`
 
 <div class="col-12">
   <div class="ov-head">
     <div class="ov-head-main">
       <div class="ov-title-row">
-        <h4>${order.order_number}</h4>
+        <h4>${order.short_order_code ?? order.order_number}</h4>
         <span class="ov-status" style="background:${order.color}">${order.status_label}</span>
         ${order.urgent_level_name ? html`
           <span class="ov-urgent"><i class="fa-solid fa-bolt"></i>${order.urgent_level_name}</span>` : ''}
@@ -458,7 +459,7 @@ ${raw(orderViewScript(u, jsonEncode, e, { id }))}` : ''}
     }
     const urgent = await db.query<Row>('SELECT id, level_name FROM urgent_levels WHERE is_active=1 ORDER BY sort_order');
     const u = (p: string) => ctx.baseUrl(p);
-    return layout(ctx, { title: `Edit Order ${order.order_number}` }, html`
+    return layout(ctx, { title: `Edit Order ${order.short_order_code ?? order.order_number}` }, html`
 <div class="col-md-8">
   <div class="card">
     <div class="card-body">
@@ -556,7 +557,7 @@ ${raw(orderViewScript(u, jsonEncode, e, { id }))}` : ''}
             if (!phpEmpty(order.mobile)) {
               const paid = lines.reduce((a, l) => a + l.amount, 0) + walletAmount;
               await ctx.svc.whatsapp.enqueue(Number(order.customer_id), id, order.mobile, 'payment_received',
-                { customer_name: order.full_name, order_number: order.order_number ?? '', paid_amount: money(paid), business_name: await ctx.setting('business_name', ctx.svc.env.APP_NAME) },
+                { customer_name: order.full_name, order_number: (order.short_order_code ?? order.order_number) ?? '', paid_amount: money(paid), business_name: await ctx.setting('business_name', ctx.svc.env.APP_NAME) },
                 `payment_received:${r.payment_id ?? `p_${Date.now()}${Math.random().toString(16).slice(2)}`}`);
             }
           } catch (ex) { console.error('WhatsApp payment_received enqueue failed:', (ex as Error).message); }
@@ -575,11 +576,11 @@ ${raw(orderViewScript(u, jsonEncode, e, { id }))}` : ''}
     const u = (p: string) => ctx.baseUrl(p);
     const due = flt(order.current_due);
     const maxWallet = flt(order.current_due) < walletBalance ? String(order.current_due) : String(walletBalance);
-    return layout(ctx, { title: `Payment: ${order.order_number}` }, html`
+    return layout(ctx, { title: `Payment: ${order.short_order_code ?? order.order_number}` }, html`
 <div class="col-md-6">
   <div class="card">
     <div class="card-body">
-      <h6 class="fw-bold">Order ${order.order_number}</h6>
+      <h6 class="fw-bold">Order ${order.short_order_code ?? order.order_number}</h6>
       <p class="text-muted mb-1">Invoice: ${String(order.invoice_number ?? '')} &middot; Order Date: ${raw(ctx.date(order.order_date))}</p>
       <p class="text-muted mb-3">${order.full_name} &middot; ${order.mobile}</p>
       <table class="table table-sm mb-3">
@@ -699,11 +700,11 @@ ${raw(orderPaymentScript(u, jsonEncode, e))}
     const paymentTypes = await db.query<Row>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
     const u = (p: string) => ctx.baseUrl(p);
     const me = ctx.user;
-    return layout(ctx, { title: `Process Refund: ${order.order_number}` }, html`
+    return layout(ctx, { title: `Process Refund: ${order.short_order_code ?? order.order_number}` }, html`
 <div class="col-md-7">
   <div class="card">
     <div class="card-body">
-      <h6 class="fw-bold">Order ${order.order_number}</h6>
+      <h6 class="fw-bold">Order ${order.short_order_code ?? order.order_number}</h6>
       <p class="text-muted mb-3">${order.full_name} &middot; ${order.mobile} &middot; Status: ${order.status_label}</p>
       <table class="table table-sm mb-3">
         <tr><td>Grand Total</td><td class="text-end">${raw(money(order.grand_total))}</td></tr>
@@ -772,7 +773,7 @@ ${raw(orderRefundScript(u, jsonEncode, e))}
   webPage(app, '/modules/orders/receipt', { auth: 'payments.view' }, async (ctx, req) => {
     const paymentId = int((req.query as Record<string, unknown>).payment_id);
     const payment = (await db.query<Row>(
-      `SELECT p.*, o.order_number, o.grand_total, c.full_name, c.mobile, c.address, u.full_name AS created_by_name
+      `SELECT p.*, o.order_number, o.short_order_code, o.grand_total, c.full_name, c.mobile, c.address, u.full_name AS created_by_name
        FROM payments p JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = p.customer_id LEFT JOIN users u ON u.id = p.created_by WHERE p.id = ?`, [paymentId]))[0];
     if (!payment) { ctx.flashSet('danger', 'Payment/receipt not found.'); return new WebRedirect('modules/orders/list.php'); }
     const money = await ctx.loadMoney();
@@ -814,7 +815,7 @@ ${raw(receiptStyle(u, jsonEncode, e))}
   <div class="divider"></div>
   <table>
     <tr><td class="label">Receipt #</td><td class="right">${payment.payment_number}</td></tr>
-    <tr><td class="label">Order #</td><td class="right">${payment.order_number}</td></tr>
+    <tr><td class="label">Order #</td><td class="right">${payment.short_order_code ?? payment.order_number}</td></tr>
     <tr><td class="label">Date/Time</td><td class="right">${raw(ctx.datetime(payment.payment_date))}</td></tr>
     <tr><td class="label">Customer</td><td class="right">${payment.full_name}</td></tr>
     <tr><td class="label">Mobile</td><td class="right">${payment.mobile}</td></tr>
@@ -867,6 +868,26 @@ ${raw(receiptStyle(u, jsonEncode, e))}
     const isDefaultA4 = !isThermal && cfg.invoice_paper_size === 'a4' && Math.abs(cfg.invoice_width_mm - 210) < 0.01;
     const u = (p: string) => ctx.baseUrl(p);
     const hasMobile = !phpEmpty(order.mobile);
+
+    // Invoice Design (Admin > Invoice Design): header text styling, content toggles, Terms & Conditions. Seeded to the previous
+    // hard-coded invoice, so nothing changes until a setting is edited.
+    const invFields = new Map<string, Row>();
+    for (const r of await db.query<Row>('SELECT * FROM invoice_design_fields')) invFields.set(String(r.field_key), r);
+    const invToggles = new Map<string, boolean>();
+    for (const r of await db.query<Row>('SELECT toggle_key, is_on FROM invoice_design_toggles')) invToggles.set(String(r.toggle_key), !!Number(r.is_on));
+    const invTerms = (await db.query<Row>('SELECT line_text FROM invoice_terms_conditions ORDER BY sort_order')).map((r) => String(r.line_text));
+    const invOn = (key: string) => invToggles.get(key) ?? true;
+    const fieldShown = (key: string) => !invFields.has(key) || !!Number(invFields.get(key)!.show_field);
+    const fieldStyle = (key: string) => {
+      const f = invFields.get(key);
+      if (!f) return raw('');
+      let css = `font-family:'${String(f.font_family).replace(/[\\'"]/g, '\\$&').replace(/\0/g, '\\0')}';font-size:${int(f.font_size)}px;text-align:${e(String(f.text_align))};`;
+      css += Number(f.is_bold) ? 'font-weight:700;' : 'font-weight:400;';
+      if (Number(f.is_italic)) css += 'font-style:italic;';
+      if (Number(f.is_underline)) css += 'text-decoration:underline;';
+      return raw(css);
+    };
+    const shortCode = order.short_order_code ?? order.order_number;
     return html`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -887,19 +908,22 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
 <div class="sheet">
   <div class="header">
     <div>
-      ${!phpEmpty(logoPath) ? html`<img src="${u('uploads/logo/' + logoPath)}" style="max-height:50px;margin-bottom:8px;">` : ''}
-      <div class="brand-name">${businessName}</div>
-      <div class="brand-sub">
+      ${!phpEmpty(logoPath) && invOn('show_logo') ? html`<img src="${u('uploads/logo/' + logoPath)}" style="max-height:50px;margin-bottom:8px;">` : ''}
+      ${fieldShown('store_name') ? html`
+      <div class="brand-name" style="${fieldStyle('store_name')}">${businessName}</div>` : ''}
+      ${fieldShown('store_address') ? html`
+      <div class="brand-sub" style="${fieldStyle('store_address')}">
         ${address}<br>
-        ${!phpEmpty(phone) ? html`Phone: ${phone}` : ''}
-        ${!phpEmpty(whatsapp) ? html` &nbsp;|&nbsp; WhatsApp: ${whatsapp}` : ''}<br>
+        ${invOn('show_phone_on_invoice') ? html`
+          ${!phpEmpty(phone) ? html`Phone: ${phone}` : ''}
+          ${!phpEmpty(whatsapp) ? html` &nbsp;|&nbsp; WhatsApp: ${whatsapp}` : ''}<br>` : ''}
         ${!phpEmpty(gstin) ? html`GSTIN: ${gstin}` : ''}
-      </div>
+      </div>` : ''}
     </div>
     <div class="invoice-meta">
       <div class="title">INVOICE</div>
       <div>Invoice #: <strong>${String(order.invoice_number ?? '')}</strong></div>
-      <div>Order #: <strong>${order.order_number}</strong></div>
+      <div>Order #: <strong>${shortCode}</strong></div>
       <div>Date: ${raw(ctx.date(order.order_date))}</div>
     </div>
   </div>
@@ -915,17 +939,18 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
     </div>
     <div class="box">
       <h4>Order Details</h4>
-      <div>Due Date: ${raw(ctx.date(order.due_date))}${order.due_time ? raw(' at ' + ctx.date(order.due_time, 'h:i A')) : ''}</div>
-      <div>Urgent Level: ${raw(orEmpty(order.urgent_level_name, 'Normal'))}</div>
-      <div>Home Delivery: ${order.home_delivery ? 'Yes' : 'No'}</div>
-      ${!phpEmpty(order.packaging_preference) ? html`<div>Packaging: ${order.packaging_preference}</div>` : ''}
+      ${invOn('show_due_date') ? html`<div>Due Date: ${raw(ctx.date(order.due_date))}${order.due_time ? raw(' at ' + ctx.date(order.due_time, 'h:i A')) : ''}</div>` : ''}
+      ${invOn('show_urgent_level') ? html`<div>Urgent Level: ${raw(orEmpty(order.urgent_level_name, 'Normal'))}</div>` : ''}
+      ${invOn('show_home_delivery') ? html`<div>Home Delivery: ${order.home_delivery ? 'Yes' : 'No'}</div>` : ''}
+      ${!phpEmpty(order.packaging_preference) && invOn('show_packaging') ? html`<div>Packaging: ${order.packaging_preference}</div>` : ''}
+      ${invOn('show_order_create_time') && !phpEmpty(order.created_at) ? html`<div>Created: ${raw(ctx.date(order.created_at, 'd M y h:i A'))}</div>` : ''}
     </div>
   </div>
 
   <div class="items-scroll">
   <table class="items">
     <thead>
-      <tr><th>S.No</th><th>Garment</th><th>Service</th><th class="right">Qty</th><th>Unit</th><th class="right">Rate</th><th class="right">Discount</th><th class="right">Tax %</th><th class="right">Tax Amt</th><th class="right">Total</th></tr>
+      <tr><th>S.No</th><th>Garment</th><th>Service</th><th class="right">Qty</th><th>Unit</th><th class="right">Rate</th><th class="right">Discount</th>${invOn('show_tax_breakdown') ? html`<th class="right">Tax %</th><th class="right">Tax Amt</th>` : ''}<th class="right">Total</th></tr>
     </thead>
     <tbody>
     ${items.map((it, i) => html`
@@ -937,8 +962,9 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
         <td>${it.unit}</td>
         <td class="right">${it.weight !== null ? raw(money(it.weight_rate)) : raw(money(it.unit_price))}</td>
         <td class="right">${raw(money(it.discount))}</td>
+        ${invOn('show_tax_breakdown') ? html`
         <td class="right">${String(it.tax_percent)}%</td>
-        <td class="right">${raw(money(it.tax))}</td>
+        <td class="right">${raw(money(it.tax))}</td>` : ''}
         <td class="right">${raw(money(it.total))}</td>
       </tr>`)}
     </tbody>
@@ -956,9 +982,28 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
     <tr><td><strong>Due</strong></td><td class="right"><strong>${raw(money(order.current_due))}</strong></td></tr>
   </table>
 
-  <div class="footer-note">
+  ${invOn('show_barcode') ? html`
+  <div style="text-align:center;margin-top:16px;">${raw(code128Svg(String(shortCode), 220, 44))}</div>` : ''}
+
+  ${invOn('show_signature_box') ? html`
+  <div style="margin-top:40px;display:flex;justify-content:flex-end;">
+    <div style="width:220px;text-align:center;">
+      <div style="border-top:1px solid #333;padding-top:4px;font-size:11.5px;color:#555;">Customer Signature</div>
+    </div>
+  </div>` : ''}
+
+  ${invOn('show_terms') && invTerms.length ? html`
+  <div style="margin-top:20px;font-size:11px;color:#666;border-top:1px solid #eee;padding-top:10px;">
+    <div style="font-weight:700;margin-bottom:4px;">Terms &amp; Conditions</div>
+    <ol style="margin:0;padding-left:18px;">
+      ${invTerms.map((line) => html`<li style="margin-bottom:2px;">${line}</li>`)}
+    </ol>
+  </div>` : ''}
+
+  ${fieldShown('footer_note') ? html`
+  <div class="footer-note" style="${fieldStyle('footer_note')}">
     This is a system-generated invoice from ${businessName}. For any queries regarding this order, please contact us with your Order/Invoice number.
-  </div>
+  </div>` : ''}
 </div>
 ${raw(invoiceScriptBase())}${hasMobile ? raw(invoiceScriptWhatsapp(u, jsonEncode, e, id, ctx.csrfToken())) : ''}${raw(invoiceScriptEnd)}
 </body>

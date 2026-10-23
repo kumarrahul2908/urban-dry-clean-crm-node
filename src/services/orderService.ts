@@ -38,7 +38,7 @@ interface PricedLine {
   quantity: number; unit: string; unit_price: number; weight: number | null; weight_rate: number | null;
   subtotal: number; tax_percent: number; brand_id: number | null; color_id: number | null;
   defect_ids: number[]; remarks: string; rate_overridden: boolean; is_manual_override: boolean;
-  original_configured_rate: string | null;
+  original_configured_rate: string | null; pieces_per_unit: number; piece_names: string | null;
   discount?: number; tax?: number; total?: number;
 }
 
@@ -91,8 +91,11 @@ export class OrderService {
     const hasRateOverride = rateOverrideRaw !== null && rateOverrideRaw !== '';
     const claimsManualOverride = !phpEmpty(raw.manual_override);
 
-    const [g] = await db.query<{ garment_name: string }>('SELECT garment_name FROM garments WHERE id = ?', [garmentId]);
+    const [g] = await db.query<{ garment_name: string; pieces_per_unit: number | null; piece_names: string | null }>('SELECT garment_name, pieces_per_unit, piece_names FROM garments WHERE id = ?', [garmentId]);
     const garmentName = g?.garment_name || `Garment #${garmentId}`;
+    // a Set garment (e.g. 2-piece Suit) is ONE ordered unit but several physical pieces, each tagged; weight lines never multiply
+    const piecesPerUnit = mode === 'piece' ? Math.max(1, toInt(g?.pieces_per_unit ?? 1)) : 1;
+    const pieceNames = mode === 'piece' ? (g?.piece_names ?? null) : null;
     const [s] = await db.query<{ service_name: string }>('SELECT service_name FROM services WHERE id = ?', [serviceId]);
     const serviceName = s?.service_name || `Service #${serviceId}`;
 
@@ -146,7 +149,7 @@ export class OrderService {
     return {
       line: {
         garment_id: garmentId, service_id: serviceId, garment_name: garmentName, service_name: serviceName,
-        quantity, unit: mode === 'weight' ? 'Kg' : String(raw.unit ?? 'Pcs'), unit_price: unitPrice,
+        quantity, unit: mode === 'weight' ? 'Kg' : String(raw.unit ?? 'Pcs'), pieces_per_unit: piecesPerUnit, piece_names: pieceNames, unit_price: unitPrice,
         weight: weightSnap, weight_rate: weightRateSnap, subtotal: lineSubtotal, tax_percent: taxPercent,
         brand_id: !phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null,
         color_id: !phpEmpty(raw.color_id) ? toInt(raw.color_id) : null,
@@ -290,13 +293,15 @@ export class OrderService {
         );
         orderId = ins.insertId;
 
+        // order-wide running count of physical pieces tagged so far (a 2-piece Suit pushes every later tag number by 2)
+        let tagSequence = 1;
         for (let seq = 0; seq < priced.length; seq++) {
           const p = priced[seq]!;
           const it = await t.execute(
-            `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, unit_price, weight,
+            `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
                weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-            [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
               p.subtotal, p.discount, p.tax_percent, p.tax, p.total, p.brand_id, p.color_id, p.remarks],
           );
           const itemId = it.insertId;
@@ -311,7 +316,9 @@ export class OrderService {
           for (const defectId of p.defect_ids) {
             await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [itemId, defectId, actor.userId]);
           }
-          await sc.tags.generateForItem(orderId, orderNumber, itemId, seq + 1);
+          const pieceCount = Math.max(1, Math.round(p.quantity * p.pieces_per_unit));
+          await sc.tags.generateForItem(orderId, orderNumber, itemId, tagSequence, pieceCount);
+          tagSequence += pieceCount;
         }
 
         await sc.audit.record({
@@ -328,8 +335,9 @@ export class OrderService {
       return this.wrapSaveError(e, 'Could not save the order — no changes were made.');
     }
 
-    await this.afterCreate(customerId, orderId, orderNumber, grandTotal);
-    return { success: true, order_id: orderId, order_number: orderNumber, invoice_number: invoiceNumber, grand_total: grandTotal, warnings };
+    await this.afterCreate(customerId, orderId, orderNumber, grandTotal, true, shortOrderCode ?? orderNumber);
+    // short_order_code is THE user-facing identifier: this central return is where every caller (web submit, mobile create) gets it
+    return { success: true, order_id: orderId, order_number: shortOrderCode ?? orderNumber, invoice_number: invoiceNumber, grand_total: grandTotal, warnings };
   }
 
   private wrapSaveError(e: unknown, head: string): Result {
@@ -338,11 +346,11 @@ export class OrderService {
     return fail(`${head} (An unexpected error occurred.)`);
   }
 
-  private async afterCreate(customerId: number, orderId: number, orderNumber: string, grandTotal: number, notify = true) {
+  private async afterCreate(customerId: number, orderId: number, orderNumber: string, grandTotal: number, notify = true, waOrderNumber = orderNumber) {
     // PHP's createLaundryOrder() never wrote the in-app 'order_created' notification; only createOrder() did.
     if (notify) await this.notifications.notify('order_created', `Order ${orderNumber} created for ${await formatCurrency(this.db, grandTotal)}.`, customerId, orderId);
     try {
-      await this.hooks.orderCreated({ customerId, orderId, orderNumber, grandTotal });
+      await this.hooks.orderCreated({ customerId, orderId, orderNumber: waOrderNumber, grandTotal });
     } catch (e) {
       this.log(`order_created hook failed: ${(e as Error).message}`);
     }
@@ -718,8 +726,8 @@ export class OrderService {
       return this.wrapSaveError(e, 'Could not save the Laundry order — no changes were made.');
     }
 
-    await this.afterCreate(customerId, orderId, orderNumber, grandTotal, false);
-    return { success: true, order_id: orderId, order_number: orderNumber, grand_total: grandTotal, warnings };
+    await this.afterCreate(customerId, orderId, orderNumber, grandTotal, false, shortOrderCode ?? orderNumber);
+    return { success: true, order_id: orderId, order_number: shortOrderCode ?? orderNumber, grand_total: grandTotal, warnings };
   }
 
   // ---------------------------------------------------------------------------------------
@@ -742,10 +750,10 @@ export class OrderService {
           throw new BusinessError('This order can no longer be edited — its status changed a moment ago.');
         }
         const ins = await t.execute(
-          `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, unit_price, weight,
+          `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
              weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks, client_request_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
-          [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
+          [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
             p.subtotal, p.tax_percent, p.subtotal, p.brand_id, p.color_id, p.remarks, clientRequestId],
         );
         const id = ins.insertId;
@@ -759,8 +767,14 @@ export class OrderService {
             userId: actor.userId, ip: actor.ip,
           });
         }
-        const [{ n }] = (await t.query<{ n: number }>('SELECT COUNT(*) AS n FROM order_items WHERE order_id = ?', [orderId])) as [{ n: number }];
-        await sc.tags.generateForItem(orderId, String(order.order_number), id, Number(n));
+        // sequence = physical pieces already tagged on every OTHER item + 1 (a Set item may have contributed several)
+        const [pre] = await t.query<{ n: string | number }>('SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) AS n FROM order_items WHERE order_id = ? AND id != ?', [orderId, id]);
+        // also never below the highest tag number already issued on this order: after an item in the middle was removed, the plain piece count
+        // would re-issue a number that is still on a printed tag (the PHP original then fails on the duplicate barcode_value)
+        const [top] = await t.query<{ n: string | number | null }>('SELECT MAX(item_sequence) AS n FROM barcodes WHERE order_id = ?', [orderId]);
+        const sequence = Math.max(Math.round(Number(pre?.n ?? 0)), Number(top?.n ?? 0)) + 1;
+        const pieceCount = Math.max(1, Math.round(p.quantity * p.pieces_per_unit));
+        await sc.tags.generateForItem(orderId, String(order.order_number), id, sequence, pieceCount);
         await this.recalculateAggregates(sc, orderId, actor, true);
         return id;
       });
@@ -772,6 +786,106 @@ export class OrderService {
       }
       return fail(this.prefixed(e, 'Could not add item: '));
     }
+  }
+
+  /**
+   * Changes quantity/weight/rate/brand/colour/remarks/defects of an item already on an editable order, re-pricing exactly like
+   * addItem(). garment_id/service_id are not editable (that is "remove + add"), and tags are never regenerated on a quantity change
+   * (renumbering already printed tags would be harmful).
+   */
+  async updateItem(orderId: number, itemId: number, raw: Raw, actor: Actor, canManualOverrideRate = false): Promise<Result> {
+    const [order] = await this.db.query<Raw>('SELECT * FROM orders WHERE id = ?', [orderId]);
+    if (!order) return fail('Order not found.');
+    if (!(await this.isEditable(order as { status_id: number }))) return fail('This order can no longer be edited (processing has begun).');
+    const [existing] = await this.db.query<Raw>('SELECT * FROM order_items WHERE id = ? AND order_id = ?', [itemId, orderId]);
+    if (!existing) return fail('Item not found on this order.');
+
+    const garmentId = toInt(existing.garment_id);
+    const serviceId = toInt(existing.service_id);
+    const mode: 'weight' | 'piece' = existing.weight !== null ? 'weight' : 'piece';
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(raw, k) && raw[k] !== null && raw[k] !== undefined;
+    let quantity = toFloat(has('quantity') ? raw.quantity : existing.quantity);
+    const weight = toFloat(has('weight') ? raw.weight : existing.weight);
+    const rateOverrideRaw = raw.rate_override ?? null;
+    const hasRateOverride = rateOverrideRaw !== null && rateOverrideRaw !== '';
+    const claimsManualOverride = Object.prototype.hasOwnProperty.call(raw, 'manual_override') ? !phpEmpty(raw.manual_override) : Number(existing.is_manual_override) === 1;
+
+    if (mode === 'piece' && quantity <= 0) return fail('Quantity must be greater than zero.');
+    if (mode === 'weight' && weight <= 0) return fail('Weight must be greater than zero.');
+    if (hasRateOverride && (!isNumeric(rateOverrideRaw) || toFloat(rateOverrideRaw) < 0)) return fail('The entered rate override must be a non-negative number.');
+
+    const [g] = await this.db.query<{ garment_name: string }>('SELECT garment_name FROM garments WHERE id = ?', [garmentId]);
+    const garmentName = g?.garment_name || `Garment #${garmentId}`;
+    const [sv] = await this.db.query<{ service_name: string }>('SELECT service_name FROM services WHERE id = ?', [serviceId]);
+    const serviceName = sv?.service_name || `Service #${serviceId}`;
+
+    const rate = await this.pricing.getRate(toInt(order.price_list_id), garmentId, serviceId);
+    const weightRateMissing = mode === 'weight' && (rate === null || rate.weight_rate === null);
+    const noConfiguredPrice = rate === null || weightRateMissing;
+    let originalConfiguredRate: string | null = null;
+    let lineSubtotal: number, unitPrice: number, weightSnap: number | null, weightRateSnap: number | null, taxPercent: number, isManual: boolean;
+    if (claimsManualOverride) {
+      if (!canManualOverrideRate) return fail('You are not authorized to use Manual Rate Override.');
+      if (!hasRateOverride) return fail('A manual override rate is required.');
+      originalConfiguredRate = rate !== null ? (mode === 'weight' ? rate.weight_rate : (rate.piece_rate ?? null)) : null;
+      const r = toFloat(rateOverrideRaw);
+      if (mode === 'weight') { lineSubtotal = round2(weight * r); unitPrice = 0; weightSnap = weight; weightRateSnap = r; quantity = 1; }
+      else { lineSubtotal = round2(quantity * r); unitPrice = r; weightSnap = null; weightRateSnap = null; }
+      taxPercent = rate !== null ? toFloat(rate.tax_percent ?? 0) : 0;
+      isManual = true;
+    } else if (noConfiguredPrice) {
+      return fail(rate === null
+        ? `No price configured for ${garmentName} / ${serviceName}. Please configure a rate before selling this item, or use Manual Rate Override if authorized.`
+        : `${garmentName} / ${serviceName} is not configured for weight-based pricing. Use Manual Rate Override if authorized.`);
+    } else {
+      const rt = rate as RateRow;
+      taxPercent = toFloat(rt.tax_percent ?? 0);
+      if (mode === 'weight') {
+        const r = hasRateOverride ? toFloat(rateOverrideRaw) : toFloat(rt.weight_rate);
+        lineSubtotal = round2(weight * r);
+        if (rt.min_weight_charge !== null && lineSubtotal < toFloat(rt.min_weight_charge)) lineSubtotal = round2(toFloat(rt.min_weight_charge));
+        unitPrice = 0; weightSnap = weight; weightRateSnap = r; quantity = 1;
+      } else {
+        const r = hasRateOverride ? toFloat(rateOverrideRaw) : toFloat(rt.piece_rate);
+        lineSubtotal = round2(quantity * r); unitPrice = r; weightSnap = null; weightRateSnap = null;
+      }
+      isManual = false;
+    }
+
+    try {
+      await this.db.tx(async (t) => {
+        const sc = this.scoped(t);
+        const [locked] = await t.query<Raw>('SELECT * FROM orders WHERE id = ? FOR UPDATE', [orderId]);
+        if (!locked || !(await this.isEditable(locked as { status_id: number }, t))) throw new BusinessError('This order can no longer be edited — its status changed a moment ago.');
+        await t.execute(
+          `UPDATE order_items SET quantity=?, unit_price=?, weight=?, weight_rate=?, is_manual_override=?,
+             subtotal=?, tax_percent=?, tax=?, total=?, brand_id=?, color_id=?, remarks=? WHERE id=?`,
+          [quantity, unitPrice, weightSnap, weightRateSnap, isManual ? 1 : 0, lineSubtotal, taxPercent, lineSubtotal, lineSubtotal,
+            Object.prototype.hasOwnProperty.call(raw, 'brand_id') ? (!phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null) : existing.brand_id,
+            Object.prototype.hasOwnProperty.call(raw, 'color_id') ? (!phpEmpty(raw.color_id) ? toInt(raw.color_id) : null) : existing.color_id,
+            Object.prototype.hasOwnProperty.call(raw, 'remarks') ? clean(raw.remarks) : existing.remarks, itemId],
+        );
+        if (Object.prototype.hasOwnProperty.call(raw, 'defect_ids')) {
+          await t.execute('DELETE FROM order_item_defects WHERE order_item_id = ?', [itemId]);
+          for (const d of (Array.isArray(raw.defect_ids) ? raw.defect_ids : []).map(toInt).filter((n: number) => n !== 0)) {
+            await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [itemId, d, actor.userId]);
+          }
+        }
+        await sc.audit.record({ action: 'edit', module: 'order_items', recordId: String(itemId), oldValue: existing, newValue: { quantity, unit_price: unitPrice, weight: weightSnap, total: lineSubtotal }, userId: actor.userId, ip: actor.ip });
+        if (isManual && Number(existing.is_manual_override) !== 1) {
+          await sc.audit.record({
+            action: 'manual_rate_override', module: 'order_items', recordId: String(itemId),
+            oldValue: { configured_rate: originalConfiguredRate },
+            newValue: { garment: garmentName, service: serviceName, billing_unit: weightSnap !== null ? 'weight' : 'piece', override_rate: weightSnap !== null ? weightRateSnap : unitPrice, authorized_by_user_id: actor.userId, order_id: orderId },
+            userId: actor.userId, ip: actor.ip,
+          });
+        }
+        await this.recalculateAggregates(sc, orderId, actor, true);
+      });
+    } catch (e) {
+      return fail(this.prefixed(e, 'Could not update item: '));
+    }
+    return { success: true };
   }
 
   async removeItem(orderId: number, itemId: number, actor: Actor): Promise<Result> {

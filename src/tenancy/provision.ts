@@ -11,7 +11,7 @@ export const adminEnv = (env: Env, database = 'information_schema'): Env => ({
 });
 
 /** Always copied from the template database. */
-export const CORE_TABLES = ['roles', 'permissions', 'role_permissions', 'order_statuses', 'payment_types', 'urgent_levels', 'taxes', 'notification_templates'];
+export const CORE_TABLES = ['roles', 'permissions', 'role_permissions', 'order_statuses', 'payment_types', 'urgent_levels', 'taxes', 'notification_templates', 'tag_design_fields', 'invoice_design_fields', 'invoice_design_toggles'];
 /** Default dry-clean catalogue (copied unless `catalog: false`). */
 export const CATALOG_TABLES = ['categories', 'services', 'garments', 'brands', 'colors', 'defects', 'discounts', 'expense_categories', 'price_lists', 'price_list_items', 'price_list_service_rates'];
 /** Settings that must start fresh for a new business. */

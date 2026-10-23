@@ -47,6 +47,7 @@ export async function wsScheduleData(db: Db, workshopId: number | null, today: s
               ORDER BY h.changed_at DESC, h.id DESC LIMIT 1),
             wi.status) AS cur_status,
           COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.order_number, o2.order_number) AS order_number,
+          COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code,
           COALESCE(o1.due_date, o2.due_date) AS due_date, COALESCE(o1.due_time, o2.due_time) AS due_time,
           COALESCE(s1.store_name, s2.store_name, 'Unassigned') AS store_name, COALESCE(c1.full_name, c2.full_name) AS customer_name,
           COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(oi1.id, oi2.id) AS order_item_id,
@@ -61,19 +62,19 @@ export async function wsScheduleData(db: Db, workshopId: number | null, today: s
         WHERE wi.status != 'Rejected'${wsClause}
      ) t
      WHERE t.cur_status NOT IN ('Returned','Store Received','Rejected') AND t.due_date IS NOT NULL AND t.due_date <= ?
-     ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number`, params);
+     ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number, t.wi_id`, params);
   const out: ScheduleData = { today: {}, tomorrow: {}, overdue: {}, today_date: today, tomorrow_date: tomorrow };
   for (const r of rows) {
     const qty = Number(r.garments);
     const store = r.store_name as string;
     if (String(r.due_date) < today) {
-      (out.overdue[store] ??= []).push({ order_id: r.order_id, order_number: r.order_number, customer: r.customer_name, garment: r.garment_name, qty, due_date: r.due_date, days: diffDays(today, String(r.due_date)), status: r.cur_status });
+      (out.overdue[store] ??= []).push({ order_id: r.order_id, order_number: r.short_order_code ?? r.order_number, customer: r.customer_name, garment: r.garment_name, qty, due_date: r.due_date, days: diffDays(today, String(r.due_date)), status: r.cur_status });
       continue;
     }
     const bucket = String(r.due_date) === today ? out.today : out.tomorrow;
     const oid = Number(r.order_id);
     const byStore = (bucket[store] ??= {});
-    const o = (byStore[oid] ??= { order_id: oid, order_number: r.order_number, customer: r.customer_name, due_time: r.due_time, garments: 0, items: {}, statuses: {} });
+    const o = (byStore[oid] ??= { order_id: oid, order_number: r.short_order_code ?? r.order_number, customer: r.customer_name, due_time: r.due_time, garments: 0, items: {}, statuses: {} });
     o.garments += qty;
     o.items[Number(r.order_item_id)] = Number(r.item_value);
     o.statuses[r.cur_status] = true;

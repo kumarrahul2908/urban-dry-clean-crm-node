@@ -50,7 +50,7 @@ export function registerGarmentPages(app: FastifyInstance) {
   webPage(app, '/modules/garments/add', { auth: 'login' }, async (ctx, req) => {
     if (!any(ctx, 'garment.create', 'garments.manage')) return denied(ctx);
     const errors: string[] = [];
-    const form: Record<string, string> = { garment_name: '', sku: '', category_id: '', default_service_id: '', unit: 'Pcs', description: '' };
+    const form: Record<string, string> = { garment_name: '', sku: '', category_id: '', default_service_id: '', unit: 'Pcs', pieces_per_unit: '1', description: '' };
     if (req.method === 'POST') {
       if (!ctx.csrfValid()) return csrfFail();
       const p = body(ctx);
@@ -58,6 +58,8 @@ export function registerGarmentPages(app: FastifyInstance) {
       if (form.garment_name === '') errors.push('Garment name is required.');
       if (form.category_id === '') errors.push('Category is required.');
       if (form.unit === '') errors.push('Unit is required.');
+      // a Set garment (e.g. 2-piece Suit) is ordered as ONE unit but is several physical garments, each needing its own tag
+      if (int(form.pieces_per_unit) < 1) errors.push('Pieces per Unit must be at least 1.');
       if (form.sku !== '' && (await db.query('SELECT id FROM garments WHERE sku = ?', [form.sku])).length) errors.push('This SKU is already used by another garment.');
       if (form.garment_name !== '' && form.category_id !== '' && (await db.query('SELECT id FROM garments WHERE LOWER(garment_name) = LOWER(?) AND category_id = ?', [form.garment_name, form.category_id])).length) {
         errors.push(`A garment named "${form.garment_name}" already exists in this category.`);
@@ -65,8 +67,8 @@ export function registerGarmentPages(app: FastifyInstance) {
       let image: string | null = null;
       if (!errors.length) { try { image = await handleImageUpload(ctx, 'image', 'garments'); } catch (ex) { errors.push((ex as Error).message); } }
       if (!errors.length) {
-        const r = await db.execute('INSERT INTO garments (garment_name, sku, category_id, default_service_id, unit, image, description) VALUES (?,?,?,?,?,?,?)',
-          [form.garment_name, phpEmpty(form.sku) ? null : form.sku, form.category_id, phpEmpty(form.default_service_id) ? null : form.default_service_id, form.unit, image, form.description]);
+        const r = await db.execute('INSERT INTO garments (garment_name, sku, category_id, default_service_id, unit, pieces_per_unit, image, description) VALUES (?,?,?,?,?,?,?,?)',
+          [form.garment_name, phpEmpty(form.sku) ? null : form.sku, form.category_id, phpEmpty(form.default_service_id) ? null : form.default_service_id, form.unit, Math.max(1, int(form.pieces_per_unit)), image, form.description]);
         await audit.record({ action: 'create', module: 'garments', recordId: String(r.insertId), newValue: form, userId: ctx.data.user_id ?? null, ip: req.ip });
         ctx.flashSet('success', `Garment "${form.garment_name}" added successfully.`);
         return new WebRedirect('modules/garments/view.php?id=' + r.insertId);
@@ -88,7 +90,7 @@ export function registerGarmentPages(app: FastifyInstance) {
     if (req.method === 'POST') {
       if (!ctx.csrfValid()) return csrfFail();
       const p = body(ctx);
-      for (const f of ['garment_name', 'sku', 'category_id', 'default_service_id', 'unit', 'description']) form[f] = clean(p[f]);
+      for (const f of ['garment_name', 'sku', 'category_id', 'default_service_id', 'unit', 'pieces_per_unit', 'description']) form[f] = clean(p[f]);
       form.is_active = 'is_active' in p ? 1 : 0;
       const removeImage = 'remove_image' in p;
       let permissionWarning: string | null = null;
@@ -99,6 +101,7 @@ export function registerGarmentPages(app: FastifyInstance) {
       if (form.garment_name === '') errors.push('Garment name is required.');
       if (form.category_id === '') errors.push('Category is required.');
       if (form.unit === '') errors.push('Unit is required.');
+      if (int(form.pieces_per_unit) < 1) errors.push('Pieces per Unit must be at least 1.');
       if (form.sku !== '' && (await db.query('SELECT id FROM garments WHERE sku = ? AND id != ?', [form.sku, id])).length) errors.push('This SKU is already used by another garment.');
       if (form.garment_name !== '' && form.category_id !== '' && (await db.query('SELECT id FROM garments WHERE LOWER(garment_name) = LOWER(?) AND category_id = ? AND id != ?', [form.garment_name, form.category_id, id])).length) {
         errors.push(`A garment named "${form.garment_name}" already exists in this category.`);
@@ -112,8 +115,8 @@ export function registerGarmentPages(app: FastifyInstance) {
         } catch (ex) { errors.push((ex as Error).message); }
       }
       if (!errors.length) {
-        await db.execute('UPDATE garments SET garment_name=?, sku=?, category_id=?, default_service_id=?, unit=?, description=?, image=?, is_active=? WHERE id=?',
-          [form.garment_name, phpEmpty(form.sku) ? null : form.sku, form.category_id, phpEmpty(form.default_service_id) ? null : form.default_service_id, form.unit, form.description, newImage, form.is_active, id]);
+        await db.execute('UPDATE garments SET garment_name=?, sku=?, category_id=?, default_service_id=?, unit=?, pieces_per_unit=?, description=?, image=?, is_active=? WHERE id=?',
+          [form.garment_name, phpEmpty(form.sku) ? null : form.sku, form.category_id, phpEmpty(form.default_service_id) ? null : form.default_service_id, form.unit, Math.max(1, int(form.pieces_per_unit)), form.description, newImage, form.is_active, id]);
         await audit.record({ action: 'edit', module: 'garments', recordId: String(id), oldValue: garment, newValue: form, userId: ctx.data.user_id ?? null, ip: req.ip });
         ctx.flashSet('success', 'Garment updated successfully.' + (permissionWarning ? ' ' + permissionWarning : ''));
         return new WebRedirect('modules/garments/view.php?id=' + id);

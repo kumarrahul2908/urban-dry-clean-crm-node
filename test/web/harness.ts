@@ -16,7 +16,10 @@ export const webEnabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
 
 export interface Resp { status: number; location: string | null; body: string; type: string | null }
 export interface UploadFile { field: string; filename: string; content: string | Buffer; type?: string }
-export interface Client { get(path: string): Promise<Resp>; post(path: string, form: Record<string, string>, opts?: { csrf?: boolean }): Promise<Resp>; upload(path: string, form: Record<string, string>, file: UploadFile): Promise<Resp>; csrf(): string | null; cookie(): string }
+export interface Client { get(path: string): Promise<Resp>; post(path: string, form: Record<string, string | string[]>, opts?: { csrf?: boolean }): Promise<Resp>; upload(path: string, form: Record<string, string>, file: UploadFile): Promise<Resp>; csrf(): string | null; cookie(): string }
+
+/** application/x-www-form-urlencoded; an array value repeats the key (PHP `name[]=a&name[]=b`). */
+const enc = (form: Record<string, string | string[]>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(form)) for (const x of Array.isArray(v) ? v : [v]) p.append(k, x); return p.toString(); };
 
 const free = () => new Promise<number>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as any).port; s.close(() => res(p)); }); });
 
@@ -54,11 +57,11 @@ export function webHarness() {
   };
   const csrfOf = (html: string) => /name="csrf-token" content="([0-9a-f]{64})"/.exec(html)?.[1] ?? /name="csrf_token" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? null;
 
-  type Send = (method: string, path: string, headers: Record<string, string>, form?: Record<string, string>, file?: UploadFile) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
+  type Send = (method: string, path: string, headers: Record<string, string>, form?: Record<string, string | string[]>, file?: UploadFile) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
   const mk = (send: Send): Client => {
     const jar = cookieJar();
     let token: string | null = null;
-    const call = async (method: string, path: string, form?: Record<string, string>, file?: UploadFile): Promise<Resp> => {
+    const call = async (method: string, path: string, form?: Record<string, string | string[]>, file?: UploadFile): Promise<Resp> => {
       const r = await send(method, path, jar.header() ? { cookie: jar.header() } : {}, form, file);
       const sc = r.headers['set-cookie']; jar.absorb(Array.isArray(sc) ? sc : sc ? [sc] : []);
       const t = csrfOf(r.body); if (t) token = t;
@@ -79,10 +82,10 @@ export function webHarness() {
     let ct: Record<string, string> = {};
     if (file) {
       const fd = new FormData();
-      for (const [k, v] of Object.entries(form ?? {})) fd.set(k, v);
+      for (const [k, v] of Object.entries(form ?? {})) fd.set(k, String(v));
       fd.set(file.field, new Blob([new Uint8Array(Buffer.from(file.content))], { type: file.type ?? 'text/csv' }), file.filename);
       body = fd;
-    } else if (form) { body = new URLSearchParams(form).toString(); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
+    } else if (form) { body = enc(form); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
     const r = await fetch(`http://127.0.0.1:${h.port}${path}`, { method, redirect: 'manual', headers: { ...headers, ...ct }, body });
     const headersObj: Record<string, string | string[] | undefined> = {};
     r.headers.forEach((v, k) => { headersObj[k] = v; });
@@ -99,7 +102,7 @@ export function webHarness() {
       parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\nContent-Type: ${file.type ?? 'text/csv'}\r\n\r\n`), Buffer.from(file.content), Buffer.from(`\r\n--${boundary}--\r\n`));
       payload = Buffer.concat(parts);
       ct = { 'content-type': `multipart/form-data; boundary=${boundary}` };
-    } else if (form) { payload = new URLSearchParams(form).toString(); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
+    } else if (form) { payload = enc(form); ct = { 'content-type': 'application/x-www-form-urlencoded' }; }
     const r = await h.app.inject({ method: method as 'GET' | 'POST', url: path, headers: { ...headers, ...ct }, payload });
     return { status: r.statusCode, headers: r.headers as Record<string, string | string[] | undefined>, body: r.body };
   });

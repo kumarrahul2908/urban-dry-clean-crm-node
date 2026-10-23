@@ -41,7 +41,7 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
     let where = "oi.item_status IN ('QC','Rework') AND os.status_key != 'cancelled'";
     const params: unknown[] = [];
     if (statusFilter !== '') { where += ' AND oi.item_status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     if (garmentSearch !== '') { where += ' AND g.garment_name LIKE ?'; params.push(`%${garmentSearch}%`); }
     if (dueDate !== '') { where += ' AND o.due_date = ?'; params.push(dueDate); }
@@ -50,7 +50,7 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
       JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id WHERE ${where}`;
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n ${base}`, params)) as [{ n: number }];
     const rows = await db.query<Raw>(
-      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
               g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
        ${base} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${(page - 1) * perPage}`, params);
     const mapLaundry = (rs: Raw[]) => rs.map((lg) => ({
@@ -59,7 +59,7 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
     }));
     return ok({
       items: rows.map((r) => ({
-        order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.order_number, customer_name: r.customer_name, garment_name: r.garment_name,
+        order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, customer_name: r.customer_name, garment_name: r.garment_name,
         service_name: r.service_name, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight), billing_unit: r.billing_unit, item_status: r.item_status,
         due_date: r.due_date, due_time: r.due_time, urgent_level_name: r.urgent_level_name, can_act: r.item_status === 'QC',
       })),
@@ -99,25 +99,25 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
   route('GET', 'rework_list', 'rework.manage', async () => {
     const items = await db.query<Raw>(
       `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, oi.id AS order_item_id, oi.quantity, oi.weight,
-              o.id AS order_id, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
+              o.id AS order_id, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
        FROM rework_records rr JOIN order_items oi ON oi.id = rr.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
        JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
        WHERE oi.item_status = 'Rework' AND rr.status != 'Completed' ORDER BY (o.urgent_level_id IS NULL), o.due_date, rr.id`);
     const lg = await db.query<Raw>(
       `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, lg.id AS laundry_garment_id, lg.sequence, oi.quantity AS total_garments,
-              o.id AS order_id, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name
+              o.id AS order_id, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name
        FROM rework_records rr JOIN laundry_garments lg ON lg.id = rr.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id
        WHERE rr.status != 'Completed' ORDER BY o.due_date, rr.id`);
     return ok({
       items: items.map((r) => ({
         rework_id: num(r.rework_id), reason: r.reason, rework_status: r.rework_status, created_at: r.created_at, order_item_id: num(r.order_item_id), order_id: num(r.order_id),
-        order_number: r.order_number, customer_name: r.customer_name, garment_name: r.garment_name, service_name: r.service_name, quantity: numOrNull(r.quantity),
+        order_number: r.short_order_code ?? r.order_number, customer_name: r.customer_name, garment_name: r.garment_name, service_name: r.service_name, quantity: numOrNull(r.quantity),
         weight: numOrNull(r.weight), billing_unit: r.billing_unit, due_date: r.due_date, due_time: r.due_time, urgent_level_name: r.urgent_level_name, next_action: nextAction(r.rework_status),
       })),
       laundry: lg.map((r) => ({
         rework_id: num(r.rework_id), reason: r.reason, rework_status: r.rework_status, created_at: r.created_at, laundry_garment_id: num(r.laundry_garment_id), sequence: num(r.sequence),
-        total_garments: num(r.total_garments), order_id: num(r.order_id), order_number: r.order_number, customer_name: r.customer_name, garment_name: r.garment_name,
+        total_garments: num(r.total_garments), order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, customer_name: r.customer_name, garment_name: r.garment_name,
         service_name: r.service_name, due_date: r.due_date, due_time: r.due_time, next_action: nextAction(r.rework_status),
       })),
     });
@@ -141,10 +141,10 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
     const orderSearch = qStr(q.order), customerSearch = qStr(q.customer);
     let where = "oi.item_status = 'Ready' AND os.status_key != 'cancelled'";
     const params: unknown[] = [];
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const rows = await db.query<Raw>(
-      `SELECT oi.id, oi.order_id, oi.quantity, oi.weight, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.billing_unit,
+      `SELECT oi.id, oi.order_id, oi.quantity, oi.weight, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.billing_unit,
               ul.level_name AS urgent_level_name, bc.barcode_value, bc.qr_token
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id
        JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
@@ -152,14 +152,14 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
     const groups = new Map<number, Raw>();
     for (const r of rows) {
       const oid = Number(r.order_id);
-      if (!groups.has(oid)) groups.set(oid, { order_id: oid, order_number: r.order_number, customer_name: r.customer_name, items: [] });
+      if (!groups.has(oid)) groups.set(oid, { order_id: oid, order_number: r.short_order_code ?? r.order_number, customer_name: r.customer_name, items: [] });
       groups.get(oid)!.items.push({
         order_item_id: num(r.id), garment_name: r.garment_name, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight), billing_unit: r.billing_unit,
         due_date: r.due_date, due_time: r.due_time, urgent_level_name: r.urgent_level_name, barcode_value: r.barcode_value,
       });
     }
     const batches = await db.query<Raw>(
-      `SELECT oi.id, oi.order_id, oi.quantity AS total_garments, oi.weight, oi.weight_rate, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT oi.id, oi.order_id, oi.quantity AS total_garments, oi.weight, oi.weight_rate, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
               s.service_name, ul.level_name AS urgent_level_name
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id
        JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
@@ -167,7 +167,7 @@ export async function registerMobileQcRoutes(app: FastifyInstance) {
     return ok({
       orders: [...groups.values()],
       laundry_batches: batches.map((b) => ({
-        order_item_id: num(b.id), order_id: num(b.order_id), order_number: b.order_number, customer_name: b.customer_name, service_name: b.service_name,
+        order_item_id: num(b.id), order_id: num(b.order_id), order_number: b.short_order_code ?? b.order_number, customer_name: b.customer_name, service_name: b.service_name,
         total_garments: num(b.total_garments), weight: numOrNull(b.weight), weight_rate: numOrNull(b.weight_rate), due_date: b.due_date, due_time: b.due_time, urgent_level_name: b.urgent_level_name,
       })),
     });

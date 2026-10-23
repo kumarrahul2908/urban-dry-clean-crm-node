@@ -78,10 +78,12 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           else {
             let gstMode = str(p.gst_mode) || 'none';
             if (!(gstMode in GST_MODES)) gstMode = 'none';
+            let basis = 'basis' in p ? str(p.basis) : 'whole';
+            if (!['whole', 'sent_only'].includes(basis)) basis = 'whole';
             const res = await workshopInvoice.createInvoice(combined ? null : storeId, workshopId, from, to, 'invoice_date' in p ? str(p.invoice_date) : today, str(p.subject), userId,
-              'expected_total' in p ? flt(p.expected_total) : -1, 'expected_count' in p ? int(p.expected_count) : -1, gstMode, 18.0, req.ip);
+              'expected_total' in p ? flt(p.expected_total) : -1, 'expected_count' in p ? int(p.expected_count) : -1, gstMode, 18.0, req.ip, basis);
             if (res.ok) return new WebRedirect(u(`modules/workshop/billing.php?id=${res.bill_id}&created=1`));
-            if (res.code === 'changed') return new WebRedirect(u(`modules/workshop/billing.php?preview=1&store_id=${combined ? 'all' : storeId}&workshop_id=${workshopId}&period=custom&custom_from=${urlencode(from)}&custom_to=${urlencode(to)}&changed=1`));
+            if (res.code === 'changed') return new WebRedirect(u(`modules/workshop/billing.php?preview=1&store_id=${combined ? 'all' : storeId}&workshop_id=${workshopId}&period=custom&custom_from=${urlencode(from)}&custom_to=${urlencode(to)}&basis=${basis}&changed=1`));
             errors.push(res.error);
           }
         }
@@ -133,6 +135,9 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
     const selWorkshop = 'workshop_id' in q ? int(q.workshop_id) : (workshops.length === 1 ? Number(workshops[0]!.id) : 0);
     let selPeriod = 'period' in q ? str(q.period) : 'week';
     const selCustomFrom = str(q.custom_from), selCustomTo = str(q.custom_to);
+    // "Whole Bill" (every order from the store in the period) is the default: garments are often processed without a formal challan
+    let selBasis = 'basis' in q ? str(q.basis) : 'whole';
+    if (!['whole', 'sent_only'].includes(selBasis)) selBasis = 'whole';
 
     let review: Row | null = null;
     if (mode === 'review') {
@@ -142,7 +147,9 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       if (rFrom === null) errors.push('Enter a valid date range.');
       if (errors.length) mode = 'new';
       else {
-        const items = await workshopInvoice.billableItems(selCombined ? null : selStore, selWorkshop, rFrom!, rTo!);
+        const items = selBasis === 'whole'
+          ? await workshopInvoice.billableItemsWhole(selCombined ? null : selStore, rFrom!, rTo!)
+          : await workshopInvoice.billableItems(selCombined ? null : selStore, selWorkshop, rFrom!, rTo!);
         const total = phpRound(items.reduce((a, i) => a + flt(i.item_value), 0), 2);
         const issuer = (await workshopInvoice.issuer(selWorkshop))!;
         const [wShare, sShare] = wiSplit(total, issuer.commission);
@@ -152,6 +159,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           next_number: (issuer.prefix !== '' ? issuer.prefix : 'INV') + '-' + String(Math.max(1, issuer.next_number)).padStart(5, '0'),
           terms: (wiTerms as Record<number, string>)[issuer.terms_days] ?? ('Net ' + issuer.terms_days), subject: wiSubject(rFrom!, rTo!),
           incomplete: issuer.address.trim() === '' || issuer.gstin.trim() === '',
+          basis: selBasis,
         };
         selPeriod = resolvedPeriod;
       }
@@ -241,6 +249,18 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           <input type="date" name="custom_to" value="${selCustomTo}" class="form-control">
         </div>
         <div class="col-12">
+          <label class="form-label small mb-1 d-block">What to bill</label>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" name="basis" id="basis_whole" value="whole" ${selBasis === 'whole' ? 'checked' : ''}>
+            <label class="form-check-label" for="basis_whole">Whole Bill &mdash; every order from the store in this period</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" name="basis" id="basis_sent" value="sent_only" ${selBasis === 'sent_only' ? 'checked' : ''}>
+            <label class="form-check-label" for="basis_sent">Sent to Workshop Only &mdash; only garments formally sent via a challan</label>
+          </div>
+          <div class="small text-muted">Default is Whole Bill, since a garment is often processed at the workshop without a formal challan being created for it.</div>
+        </div>
+        <div class="col-12">
           <button class="btn btn-primary" type="submit">Review &rarr;</button>
           <span class="small text-muted ms-2">Nothing is saved until you click Generate on the next screen.</span>
         </div>
@@ -261,8 +281,8 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       const r = review;
       const storePart = selCombined ? 'all' : String(selStore);
       const periodTail = selPeriod === 'custom' ? '&custom_from=' + urlencode(r.from) + '&custom_to=' + urlencode(r.to) : '';
-      const changeUrl = `${billingUrl}?new=1&store_id=${storePart}&workshop_id=${selWorkshop}&period=${urlencode(selPeriod)}${periodTail}`;
-      const reviewUrl = `${billingUrl}?preview=1&store_id=${storePart}&workshop_id=${selWorkshop}&period=${urlencode(selPeriod)}${periodTail}`;
+      const changeUrl = `${billingUrl}?new=1&store_id=${storePart}&workshop_id=${selWorkshop}&period=${urlencode(selPeriod)}&basis=${selBasis}${periodTail}`;
+      const reviewUrl = `${billingUrl}?preview=1&store_id=${storePart}&workshop_id=${selWorkshop}&period=${urlencode(selPeriod)}&basis=${selBasis}${periodTail}`;
       const items = r.items as Row[];
       content = html`
   ${stepper(2)}
@@ -284,7 +304,8 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           <strong>Invoice from:</strong> ${r.issuer.company_name}<br>
           <strong>Bill To:</strong> ${r.store}<br>
           <strong>Period:</strong> ${wiPeriodLabel(r.from, r.to)} (${dmy(r.from)} to ${dmy(r.to)})<br>
-          <strong>Invoice no.:</strong> ${r.next_number} &middot; <strong>Terms:</strong> ${r.terms}
+          <strong>Invoice no.:</strong> ${r.next_number} &middot; <strong>Terms:</strong> ${r.terms}<br>
+          <strong>Billing basis:</strong> ${r.basis === 'whole' ? 'Whole Bill (every order from the store)' : 'Sent to Workshop Only (formally challaned garments)'}
         </div>
         <div class="col-md-6 text-md-end">
           <strong>Garments:</strong> ${items.length} ${plural(items.length, 'item')}<br>
@@ -295,7 +316,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       </div>
 
       ${items.length === 0 ? html`
-        <div class="alert alert-info mb-0">No unbilled garments were sent to this workshop from this store in this period. Try a different period or store.</div>` : html`
+        <div class="alert alert-info mb-0">${r.basis === 'whole' ? 'No unbilled orders were found for this store in this period.' : 'No unbilled garments were sent to this workshop from this store in this period.'} Try a different period, store, or billing basis.</div>` : html`
         <div class="table-responsive mb-3">
           <table class="table table-sm">
             <thead><tr><th>Order</th><th>Customer</th><th>Garment</th><th class="text-end">Bill value</th><th></th></tr></thead>
@@ -310,17 +331,21 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
                 <tr>
                   <td><a href="${u('modules/orders/view.php?id=' + it.order_id)}" target="_blank">${it.order_number}</a></td>
                   <td>${it.customer_name}</td>
-                  <td>${String(it.garment_name ?? '')}</td>
+                  <td>${String(it.garment_name ?? '')}
+                    ${r.basis === 'whole' && phpEmpty(it.was_sent) ? html`
+                      <span class="badge bg-light text-muted border ms-1" title="Billed from the order directly -- no challan was ever created for this garment">Not sent to workshop</span>` : ''}
+                  </td>
                   <td class="text-end">${raw(money(it.item_value))}</td>
                   <td>
+                    ${!phpEmpty(it.workshop_item_id) ? html`
                     <form method="post" action="${billingUrl}" class="d-inline" onsubmit="var r=prompt('Reason this garment is unprocessed:'); if(!r){return false;} this.querySelector('[name=reason]').value=r; return true;">
                       <input type="hidden" name="csrf_token" value="${ctx.data.csrf_token ?? ''}">
                       <input type="hidden" name="action" value="mark_unprocessed">
                       <input type="hidden" name="workshop_item_id" value="${int(it.workshop_item_id)}">
                       <input type="hidden" name="reason" value="">
                       <input type="hidden" name="redirect_to" value="${reviewUrl}">
-                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" title="Mark this garment unprocessed and exclude it from this bill">Unprocessed</button>
-                    </form>
+                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Click to mark this garment unprocessed and exclude it from this bill">Mark Unprocessed</button>
+                    </form>` : ''}
                   </td>
                 </tr>`)}`)}
             </tbody>
@@ -336,6 +361,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           <input type="hidden" name="action" value="generate">
           <input type="hidden" name="store_id" value="${storePart}">
           <input type="hidden" name="workshop_id" value="${selWorkshop}">
+          <input type="hidden" name="basis" value="${r.basis}">
           <input type="hidden" name="from" value="${r.from}">
           <input type="hidden" name="to" value="${r.to}">
           <input type="hidden" name="expected_total" value="${phpFloatStr(r.total)}">
@@ -402,6 +428,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
           <strong>Terms:</strong> ${String(b.terms_label ?? '')} &middot; <strong>Due date:</strong> ${dmy(b.due_date)}<br>
           <strong>Garment bill value:</strong> ${raw(money(b.total_value))}
             &middot; Workshop ${String(b.share_percent)}% / Store ${numberFormat(100 - flt(b.share_percent), 2)}%
+          <br><strong>Billing basis:</strong> ${(b.billing_basis ?? 'sent_only') === 'whole' ? 'Whole Bill (every order from the store)' : 'Sent to Workshop Only (formally challaned garments)'}
           ${b.gst_mode !== 'none' ? html`
             <br><strong>GST:</strong> ${b.gst_mode === 'inclusive' ? 'Included in the invoice total' : 'Added on top of the workshop share'} (${gstRate}%)` : ''}
         </div>

@@ -154,6 +154,10 @@ ${raw(posStyle(u, jsonEncode, h))}
 
         <hr>
         <table class="table table-sm mb-0">
+          <!-- Rahul: Quantity = bill lines/units ordered, Pieces = physical garments (a 2-piece
+               Suit or a pair of Socks is 1 ordered unit but 2 physical pieces). -->
+          <tr><td>Quantity</td><td class="text-end" id="sumQuantity">0</td></tr>
+          <tr><td>Pieces</td><td class="text-end" id="sumPieces">0</td></tr>
           <tr><td>Subtotal</td><td class="text-end" id="sumSubtotal">Rs. 0.00</td></tr>
           <tr><td>Discount</td><td class="text-end" id="sumDiscount">Rs. 0.00</td></tr>
           <tr><td>Urgent Charge</td><td class="text-end" id="sumUrgent">Rs. 0.00</td></tr>

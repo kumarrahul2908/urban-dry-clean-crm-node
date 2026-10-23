@@ -29,14 +29,15 @@ export const tagsPrintStyle = (u: (p: string) => string, j: (v: unknown) => stri
   .tag .tag-id { font-size:12px; color:#555; margin-bottom:4px; }
   .tag .seq-order-line { font-size:12px; color:#666; margin-bottom:2px; }
   .tag .seq-order-line .seq { font-weight:700; color:#222; }
-  .tag .seq-order-line .order-num { font-size:10px; color:#999; } /* order number rendered deliberately small */
   .tag .customer-name { font-weight:700; font-size:14px; color:#1c2230; margin-bottom:2px; }
   .tag .service-line { font-size:11px; color:#777; margin-bottom:6px; }
   .tag .remark { font-size:13px; color:#333; margin-bottom:2px; }
   .tag .create-date { font-size:11px; color:#888; margin-bottom:6px; }
   .tag .garment-name { font-weight:700; font-size:15px; color:#1c2230; margin-bottom:4px; }
-  .tag .due-date { font-weight:700; font-size:14px; color:#1c2230; border-top:1px dashed #ccc; padding-top:6px; margin-top:4px; }
+  .tag .due-date { font-weight:700; font-size:17px; color:#000; padding:6px 4px; margin-top:4px; border:1.5px solid #000; border-radius:2px; }
+  /* Thermal label printers are monochrome and often don't render font-weight differences clearly at this scale, so the due date also gets a bigger size + a solid black border box -- a light gray fill was considered but dropped: thermal printers can't reproduce shaded fills reliably, a solid border prints cleanly on every format. */
   .tag .extra-details { font-size:10px; color:#999; margin-top:6px; text-align:left; }
+  .tag .piece-of-set { font-weight:700; font-size:13px; color:#1c2230; margin-top:4px; text-align:left; }
   .tag .barcode-row { margin-top:8px; }
   .tag .barcode-row svg { max-width:150px; }
 

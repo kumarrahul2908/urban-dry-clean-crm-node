@@ -264,22 +264,13 @@ export function registerPaymentPages(app: FastifyInstance) {
         : await orders.createOrder(body, actor, canOverrideDiscount, store.store_id, ctx.can('pos.manual_rate_override'));
       if (!result.success) return json({ success: false, errors: result.errors }, 422);
 
-      const info = (await db.query<Row>(
-        `SELECT o.order_number, o.grand_total, o.due_date, c.full_name, c.mobile,
-         (SELECT COALESCE(SUM(weight), 0) FROM order_items WHERE order_id = o.id) AS total_weight
-         FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?`, [result.order_id]))[0];
-      let whatsappUrl: string | null = null;
-      if (info && info.mobile) {
-        const shop = (await ctx.setting('business_name', ctx.svc.env.APP_NAME)) ?? ctx.svc.env.APP_NAME;
-        const amount = numberFormat(flt(info.grand_total), 2);
-        const weight = laundry ? `Weight ${numberFormat(flt(info.total_weight), 2).replace(/0+$/, '').replace(/\.+$/, '')} KG, ` : '';
-        const message = `Dear ${info.full_name}, thank you for your order. Your order number ${info.order_number} with ${weight}Amount ${amount}, is expected to be ready on ${ctx.date(info.due_date)}. Thanks ${shop}.`;
-        whatsappUrl = `https://wa.me/${String(info.mobile).replace(/\D+/g, '')}?text=${rawurlencode(message)}`;
-      }
-      const out: Row = { success: true, order_id: result.order_id, order_number: result.order_number };
+      // The customer's WhatsApp confirmation is queued automatically (direct Meta send) inside the order service, so there is no manual
+      // wa.me pre-fill any more. short_order_code is only mirrored back for the New Order screen's own UI.
+      const shortRow = (await db.query<Row>('SELECT short_order_code FROM orders WHERE id = ?', [result.order_id]))[0];
+      const shortOrderCode = shortRow?.short_order_code || null;
+      const out: Row = { success: true, order_id: result.order_id, order_number: shortOrderCode ?? result.order_number };
       if (!laundry) out.invoice_number = result.invoice_number;
       out.grand_total = result.grand_total;
-      out.whatsapp_url = whatsappUrl;
       out.warnings = result.warnings;
       return json(out);
     });

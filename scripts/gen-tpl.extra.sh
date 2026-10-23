@@ -32,3 +32,7 @@ gen reports/whatsapp/inbox.php wa_inbox tplWaInbox 28 199
 genpre reports/whatsapp/templates.php "s/implode(', ', array_map(fn(\\\$v) => '{' . \\\$v . '}', \\\$knownVariables))/\\\$knownVariablesStr/" wa_templates tplWaTemplates
 genpre reports/whatsapp/settings.php 's/\$fv(/fv(/g' wa_settings tplWaSettings
 gen ../track.php track_page tplTrackPage 71 143
+# Tag Design / Invoice Design / Dormant Customers (PHP 2026-10-20..22)
+gen admin/tag_design.php admin_tag_design tplAdminTagDesign
+gen admin/invoice_design.php admin_invoice_design tplAdminInvoiceDesign
+genpre reports/dormant_customers.php "s/http_build_query(array_merge(\\\$_GET, \\['export' => 1\\]))/dormantExportQs()/" reports_dormant tplReportsDormant

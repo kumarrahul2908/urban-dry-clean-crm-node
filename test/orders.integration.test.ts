@@ -50,10 +50,12 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
     const d = r.json().data;
     orderId = d.order_id;
     // 2 x 99.99 = 199.98, GST 5% = 10.00 (9.999 rounds up)
-    expect(d).toMatchObject({ order_number: expect.stringMatching(/^UDC-\d{4}-000001$/), invoice_number: 'INV-000001', grand_total: 209.98, idempotent_replay: false });
+    expect(d).toMatchObject({ order_number: 'A0001', invoice_number: 'INV-000001', grand_total: 209.98, idempotent_replay: false });
 
+    // the user-facing identifier is the Short Order Code; the long order number is kept internally
+    expect((await db.query<any>('SELECT order_number, short_order_code FROM orders WHERE id = ?', [orderId]))[0]).toMatchObject({ short_order_code: 'A0001', order_number: expect.stringMatching(/^UDC-\d{4}-000001$/) });
     const again = (await post('pos_orders_create', body)).json().data;
-    expect(again).toMatchObject({ order_id: orderId, idempotent_replay: true, grand_total: 209.98 });
+    expect(again).toMatchObject({ order_id: orderId, order_number: 'A0001', idempotent_replay: true, grand_total: 209.98 });
     expect(Number((await db.query<any>('SELECT COUNT(*) AS n FROM orders'))[0].n)).toBe(1);
   });
 

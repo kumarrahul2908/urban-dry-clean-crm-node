@@ -119,6 +119,8 @@ const dom = {
   sumUrgent: document.getElementById('sumUrgent'),
   sumDelivery: document.getElementById('sumDelivery'),
   sumTax: document.getElementById('sumTax'),
+  sumQuantity: document.getElementById('sumQuantity'),
+  sumPieces: document.getElementById('sumPieces'),
   sumGrandTotal: document.getElementById('sumGrandTotal'),
   sumPaid: document.getElementById('sumPaid'),
   sumDue: document.getElementById('sumDue'),
@@ -734,6 +736,9 @@ function onAddOrUpdateCartItem() {
     billing_unit: isWeight ? 'weight' : 'piece',
     quantity: isWeight ? 1 : qty, weight: isWeight ? weight : null,
     unit: isWeight ? 'Kg' : (pendingGarment.unit || 'Pcs'),
+    // Rahul: Quantity (bill lines/units ordered) vs Pieces (physical garments) -- weight mode has
+    // no meaningful "pieces per unit" concept, same as it has no tag-per-piece concept.
+    pieces_per_unit: isWeight ? 1 : (pendingGarment.pieces_per_unit || 1),
     rate_override: rateOverride,
     manual_override: manualOverrideActive,
     brand_id: dom.agBrand.value || null,
@@ -763,9 +768,14 @@ function renderCart() {
   } else {
     cart.forEach(function (item, idx) {
       const tr = document.createElement('tr');
+      // Rahul: a Set garment shows its physical piece count alongside quantity on each cart
+      // line too, e.g. "1 pc x Rs.399.00 (2 pieces)" for a 2-piece Suit -- matches the Pieces
+      // total in the summary panel below, line by line.
+      const pcsNote = (item.billing_unit !== 'weight' && (item.pieces_per_unit || 1) > 1)
+        ? ' (' + (item.quantity * item.pieces_per_unit) + ' pieces)' : '';
       const desc = item.billing_unit === 'weight'
         ? (item.weight + ' kg @ ' + fmt(item.rate_override) + '/kg')
-        : (item.quantity + ' pc × ' + fmt(item.rate_override));
+        : (item.quantity + ' pc × ' + fmt(item.rate_override) + pcsNote);
       const overrideBadge = item.manual_override ? ' <span class="badge bg-warning text-dark">MANUAL OVERRIDE</span>' : '';
       tr.innerHTML = '<td>' + (idx + 1) + '/' + cart.length + '</td>'
         + '<td>' + escapeHtml(item.garment_name) + overrideBadge + '<div class="text-muted small">' + escapeHtml(item.service_name) + ' — ' + desc + '</div></td>'
@@ -799,6 +809,14 @@ function renderCart() {
 // discount/urgent-charge/tax/grand-total are always computed server-side in
 // OrderService::createOrder() from PricingEngine + database configuration — see submitOrder().
 function recomputeSummary() {
+  // Rahul: Quantity counts ordered units (each cart line's own quantity, piece-mode only --
+  // weight-mode lines don't have a meaningful "how many" the same way); Pieces counts physical
+  // garments (quantity * pieces_per_unit per line), matching GarmentTagService's own tag count.
+  const totalQuantity = cart.reduce((s, i) => s + (i.billing_unit === 'weight' ? 0 : i.quantity), 0);
+  const totalPieces = cart.reduce((s, i) => s + (i.billing_unit === 'weight' ? 0 : i.quantity * (i.pieces_per_unit || 1)), 0);
+  dom.sumQuantity.textContent = totalQuantity;
+  dom.sumPieces.textContent = totalPieces;
+
   const subtotal = cart.reduce((s, i) => s + i.subtotal, 0);
   const discountType = dom.discountType.value;
   const discountValue = parseFloat(dom.discountValue.value) || 0;
@@ -1022,8 +1040,9 @@ function submitOrder() {
         }
         // Same 3-output pattern as the Laundry flow (modules/laundry/index.php) — Invoice +
         // WhatsApp opened here; tags already handled by printTab above.
+        // Rahul: WhatsApp confirmation now sends automatically (direct Meta) from
+        // OrderService::createOrder() itself -- no more manual wa.me popup here.
         window.open(${j(u('modules/orders/invoice.php'))} + '?id=' + res.order_id, '_blank');
-        if (res.whatsapp_url) window.open(res.whatsapp_url, '_blank');
         closeConfirmModalThenRun(function () {
           resetPosForNextOrder(res.order_number || res.order_id);
         });
@@ -1100,6 +1119,17 @@ function escapeHtml(s) { const d = document.createElement('div'); d.textContent 
  * ===================================================================== */
 addPaymentRow(); // seed one blank payment line so the payment section is never empty
 suggestDueDate(); // pre-fill Due Date with a visible, editable suggestion — never silent
+// Rahul: Service and Category used to stay unselected (and the garment grid empty) until tapped. Pre-select "Dry Cleaning" (or the
+// service this page already treats as active) and the first category ("Men" if present), and load the garment grid immediately.
+(function preselectDefaults() {
+  const svcTabs = Array.prototype.slice.call(document.querySelectorAll('.svc-tab'));
+  const svc = svcTabs.find(function (b) { return b.textContent.trim().toLowerCase() === 'dry cleaning'; })
+    || svcTabs.find(function (b) { return parseInt(b.dataset.id, 10) === activeServiceId; }) || svcTabs[0];
+  if (svc) onServiceTabClick.call(svc);
+  const catTabs = Array.prototype.slice.call(document.querySelectorAll('.cat-tab'));
+  const cat = catTabs.find(function (b) { return b.textContent.trim().toLowerCase() === 'men'; }) || catTabs[0];
+  if (cat) onCategoryTabClick.call(cat);
+})();
 if (PRESELECT_CUSTOMER_ID) {
   selectCustomer(PRESELECT_CUSTOMER_ID);
 }
@@ -1442,7 +1472,8 @@ document.getElementById('saveOrderBtn').addEventListener('click', function () {
     // Same new-tab-for-tags pattern as the existing POS flow, plus invoice + WhatsApp.
     const tagsTab = window.open('', '_blank');
     tagsTab.location.href = ${j(u('modules/barcode/tags_print.php'))} + '?order_id=' + res.order_id + '&auto_print=1';
-    if (res.whatsapp_url) window.open(res.whatsapp_url, '_blank');
+    // Rahul: WhatsApp confirmation now sends automatically (direct Meta) from
+    // OrderService::createLaundryOrder() itself -- no more manual wa.me popup here.
     // Invoice is the primary redirect destination — Order Details is deliberately not opened
     // after a Laundry save; only Invoice + Tags/QR + WhatsApp, per the approved final flow.
     window.location.href = ${j(u('modules/orders/invoice.php'))} + '?id=' + res.order_id;

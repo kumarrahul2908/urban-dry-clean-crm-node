@@ -20,7 +20,7 @@ export function registerPosApis(app: FastifyInstance) {
     const params: unknown[] = [];
     if (categoryId) { where += ' AND g.category_id = ?'; params.push(categoryId); }
     if (search !== '') { where += ' AND (g.garment_name LIKE ? OR g.sku LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
-    const garments = await db.query<Row>(`SELECT g.id, g.garment_name, g.sku, g.image, g.unit, g.default_service_id FROM garments g WHERE ${where} ORDER BY g.garment_name LIMIT 100`, params);
+    const garments = await db.query<Row>(`SELECT g.id, g.garment_name, g.sku, g.image, g.unit, g.pieces_per_unit, g.default_service_id FROM garments g WHERE ${where} ORDER BY g.garment_name LIMIT 100`, params);
     const cache = new Map<number, string>();
     const billingUnit = async (svcId: number) => {
       if (!cache.has(svcId)) {
@@ -39,6 +39,8 @@ export function registerPosApis(app: FastifyInstance) {
       else { hasPrice = rate !== null && rate.piece_rate !== null; displayRate = hasPrice ? num(rate!.piece_rate) : null; }
       results.push({
         id: g.id, name: g.garment_name, sku: g.sku, image: g.image ? ctx.baseUrl(`uploads/garments/${g.image}`) : null, unit: g.unit,
+        // a Set garment (2-piece Suit, a pair of Socks) is ONE ordered unit but several physical pieces: the POS cart needs this for Quantity vs Pieces
+        pieces_per_unit: Math.max(1, int(g.pieces_per_unit)),
         default_service_id: int(g.default_service_id), piece_rate: rate ? num(rate.piece_rate) : null,
         weight_rate: rate && rate.weight_rate !== null ? num(rate.weight_rate) : null, has_price: rate !== null,
         billing_unit: unit, display_rate: displayRate, display_has_price: hasPrice,

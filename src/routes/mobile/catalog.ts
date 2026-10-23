@@ -83,8 +83,8 @@ export async function registerMobileCatalogRoutes(app: FastifyInstance) {
     const params: unknown[] = [];
     if (categoryId) { where.push('g.category_id = ?'); params.push(categoryId); }
     if (search !== '') { where.push('(g.garment_name LIKE ? OR g.sku LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
-    const garments = await db.query<{ id: number; garment_name: string; sku: string | null; unit: string; default_service_id: number | null }>(
-      `SELECT g.id, g.garment_name, g.sku, g.unit, g.default_service_id FROM garments g WHERE ${where.join(' AND ')} ORDER BY g.garment_name LIMIT 100`,
+    const garments = await db.query<{ id: number; garment_name: string; sku: string | null; unit: string; pieces_per_unit: number | null; default_service_id: number | null }>(
+      `SELECT g.id, g.garment_name, g.sku, g.unit, g.pieces_per_unit, g.default_service_id FROM garments g WHERE ${where.join(' AND ')} ORDER BY g.garment_name LIMIT 100`,
       params,
     );
 
@@ -116,6 +116,7 @@ export async function registerMobileCatalogRoutes(app: FastifyInstance) {
         name: g.garment_name,
         sku: g.sku,
         unit: g.unit,
+        pieces_per_unit: Math.max(1, num(g.pieces_per_unit ?? 1)),
         default_service_id: num(g.default_service_id ?? 0),
         billing_unit: unit,
         display_rate: displayRate,

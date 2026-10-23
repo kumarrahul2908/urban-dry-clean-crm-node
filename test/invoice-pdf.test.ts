@@ -117,7 +117,9 @@ describe.skipIf(!dbEnabled)('InvoicePdfService.generate (real MariaDB schema)', 
     expect(buf.subarray(0, 8).toString()).toBe('%PDF-1.3');
     const text = streams(buf)[0]!;
     expect(text).toContain('(Seed Cleaners)');
-    expect(text).toContain(`(${o.order_number})`);
+    // the PDF prints the internal order number (the Short Order Code is what createOrder() now returns to callers)
+    const [row] = await db.query<any>('SELECT order_number FROM orders WHERE id = ?', [o.order_id]);
+    expect(text).toContain(`(${row.order_number})`);
     unlinkSync(r.file_path!);
     expect(existsSync(r.file_path!)).toBe(false);
     expect(await pdf.generate(99999)).toEqual({ success: false, error: 'Order not found.' });

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildApp, buildServices } from '../src/app.js';
 import { loadEnv } from '../src/config/env.js';
 import { createPool } from '../src/db/pool.js';
@@ -10,6 +10,8 @@ import { buildDataset as buildDatasetShared, TOKENS } from './web/dataset.js';
  * and the Node route are called with the same token + query on the SAME seeded database; status code
  * and JSON body must match. See docs/PARITY.md.
  */
+vi.setConfig({ testTimeout: 120_000 });
+
 const PHP_APP = process.env.PARITY_PHP_APP;
 const enabled = !!PHP_APP && !!process.env.TEST_DB_NAME;
 
@@ -121,14 +123,17 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
   for (const c of cases) it(c.name, async () => { await check(c); });
 
   // ---- write endpoints: same dataset, same calls, compare responses AND resulting rows ----------------
-  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at', 'paid_at']);
+  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at', 'paid_at', 'order_date']);
   const strip = (v: any): any => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !TIME_KEYS.has(k)).map(([k, x]) => [k, strip(x)])) : v);
   async function state() {
     const q = (sql: string) => db.query<any>(sql).then((r) => r.map(strip));
     return norm({
       feedback: await q('SELECT id, customer_id, order_id, rating, comments, status FROM feedback ORDER BY id'),
       garments: await q('SELECT * FROM garments ORDER BY id'),
-      items: await q('SELECT id, order_id, item_status FROM order_items ORDER BY id'),
+      items: await q('SELECT id, order_id, item_status, quantity, unit, pieces_per_unit, piece_names, unit_price, weight, weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks FROM order_items ORDER BY id'),
+      orderTotals: await q('SELECT id, order_number, short_order_code, subtotal, discount_amount, urgent_charge, tax_amount, grand_total, total_paid, current_due FROM orders ORDER BY id'),
+      itemDefects: await q('SELECT order_item_id, defect_id, recorded_by FROM order_item_defects ORDER BY order_item_id, defect_id'),
+      barcodes: await q('SELECT id, barcode_value, short_qr_payload, order_id, order_item_id, laundry_garment_id, item_sequence, piece_index FROM barcodes ORDER BY id'),
       qc: await q('SELECT id, order_item_id, laundry_garment_id, checked_by, result, reason, remarks FROM qc_records ORDER BY id'),
       rework: await q('SELECT id, order_item_id, laundry_garment_id, qc_record_id, reason, rework_date, status FROM rework_records ORDER BY id'),
       pickups: await q('SELECT id, pickup_number, customer_id, order_id, address, area, pincode, pickup_date, pickup_time, garment_count, notes, driver_id, status, created_by FROM pickup_orders ORDER BY id'),
@@ -163,6 +168,7 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
       const nodeOut: any[] = [];
       for (const c of calls) nodeOut.push(await runNode(c));
       const nodeState = await state();
+      if (process.env.DEBUG_SCENARIO) calls.forEach((c, i) => { if (nodeOut[i]!.status !== phpOut[i]!.status) console.log(`[${name.slice(0, 12)}] STATUS DIFF #${i} ${c.endpoint} ${JSON.stringify(c.body ?? c.query)} php=${phpOut[i]!.status} node=${nodeOut[i]!.status} ${JSON.stringify(nodeOut[i]!.body).slice(0, 120)}`); });
       const outs = (xs: { status: number; body: unknown }[]) => xs.map((r) => ({ status: r.status, body: norm(strip(r.body)) }));
       try {
         expect(outs(nodeOut)).toEqual(outs(phpOut));
@@ -483,6 +489,15 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     P('workshop_billing_generate', { store_id: 99, workshop_id: 1, from: yday, to: today }),
     P('workshop_billing_generate', { store_id: 1, workshop_id: 9, from: yday, to: today }),
     P('workshop_billing_generate', { workshop_id: 1 }),
+    P('workshop_billing_generate', { store_id: 'all', workshop_id: 1, from: yday, to: today, gst_mode: 'exclusive', basis: 'sent_only' }),
+    P('workshop_billing_generate', { store_id: 'all', workshop_id: 1, from: yday, to: today, gst_mode: 'inclusive' }),
+    P('workshop_billing_generate', { store_id: 'all', workshop_id: 2, from: yday, to: today, gst_mode: 'bogus', basis: 'bogus' }),
+    P('workshop_billing_generate', { store_id: 2, workshop_id: 1, from: yday, to: today, basis: 'whole' }),
+    P('workshop_billing_generate', { store_id: 0, workshop_id: 1, from: yday, to: today }),
+    P('workshop_billing_generate', { store_id: '', workshop_id: 1, from: yday, to: today }),
+    G('workshop_billing_list'),
+    G('workshop_billing_detail', { id: '2' }),
+    G('workshop_billing_detail', { id: '3' }),
     P('workshop_billing_generate', { store_id: 1, workshop_id: 2, from: yday, to: today }, 'wstaff'),
     P('workshop_billing_generate', { store_id: 1, workshop_id: 2, from: yday, to: today }, 'viewer'),
     G('workshop_billing_list'),
@@ -496,12 +511,67 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 1, amount: 1000000 }),
     P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }),
     P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 2, payment_type_id: 2 }),
+    P('workshop_billing_mark_paid', { bill_id: 3, payment_type_id: 1, amount: 5 }),
     P('workshop_billing_mark_paid', { bill_id: 99, payment_type_id: 2 }),
     P('workshop_billing_mark_paid', { bill_id: 0, payment_type_id: 2 }),
     P('workshop_billing_mark_paid', { bill_id: 1, payment_type_id: 2 }, 'viewer'),
     G('workshop_billing_detail', { id: '1' }),
     G('workshop_billing_list', { status: 'Paid' }),
   ], prepWorkshop);
+
+  // ---- short codes + Set garments + editing an item on a submitted order (PHP changelog 2026-10-20..22) ----------------
+  // dataset: orders 1-6, order items 1-8; the order created first below becomes order 7 with items 9..
+  const UPD = (body: Record<string, unknown>, who: Who = 'boss') => P('order_item_update', { order_id: 7, ...body }, who);
+  scenario('Set garments + order_item_update + short code everywhere', [
+    P('pos_orders_create', { client_request_id: 'sc-1', customer_id: 2, items: [{ garment_id: 4, service_id: 1, quantity: 2 }, { garment_id: 1, service_id: 1, quantity: 1, brand_id: 1, color_id: 1, defect_ids: [1], remarks: 'old' }, { garment_id: 5, service_id: 1, quantity: 1.5 }] }),
+    P('pos_orders_create', { client_request_id: 'sc-1', customer_id: 2, items: [{ garment_id: 4, service_id: 1, quantity: 2 }] }),
+    G('orders_detail', { id: '7' }),
+    G('orders_list', { q: 'A0007' }),
+    G('orders_search', { q: 'A0007' }),
+    G('orders_search', { q: 'UDC-' }),
+    G('orders_list'),
+    G('barcode_lookup', { barcode: 'A0007-03' }),
+    G('barcode_lookup', { barcode: 'A0007-04' }),
+    G('pos_garments', { category_id: '1' }),
+    P('order_item_add', { order_id: 7, client_request_id: 'sc-add', garment_id: 4, service_id: 1, quantity: 1 }, 'boss'),
+    UPD({ item_id: 10, quantity: 4 }),
+    UPD({ item_id: 10, remarks: ' fresh ', brand_id: 1, color_id: null, defect_ids: [1, 2] }),
+    UPD({ item_id: 10, rate_override: '77.5' }),
+    UPD({ item_id: 10, rate_override: 'x' }),
+    UPD({ item_id: 10, quantity: 0 }),
+    UPD({ item_id: 10, manual_override: true, rate_override: 5 }, 'admin'),
+    UPD({ item_id: 10, manual_override: true, rate_override: 5 }),
+    UPD({ item_id: 10, defect_ids: 'nope' }),
+    UPD({ item_id: 999, quantity: 1 }),
+    UPD({ item_id: 0 }),
+    UPD({ item_id: 10, order_id: 999 }),
+    P('order_item_update', { item_id: 10 }, 'boss'),
+    UPD({ item_id: 10, quantity: 2 }, 'viewer'),
+    G('orders_detail', { id: '7' }),
+    P('order_item_remove', { order_id: 7, item_id: 11 }, 'boss'),
+    // an order that already moved on cannot be edited
+    P('order_item_update', { order_id: 1, item_id: 1, quantity: 9 }, 'boss'),
+    G('daily_dashboard'),
+    G('notifications_list'),
+    G('feedback_list'),
+    G('feedback_list', { order: 'A000' }),
+    G('qc_queue'),
+    G('packing_queue'),
+    G('rework_list'),
+    G('workshop_queue'),
+    G('pickup_list'),
+    G('delivery_manage_list'),
+    G('my_deliveries_list', {}, 'admin'),
+    G('wallet_transactions'),
+  ]);
+
+  scenario('laundry order returns the short code too', [
+    P('laundry_orders_create', { client_request_id: 'lc-1', customer_id: 1, batches: [{ service_id: 3, weight: 2, rate: 60, garment_count: 2, garments: [{ garment_id: 4, quantity: 1 }, { garment_id: 1, quantity: 1 }] }] }),
+    P('laundry_orders_create', { client_request_id: 'lc-1', customer_id: 1, batches: [{ service_id: 3, weight: 2, rate: 60, garment_count: 2, garments: [{ garment_id: 4, quantity: 1 }, { garment_id: 1, quantity: 1 }] }] }),
+    G('orders_detail', { id: '7' }),
+    G('barcode_lookup', { barcode: 'A0007-01' }),
+  ]);
 
   it('workshop staff not linked to a workshop sees nothing (deliberate: PHP showed every workshop)', async () => {
     await buildDataset();

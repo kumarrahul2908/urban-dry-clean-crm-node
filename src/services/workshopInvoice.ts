@@ -79,6 +79,49 @@ export class WorkshopInvoice {
     return out;
   }
 
+  /**
+   * "Whole Bill" basis: every order_item of the store(s) in the period (by ORDER date), whether or not a challan was ever created for it -
+   * staff shortages mean garments are often processed without a formal "sent to workshop". Still never double-bills and still skips an
+   * item that HAS a workshop_items row currently derived as Unprocessed.
+   */
+  async billableItemsWhole(storeId: number | null, from: string, to: string): Promise<Raw[]> {
+    const params: unknown[] = [from, to];
+    let storeClause = '';
+    if (storeId !== null) { storeClause = ' AND o.store_id = ?'; params.push(storeId); }
+    const rows = await this.db.query<Raw>(
+      `SELECT oi.id AS order_item_id, MIN(oi.total) AS item_value, MIN(o.id) AS order_id, MIN(o.order_number) AS order_number,
+              MIN(o.store_id) AS store_id, MIN(COALESCE(s.store_name, 'Unassigned')) AS store_name,
+              MIN(g.garment_name) AS garment_name, MIN(c.full_name) AS customer_name,
+              MAX(COALESCE(wi1.id, wi2.id)) AS workshop_item_id, MAX(wi1.id IS NOT NULL OR wi2.id IS NOT NULL) AS was_sent
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN order_statuses os ON os.id = o.status_id
+       JOIN customers c ON c.id = o.customer_id
+       LEFT JOIN stores s ON s.id = o.store_id
+       LEFT JOIN garments g ON g.id = oi.garment_id
+       LEFT JOIN workshop_items wi1 ON wi1.order_item_id = oi.id
+       LEFT JOIN laundry_garments lg ON lg.order_item_id = oi.id
+       LEFT JOIN workshop_items wi2 ON wi2.laundry_garment_id = lg.id
+       WHERE os.status_key != 'cancelled'
+         AND DATE(o.order_date) BETWEEN ? AND ?${storeClause}
+         AND oi.id NOT IN (SELECT order_item_id FROM workshop_bill_items)
+       GROUP BY oi.id
+       ORDER BY store_name, order_number, oi.id`, params); // oi.id: a deterministic order for garments of the same order (PHP leaves ties unspecified)
+    if (rows.length === 0) return rows;
+    const ph = rows.map(() => '?').join(',');
+    const wiRows = await this.db.query<Raw>(
+      `SELECT oi.id AS order_item_id, wi.id AS workshop_item_id
+       FROM order_items oi
+       LEFT JOIN workshop_items wi1 ON wi1.order_item_id = oi.id
+       LEFT JOIN laundry_garments lg ON lg.order_item_id = oi.id
+       LEFT JOIN workshop_items wi2 ON wi2.laundry_garment_id = lg.id
+       LEFT JOIN workshop_items wi ON wi.id = COALESCE(wi1.id, wi2.id)
+       WHERE oi.id IN (${ph}) AND wi.id IS NOT NULL`, rows.map((r) => r.order_item_id));
+    const unprocessed = new Set<number>();
+    for (const r of wiRows) if ((await this.workshops.getCurrentStatus(Number(r.workshop_item_id))) === 'Unprocessed') unprocessed.add(Number(r.order_item_id));
+    return unprocessed.size === 0 ? rows : rows.filter((r) => !unprocessed.has(Number(r.order_item_id)));
+  }
+
   private async nextInvoiceNumber(workshopId: number): Promise<string> {
     return this.db.tx(async (t) => {
       const [row] = await t.query<Raw>('SELECT invoice_prefix, invoice_next_number FROM workshops WHERE id = ? FOR UPDATE', [workshopId]);
@@ -98,9 +141,10 @@ export class WorkshopInvoice {
 
   async createInvoice(
     storeId: number | null, workshopId: number, from: string, to: string, invoiceDate: string, subjectIn: string | null, userId: number,
-    expectedTotal: number | null = null, expectedCount: number | null = null, gstModeIn = 'none', gstRate = 18, ip: string | null = null,
+    expectedTotal: number | null = null, expectedCount: number | null = null, gstModeIn = 'none', gstRate = 18, ip: string | null = null, basisIn = 'whole',
   ): Promise<WiResult<{ bill_id: number; bill_number: string; workshop_share: number; grand_total: number }>> {
     const gstMode = ['none', 'inclusive', 'exclusive'].includes(gstModeIn) ? gstModeIn : 'none';
+    const basis = ['whole', 'sent_only'].includes(basisIn) ? basisIn : 'whole';
     const issuer = await this.issuer(workshopId);
     if (!issuer) return wiErr('not_found', 'Workshop not found.');
     if (!okDate(from) || !okDate(to) || from > to) return wiErr('invalid_request', 'Enter a valid date range.');
@@ -114,7 +158,7 @@ export class WorkshopInvoice {
       const [bn] = await this.db.query<{ setting_value: string | null }>("SELECT setting_value FROM settings WHERE setting_key = 'business_name'");
       billTo = String(bn?.setting_value ?? '').trim() !== '' ? `${String(bn!.setting_value).trim()} - All Stores` : 'All Stores';
     }
-    const items = await this.billableItems(storeId, workshopId, from, to);
+    const items = basis === 'whole' ? await this.billableItemsWhole(storeId, from, to) : await this.billableItems(storeId, workshopId, from, to);
     if (items.length === 0) return wiErr('no_items', 'No unbilled items found for this store, workshop, and period.');
     const total = round2(items.reduce((s, i) => s + Number(i.item_value), 0));
     if (expectedTotal !== null && (Math.abs(total - expectedTotal) > 0.005 || items.length !== expectedCount)) return wiErr('changed', 'The items changed since you reviewed them.');
@@ -133,10 +177,10 @@ export class WorkshopInvoice {
     try {
       billId = await this.db.tx(async (t) => {
         const ins = await t.execute(
-          `INSERT INTO workshop_bills (bill_number, store_id, is_combined, workshop_id, period_start, period_end, invoice_date, due_date,
+          `INSERT INTO workshop_bills (bill_number, store_id, is_combined, workshop_id, billing_basis, period_start, period_end, invoice_date, due_date,
               terms_label, subject, item_count, total_value, share_percent, gst_mode, gst_rate, gst_amount, workshop_share, store_share, grand_total, snapshot_json, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [billNumber, storeId, storeId === null ? 1 : 0, workshopId, from, to, invoiceDate, dueDate, terms, subject, items.length, total, issuer.commission, gstMode, gstRate, gstAmount, workshopShare, storeShare, grandTotal, snapshot, userId]);
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [billNumber, storeId, storeId === null ? 1 : 0, workshopId, basis, from, to, invoiceDate, dueDate, terms, subject, items.length, total, issuer.commission, gstMode, gstRate, gstAmount, workshopShare, storeShare, grandTotal, snapshot, userId]);
         for (const it of items) await t.execute('INSERT INTO workshop_bill_items (bill_id, order_item_id, item_value) VALUES (?, ?, ?)', [ins.insertId, it.order_item_id, it.item_value]);
         return ins.insertId;
       });

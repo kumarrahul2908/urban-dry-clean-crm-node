@@ -75,9 +75,9 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const clientRequestId = clientRequestIdOf(p.client_request_id);
 
     const replay = async () => {
-      const [ex] = await db.query<Raw>('SELECT id, order_number, invoice_number, grand_total FROM orders WHERE client_request_id = ? AND created_by = ?', [clientRequestId, ctx.id]);
+      const [ex] = await db.query<Raw>('SELECT id, order_number, short_order_code, invoice_number, grand_total FROM orders WHERE client_request_id = ? AND created_by = ?', [clientRequestId, ctx.id]);
       return ex
-        ? ok({ order_id: Number(ex.id), order_number: ex.order_number, invoice_number: ex.invoice_number, grand_total: num(ex.grand_total), warnings: [], idempotent_replay: true })
+        ? ok({ order_id: Number(ex.id), order_number: ex.short_order_code ?? ex.order_number, invoice_number: ex.invoice_number, grand_total: num(ex.grand_total), warnings: [], idempotent_replay: true })
         : null;
     };
     const existing = await replay();
@@ -105,8 +105,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const p = payload(req);
     const clientRequestId = clientRequestIdOf(p.client_request_id);
     const replay = async () => {
-      const [ex] = await db.query<Raw>('SELECT id, order_number, grand_total FROM orders WHERE client_request_id = ? AND created_by = ?', [clientRequestId, ctx.id]);
-      return ex ? ok({ order_id: Number(ex.id), order_number: ex.order_number, grand_total: num(ex.grand_total), warnings: [], idempotent_replay: true }) : null;
+      const [ex] = await db.query<Raw>('SELECT id, order_number, short_order_code, grand_total FROM orders WHERE client_request_id = ? AND created_by = ?', [clientRequestId, ctx.id]);
+      return ex ? ok({ order_id: Number(ex.id), order_number: ex.short_order_code ?? ex.order_number, grand_total: num(ex.grand_total), warnings: [], idempotent_replay: true }) : null;
     };
     const existing = await replay();
     if (existing) return existing;
@@ -146,7 +146,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (dateTo !== '') { where += ' AND DATE(o.order_date) <= ?'; params.push(dateTo); }
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params)) as [{ n: number }];
     const results = await db.query(
-      `SELECT o.id, o.order_number, o.invoice_number, o.order_date, o.due_date, o.order_mode,
+      `SELECT o.id, o.order_number, o.short_order_code, o.invoice_number, o.order_date, o.due_date, o.order_mode,
               o.grand_total, o.total_paid, o.current_due, o.status_id,
               c.full_name AS customer_name, c.mobile AS customer_mobile,
               os.status_label, os.status_key, os.color
@@ -154,6 +154,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
        WHERE ${where} ORDER BY o.id DESC LIMIT ? OFFSET ?`,
       [...params, perPage, (page - 1) * perPage],
     );
+    // short_order_code is the user-facing identifier; order_number is the fallback only when a code was never issued
+    for (const r of results as Raw[]) r.order_number = r.short_order_code ?? r.order_number;
     return ok({ results, page, per_page: perPage, total: num(n), total_pages: Math.ceil(num(n) / perPage) });
   });
 
@@ -163,12 +165,13 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (q.length < 2) return ok({ results: [] });
     const like = `%${q}%`;
     const results = await db.query(
-      `SELECT o.id, o.order_number, o.invoice_number, c.full_name AS customer_name, c.mobile
+      `SELECT o.id, o.order_number, o.short_order_code, o.invoice_number, c.full_name AS customer_name, c.mobile
        FROM orders o JOIN customers c ON c.id = o.customer_id
-       WHERE o.order_number LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?
+       WHERE o.order_number LIKE ? OR o.short_order_code LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?
        ORDER BY o.id DESC LIMIT 15`,
-      [like, like, like, like],
+      [like, like, like, like, like],
     );
+    for (const r of results as Raw[]) r.order_number = r.short_order_code ?? r.order_number;
     return ok({ results });
   });
 
@@ -177,7 +180,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const id = qInt((req.query as Q).id);
     if (id <= 0) throw new ApiError('invalid_request', 'A valid order id is required.', 422);
     const [order] = await db.query<Raw>(
-      `SELECT o.id, o.order_number, o.invoice_number, o.customer_id, o.store_id, s.store_name, o.price_list_id,
+      `SELECT o.id, o.order_number, o.short_order_code, o.invoice_number, o.customer_id, o.store_id, s.store_name, o.price_list_id,
               o.order_mode, o.order_date, o.due_date, o.due_time, o.urgent_level_id,
               ul.level_name AS urgent_level_name, o.notes, o.workshop_notes, o.home_delivery, o.subtotal, o.discount_type,
               o.discount_value, o.discount_amount, o.urgent_charge, o.tax_amount, o.delivery_charge,
@@ -193,6 +196,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
       [id],
     );
     if (!order) throw new ApiError('not_found', 'Order not found.', 404);
+    order.order_number = order.short_order_code ?? order.order_number;
 
     let items: Raw[] = [];
     let laundryGarments: Raw[] = [];
@@ -273,8 +277,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (dateFrom !== '') { where.push('p.payment_date >= ?'); params.push(`${dateFrom} 00:00:00`); }
     if (dateTo !== '') { where.push('p.payment_date <= ?'); params.push(`${dateTo} 23:59:59`); }
     if (search !== '') {
-      where.push('(o.order_number LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
-      params.push(...Array(4).fill(`%${search}%`));
+      where.push('(o.order_number LIKE ? OR o.short_order_code LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
+      params.push(...Array(5).fill(`%${search}%`));
     }
     if (paymentTypeId) { where.push('EXISTS (SELECT 1 FROM payment_transactions ptf WHERE ptf.payment_id = p.id AND ptf.payment_type_id = ?)'); params.push(paymentTypeId); }
     const w = where.join(' AND ');
@@ -283,7 +287,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
       params,
     )) as [{ n: number }];
     const rows = await db.query<Raw>(
-      `SELECT DISTINCT p.id, p.payment_number, p.order_id, o.order_number, c.full_name AS customer_name,
+      `SELECT DISTINCT p.id, p.payment_number, p.order_id, o.order_number, o.short_order_code, c.full_name AS customer_name,
               p.payment_date, p.total_amount, p.payment_kind, p.remarks, u.full_name AS created_by_name
        FROM payments p LEFT JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = p.customer_id
        LEFT JOIN payment_transactions pt ON pt.payment_id = p.id LEFT JOIN users u ON u.id = p.created_by
@@ -306,7 +310,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const types = await db.query<Raw>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
     return ok({
       payments: rows.map((p) => ({
-        id: num(p.id), payment_number: p.payment_number, order_id: p.order_id !== null ? num(p.order_id) : null, order_number: p.order_number,
+        id: num(p.id), payment_number: p.payment_number, order_id: p.order_id !== null ? num(p.order_id) : null, order_number: p.short_order_code ?? p.order_number,
         customer_name: p.customer_name, payment_date: p.payment_date, total_amount: num(p.total_amount), payment_kind: p.payment_kind,
         remarks: p.remarks, created_by_name: p.created_by_name, lines: linesByPayment.get(Number(p.id)) ?? [],
       })),
@@ -479,6 +483,33 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const result = await orderSvc.addItem(orderId, raw, { userId: ctx.id, ip: req.ip }, ctx.permissions.includes('pos.manual_rate_override'), clientRequestId);
     if (!result.success) failFromService(result, 'Could not add item.');
     return ok({ order_id: orderId, item_id: Number(result.item_id), idempotent_replay: !!result.idempotent_replay });
+  });
+
+  route('POST', 'order_item_update', async (req) => {
+    const ctx = await auth(req, 'orders.edit');
+    const p = payload(req);
+    const itemId = toInt(p.item_id);
+    if (itemId <= 0) throw new ApiError('invalid_request', 'item_id is required.', 422);
+    const order = await loadForMutation(ctx, toInt(p.order_id));
+    const orderId = Number(order.id);
+    if (order.status_key !== 'order_created') throw new ApiError('order_not_editable', 'This order can no longer be edited (processing has begun).', 409);
+
+    // only fields the request actually carries are changed; anything omitted keeps its current value
+    const scalar = (v: unknown) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(p, k);
+    const raw: Raw = {};
+    if (has('quantity')) raw.quantity = toFloat(p.quantity);
+    if (has('weight')) raw.weight = toFloat(p.weight);
+    if (has('rate_override')) raw.rate_override = p.rate_override !== '' && scalar(p.rate_override) ? p.rate_override : null;
+    if (has('manual_override')) raw.manual_override = !phpEmpty(p.manual_override);
+    if (has('brand_id')) raw.brand_id = !phpEmpty(p.brand_id) ? toInt(p.brand_id) : null;
+    if (has('color_id')) raw.color_id = !phpEmpty(p.color_id) ? toInt(p.color_id) : null;
+    if (has('remarks')) raw.remarks = scalar(p.remarks) ? String(p.remarks) : '';
+    if (has('defect_ids')) raw.defect_ids = Array.isArray(p.defect_ids) ? p.defect_ids.map(toInt).filter((n: number) => n !== 0) : [];
+
+    const result = await orderSvc.updateItem(orderId, itemId, raw, { userId: ctx.id, ip: req.ip }, ctx.permissions.includes('pos.manual_rate_override'));
+    if (!result.success) failFromService(result, 'Could not update item.');
+    return ok({ order_id: orderId, item_id: itemId });
   });
 
   route('POST', 'order_item_remove', async (req) => {

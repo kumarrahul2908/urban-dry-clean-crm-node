@@ -47,11 +47,11 @@ export function registerOrderPortPages(app: FastifyInstance) {
     const defects = await db.query<Row>('SELECT id, defect_name FROM defects WHERE is_active=1 ORDER BY defect_name');
     const u = (p: string) => ctx.baseUrl(p);
     const x = [jsonEncode(int(order.price_list_id)), canManual ? 'true' : 'false', services.length ? String(int(services[0]!.id)) : 'null'];
-    return layout(ctx, { title: `Add Items to Order ${order.order_number}` }, html`
+    return layout(ctx, { title: `Add Items to Order ${order.short_order_code ?? order.order_number}` }, html`
 <div class="col-12 mb-2">
   <div class="alert alert-info d-flex justify-content-between align-items-center">
     <div>
-      <strong>Adding items to Order ${order.order_number}</strong>
+      <strong>Adding items to Order ${order.short_order_code ?? order.order_number}</strong>
       — ${order.customer_name} (${order.customer_mobile})
     </div>
     <a href="${u('modules/orders/view.php?id=' + orderId)}" class="btn btn-sm btn-outline-secondary">Back to Order</a>
@@ -198,18 +198,18 @@ ${raw(orderAddItemsScript(u, jsonEncode, e, { orderId }, x))}
 
     if ('export' in q) {
       const data = await db.query<Row>(
-        `SELECT o.order_number, o.invoice_number, o.order_date, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile, g.garment_name, s.service_name, oi.quantity, oi.weight, oi.unit_price, oi.weight_rate,
+        `SELECT o.order_number, o.short_order_code, o.invoice_number, o.order_date, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile, g.garment_name, s.service_name, oi.quantity, oi.weight, oi.unit_price, oi.weight_rate,
                 oi.subtotal, oi.discount, oi.tax, oi.total, oi.item_status, os.status_label, o.grand_total, o.total_paid, o.current_due, o.home_delivery, o.id AS oid, oi.id AS oiid
          FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id JOIN order_items oi ON oi.order_id = o.id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
          WHERE ${where} AND o.order_mode = 'piece'
          UNION ALL
-         SELECT o.order_number, o.invoice_number, o.order_date, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile, CONCAT('Laundry Batch (', oi.quantity, ' garments)') AS garment_name,
+         SELECT o.order_number, o.short_order_code, o.invoice_number, o.order_date, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile, CONCAT('Laundry Batch (', oi.quantity, ' garments)') AS garment_name,
                 s.service_name, oi.quantity, oi.weight, oi.unit_price, oi.weight_rate, oi.subtotal, oi.discount, oi.tax, oi.total, oi.item_status, os.status_label, o.grand_total, o.total_paid, o.current_due,
                 o.home_delivery, o.id AS oid, oi.id AS oiid
          FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id JOIN order_items oi ON oi.order_id = o.id JOIN services s ON s.id = oi.service_id
          WHERE ${where} AND o.order_mode = 'weight'
          ORDER BY oid, oiid`, [...params, ...params]);
-      const rows = data.map((r) => [r.order_number, r.invoice_number, r.order_date, r.due_date, r.due_time, r.customer_name, r.mobile, r.garment_name, r.service_name, r.quantity, r.weight, r.unit_price, r.weight_rate,
+      const rows = data.map((r) => [r.short_order_code ?? r.order_number, r.invoice_number, r.order_date, r.due_date, r.due_time, r.customer_name, r.mobile, r.garment_name, r.service_name, r.quantity, r.weight, r.unit_price, r.weight_rate,
         r.subtotal, r.discount, r.tax, r.total, r.item_status, r.status_label, r.grand_total, r.total_paid, r.current_due, r.home_delivery ? 'Yes' : 'No']);
       await ctx.svc.audit.record({ action: 'export', module: 'orders', recordId: 'export', newValue: { count: rows.length }, userId: ctx.data.user_id, ip: req.ip });
       return csv(`urban_dry_clean_orders_${ctx.today}.csv`,

@@ -138,10 +138,10 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     await db.execute('UPDATE workshop_items SET sent_at = NOW() - INTERVAL 40 DAY WHERE laundry_garment_id IS NOT NULL');
     await db.execute("INSERT IGNORE INTO workshop_items (id, challan_id, order_item_id, status, sent_at) SELECT 99, challan_id, order_item_id, 'Sent', NOW() FROM workshop_items WHERE id = 0");
     const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
-    const a = await svc.workshopInvoice.createInvoice(null, 1, day(25), day(15), day(0), null, 1, null, null, 'inclusive', 18) as any;
+    const a = await svc.workshopInvoice.createInvoice(null, 1, day(25), day(15), day(0), null, 1, null, null, 'inclusive', 18, null, 'sent_only') as any;
     if (!a.ok) throw new Error(JSON.stringify(a));
     await svc.workshopInvoice.recordPayment(a.bill_id, 5, 1, 'ref <1>', day(0), 'part', 1, null);
-    const b = await svc.workshopInvoice.createInvoice(null, 1, day(45), day(35), day(1), 'Laundry period', 1, null, null, 'exclusive', 18) as any;
+    const b = await svc.workshopInvoice.createInvoice(null, 1, day(45), day(35), day(1), 'Laundry period', 1, null, null, 'exclusive', 18, null, 'sent_only') as any;
     if (!b.ok) throw new Error(JSON.stringify(b));
     await h.db.execute("UPDATE workshop_bills SET due_date = CURDATE() - INTERVAL 3 DAY WHERE id = ?", [b.bill_id]);
   };
@@ -152,7 +152,7 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
       const c = who === 'boss' ? await asBoss() : await login(who);
       const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
       for (const p of ['', '?status=Unpaid', '?status=Partially%20Paid', '?status=Overdue', '?status=Paid', '?status=Void', '?status=bogus', '?id=1', '?id=2', '?id=99', '?new=1', '?new=1&store_id=all&workshop_id=1&period=custom&custom_from=2026-01-01',
-        '?preview=1', '?preview=1&store_id=all&workshop_id=1', '?preview=1&store_id=1&workshop_id=1&period=30days', '?preview=1&store_id=2&workshop_id=2&period=week', '?preview=1&store_id=all&workshop_id=1&period=custom&custom_from=bad&custom_to=bad',
+        '?preview=1', '?preview=1&store_id=all&workshop_id=1', '?preview=1&store_id=all&workshop_id=1&basis=sent_only', '?preview=1&store_id=all&workshop_id=1&period=30days&basis=whole', '?preview=1&store_id=1&workshop_id=1&period=30days&basis=sent_only', '?preview=1&store_id=all&workshop_id=1&basis=bogus', '?new=1&basis=sent_only', '?id=2', '?preview=1&store_id=1&workshop_id=1&period=30days', '?preview=1&store_id=2&workshop_id=2&period=week', '?preview=1&store_id=all&workshop_id=1&period=custom&custom_from=bad&custom_to=bad',
         `?preview=1&store_id=all&workshop_id=1&period=custom&custom_from=${day(60)}&custom_to=${day(0)}&changed=1`, '?created=1', '?preview=1&store_id=9&workshop_id=1',
         '/../bill_print.php?id=1', '/../bill_print.php?id=2', '/../bill_print.php?id=99']) {
         const path = p.startsWith('/') ? `/modules/workshop${p.slice(3)}` : `/modules/workshop/billing.php${p}`;
@@ -176,6 +176,8 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     const items = await h.db.query<any>("SELECT wi.id FROM workshop_items wi ORDER BY wi.id");
     await write('generate all stores', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0), subject: 'Charges X', expected_total: '-1', expected_count: '-1', gst_mode: 'none' }), o);
     const bills = await h.db.query<any>('SELECT id FROM workshop_bills ORDER BY id');
+    await write('generate sent-only basis', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0), subject: 'Sent only', expected_total: '-1', expected_count: '-1', gst_mode: 'exclusive', basis: 'sent_only' }), o);
+    await write('generate bogus basis', php, node, post({ action: 'generate', store_id: '1', workshop_id: '1', from: day(60), to: day(0), invoice_date: day(0), subject: '', expected_total: '-1', expected_count: '-1', gst_mode: 'none', basis: 'bogus' }), o);
     await write('generate changed', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0), subject: 's', expected_total: '12345', expected_count: '9', gst_mode: 'inclusive' }), o);
     await write('generate no items', php, node, post({ action: 'generate', store_id: '1', workshop_id: '1', from: day(100), to: day(90), invoice_date: day(0), subject: '', expected_total: '0', expected_count: '0', gst_mode: 'exclusive' }), o);
     await write('generate bad dates', php, node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: 'x', to: 'y', invoice_date: 'z', expected_total: '0', expected_count: '0' }), o);

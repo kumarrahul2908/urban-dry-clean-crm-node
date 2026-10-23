@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { checkCustomerDuplicate, CodeCollisionError, type CustomerForm, type DupMatch } from '../../services/customerService.js';
+import { CustomerSegments } from '../../services/customerSegments.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
 import { int, numberFormat, urlencode } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
@@ -417,6 +418,8 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
     const orders = await db.query<Row>('SELECT o.*, os.status_label, os.color FROM orders o JOIN order_statuses os ON os.id=o.status_id WHERE o.customer_id=? ORDER BY o.order_date DESC LIMIT 50', [id]);
     const payments = await db.query<Row>('SELECT * FROM payments WHERE customer_id=? ORDER BY payment_date DESC LIMIT 50', [id]);
     const outstandingTotal = (await db.query<Row>('SELECT COALESCE(SUM(due_amount),0) AS v FROM accounts_receivable WHERE customer_id=? AND due_amount>0', [id]))[0]!.v;
+    // days since this customer's last order (null = never ordered), shown as its own stat card
+    const lastOrderInfo = await new CustomerSegments(db, ctx.fixedStoreId()).daysSinceLastOrder(id);
     const wb = (await db.query<Row>('SELECT balance FROM customer_wallet WHERE customer_id=?', [id]))[0]?.balance;
     const walletBalance = wb === undefined || wb === null || wb === '' || wb === '0' || wb === 0 ? 0 : wb;
     const walletTxns = await db.query<Row>('SELECT * FROM wallet_transactions WHERE customer_id=? ORDER BY created_at DESC LIMIT 30', [id]);
@@ -508,6 +511,12 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
     <div class="cv-stat cv-stat--orders">
       <span class="cv-stat-icon"><i class="fa-solid fa-receipt"></i></span>
       <span class="cv-stat-body"><span class="cv-stat-value">${orders.length}</span><span class="cv-stat-label">Orders (shown)</span></span>
+    </div>
+    <div class="cv-stat cv-stat--out">
+      <span class="cv-stat-icon"><i class="fa-solid fa-calendar-day"></i></span>
+      ${lastOrderInfo === null
+        ? html`<span class="cv-stat-body"><span class="cv-stat-value">—</span><span class="cv-stat-label">Never ordered</span></span>`
+        : html`<span class="cv-stat-body"><span class="cv-stat-value">${int(lastOrderInfo.days_inactive)}</span><span class="cv-stat-label">Days since last order</span></span>`}
     </div>
     <div class="cv-stat cv-stat--out">
       <span class="cv-stat-icon"><i class="fa-solid fa-circle-exclamation"></i></span>

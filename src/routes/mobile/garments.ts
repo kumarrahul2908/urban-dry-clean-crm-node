@@ -144,14 +144,14 @@ export async function registerMobileGarmentRoutes(app: FastifyInstance) {
       const [row] = await db.query<Raw>(
         `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, lg.id AS laundry_garment_id,
                 g.garment_name, s.service_name, oi.item_status, oi.quantity AS total_garments,
-                o.id AS order_id, o.order_number, o.invoice_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
+                o.id AS order_id, o.order_number, o.short_order_code, o.invoice_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
          FROM barcodes b JOIN laundry_garments lg ON lg.id = b.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id
          JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id JOIN orders o ON o.id = b.order_id JOIN customers c ON c.id = o.customer_id
          WHERE b.${column} = ?`, [value]);
       await audit(row ? String(row.laundry_garment_id) : fallbackId, { ...via, found: !!row, mode: 'weight', source: 'mobile' });
       if (!row) throw new ApiError('not_found', notFound, 404);
       return ok({
-        order_mode: 'weight', laundry_garment_id: num(row.laundry_garment_id), order_id: num(row.order_id), order_number: row.order_number,
+        order_mode: 'weight', laundry_garment_id: num(row.laundry_garment_id), order_id: num(row.order_id), order_number: row.short_order_code ?? row.order_number,
         invoice_number: row.invoice_number, sequence: num(row.item_sequence), total_garments: num(row.total_garments),
         customer_name: row.customer_name, customer_mobile: row.customer_mobile, garment_name: row.garment_name, service_name: row.service_name,
         status: row.item_status, due_date: formatDateOnly(row.due_date), remarks: null,
@@ -159,14 +159,14 @@ export async function registerMobileGarmentRoutes(app: FastifyInstance) {
     }
     const [row] = await db.query<Raw>(
       `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, oi.id AS order_item_id, oi.remarks,
-              g.garment_name, s.service_name, oi.item_status, o.id AS order_id, o.order_number, o.invoice_number, o.due_date, o.due_time,
+              g.garment_name, s.service_name, oi.item_status, o.id AS order_id, o.order_number, o.short_order_code, o.invoice_number, o.due_date, o.due_time,
               c.full_name AS customer_name, c.mobile AS customer_mobile
        FROM barcodes b JOIN order_items oi ON oi.id = b.order_item_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
        JOIN orders o ON o.id = b.order_id JOIN customers c ON c.id = o.customer_id WHERE b.${column} = ?`, [value]);
     await audit(row ? String(row.order_item_id) : fallbackId, { ...via, found: !!row, source: 'mobile' });
     if (!row) throw new ApiError('not_found', notFound, 404);
     return ok({
-      order_mode: 'piece', order_item_id: num(row.order_item_id), order_id: num(row.order_id), order_number: row.order_number,
+      order_mode: 'piece', order_item_id: num(row.order_item_id), order_id: num(row.order_id), order_number: row.short_order_code ?? row.order_number,
       invoice_number: row.invoice_number, sequence: num(row.item_sequence), total_garments: null,
       customer_name: row.customer_name, customer_mobile: row.customer_mobile, garment_name: row.garment_name, service_name: row.service_name,
       status: row.item_status, due_date: formatDateOnly(row.due_date), remarks: row.remarks,

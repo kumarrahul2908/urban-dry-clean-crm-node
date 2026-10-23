@@ -55,6 +55,7 @@ describe.skipIf(!enabled)('PHP ↔ Node parity (OrderService)', () => {
       case 'recordPayment': return o.recordPayment(s.order_id as number, s.customer_id as number, s.lines as any, Number(s.wallet ?? 0), actor, { clientRequestId: (s.client_request_id as string) ?? null, requestFingerprint: (s.fingerprint as string) ?? null });
       case 'processRefund': return o.processRefund(s.order_id as number, Number(s.amount), (s.lines as any) ?? [], !!s.to_wallet, s.reason as string, (s.remarks as string) ?? '', actor, (s.client_request_id as string) ?? null, (s.fingerprint as string) ?? null);
       case 'addItem': return o.addItem(s.order_id as number, s.item as any, actor, !!s.can_manual_override, (s.client_request_id as string) ?? null);
+      case 'updateItem': return o.updateItem(s.order_id as number, s.item_id as number, s.raw as any, actor, !!s.can_manual_override);
       case 'removeItem': return o.removeItem(s.order_id as number, s.item_id as number, actor);
       case 'editOrder': return o.editOrder(s.order_id as number, s.changes as any, actor, (s.reason as string) ?? '', !!s.can_override_discount);
       case 'cancelOrder': return o.cancelOrder(s.order_id as number, s.reason as string, actor);
@@ -81,7 +82,7 @@ describe.skipIf(!enabled)('PHP ↔ Node parity (OrderService)', () => {
       orders: await q('SELECT id, order_number, short_order_code, invoice_number, customer_id, store_id, order_mode, price_list_id, due_date, due_time, urgent_level_id, packaging_preference, home_delivery, notes, workshop_notes, subtotal, discount_type, discount_value, discount_amount, urgent_charge, tax_amount, delivery_charge, grand_total, advance_paid, total_paid, current_due, status_id, order_type, created_by, updated_by, cancelled_by, cancelled_reason FROM orders ORDER BY id'),
       items: await q('SELECT * FROM order_items ORDER BY id').then((r) => r.map(({ created_at, ...x }: any) => x)),
       defects: await q('SELECT order_item_id, defect_id, recorded_by FROM order_item_defects ORDER BY order_item_id, defect_id'),
-      barcodes: await q('SELECT id, barcode_value, short_qr_payload, order_id, order_item_id, laundry_garment_id, item_sequence, CHAR_LENGTH(qr_token) AS tok FROM barcodes ORDER BY id'),
+      barcodes: await q('SELECT id, barcode_value, short_qr_payload, order_id, order_item_id, laundry_garment_id, item_sequence, piece_index, CHAR_LENGTH(qr_token) AS tok FROM barcodes ORDER BY id'),
       tags: await q('SELECT id, order_item_id, laundry_garment_id, barcode_id, printed_count FROM garment_tags ORDER BY id'),
       laundry: await q('SELECT id, order_item_id, garment_id, sequence FROM laundry_garments ORDER BY id'),
       payments: await q('SELECT id, payment_number, client_request_id, request_fingerprint, order_id, customer_id, total_amount, payment_kind, remarks, approved_by, created_by FROM payments ORDER BY id'),
@@ -236,6 +237,73 @@ describe.skipIf(!enabled)('PHP ↔ Node parity (OrderService)', () => {
       { op: 'createOrder', can_override_discount: true, input: { customer_id: 2, discount_value: 10, items: [line(2, 1, { quantity: 3 })] } },
       { op: 'addItem', order_id: 2, item: line(1, 1) },
     ]);
+  });
+
+  it('Set garments: tags run over physical pieces (create, add item, remove item); piece data is copied onto the line', async () => {
+    const r = await expectParity([
+      // Suit x1 (1 piece), Socks x2 (2 pcs each = 4 tags), Shirt x1, Salwar Set x1.5 (3 pcs each = round(4.5) = 5 tags), Odd Names x1, Carpet by weight (never multiplied)
+      { op: 'createOrder', can_override_discount: true, can_manual_override: true, input: { customer_id: 1, items: [line(2, 1), line(4, 1, { quantity: 2 }), line(1, 1), line(5, 1, { quantity: 1.5 }), line(6, 1), { garment_id: 3, service_id: 4, weight: 2 }] } },
+      { op: 'addItem', order_id: 1, item: line(4, 1, { quantity: 3 }) },
+      { op: 'addItem', order_id: 1, item: line(5, 2), client_request_id: 'set-1' },
+      { op: 'addItem', order_id: 1, item: line(5, 2), client_request_id: 'set-1' },
+      { op: 'removeItem', order_id: 1, item_id: 8 }, // the last item: the next tag number is simply reused (same in PHP)
+      { op: 'addItem', order_id: 1, item: line(1, 1) },
+      // garment master changes after the order: the order keeps its own copy of pieces_per_unit / piece_names
+      { op: 'createOrder', can_override_discount: true, input: { customer_id: 2, items: [line(4, 1), line(6, 1, { quantity: 2 })], payments: [{ payment_type_id: 1, amount: 50 }] } },
+    ]);
+    expect(r[0].success).toBe(true);
+    // the long order number is internal; callers get the Short Order Code
+    expect(r[0].order_number).toMatch(/^A\d{4}$/);
+  });
+
+  it('Set garments on the Per-Weight (laundry) flow and the returned short code', async () => {
+    const r = await expectParity([
+      { op: 'createLaundryOrder', input: { customer_id: 1, batches: [{ service_id: 3, weight: 2, rate: 60, garment_count: 2, garments: [{ garment_id: 4, quantity: 1 }, { garment_id: 1, quantity: 1 }] }] } },
+      { op: 'createOrder', input: { customer_id: 2, items: [line(4, 1)] } },
+    ]);
+    expect(r[0].order_number).toMatch(/^A\d{4}$/);
+  });
+
+  it('updateItem: quantity, rate, remarks, brand/colour, defects; the same guards as addItem', async () => {
+    const r = await expectParity([
+      { op: 'createOrder', can_override_discount: true, can_manual_override: true, input: { customer_id: 1, discount_type: 'Percent', discount_value: 5, urgent_level_id: 1, items: [
+        line(1, 1, { quantity: 2, brand_id: 1, color_id: 1, defect_ids: [1], remarks: 'old' }), line(4, 1, { quantity: 2 }), { garment_id: 3, service_id: 4, weight: 2 }, line(2, 1, { quantity: 1 }) ] } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { quantity: 5 } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { remarks: ' new <b> ', brand_id: null, color_id: 1, defect_ids: [1, 2] } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { defect_ids: [] } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { rate_override: '88.8' } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { rate_override: 'abc' } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { rate_override: -4 } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { quantity: 0 } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { manual_override: true, rate_override: 10 } },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { manual_override: true, rate_override: 10 }, can_manual_override: true },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { manual_override: true }, can_manual_override: true },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { manual_override: false, quantity: 3 }, can_manual_override: true },
+      { op: 'updateItem', order_id: 1, item_id: 2, raw: { quantity: 4 } },
+      { op: 'updateItem', order_id: 1, item_id: 3, raw: { weight: 3.5 } },
+      { op: 'updateItem', order_id: 1, item_id: 3, raw: { weight: 0 } },
+      { op: 'updateItem', order_id: 1, item_id: 3, raw: { weight: 0.1 } },
+      { op: 'updateItem', order_id: 1, item_id: 3, raw: { manual_override: true, rate_override: 99, weight: 1 }, can_manual_override: true },
+      { op: 'updateItem', order_id: 1, item_id: 999, raw: { quantity: 1 } },
+      { op: 'updateItem', order_id: 99, item_id: 1, raw: { quantity: 1 } },
+      { op: 'updateItem', order_id: 1, item_id: 4, raw: {} },
+      { op: 'cancelOrder', order_id: 1, reason: 'nope' },
+      { op: 'updateItem', order_id: 1, item_id: 1, raw: { quantity: 9 } },
+    ]);
+    expect(r[1].success).toBe(true);
+  });
+
+  it('updateItem is locked once processing has begun', async () => {
+    const run = async (impl: 'php' | 'node') => {
+      await reset();
+      const first = impl === 'php' ? runPhp(order() as any) : await runNode(order() as any);
+      await db.execute('UPDATE orders SET status_id = 3 WHERE id = ?', [first.order_id]);
+      const s: Step = { op: 'updateItem', order_id: first.order_id, item_id: 1, raw: { quantity: 4 } };
+      return pick(impl === 'php' ? runPhp(s) : await runNode(s));
+    };
+    const a = await run('php'), b = await run('node');
+    expect(b).toEqual(a);
+    expect(a.success).toBe(false);
   });
 
   it('cancel without payment; processing-begun orders are locked', async () => {

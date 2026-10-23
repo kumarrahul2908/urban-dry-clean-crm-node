@@ -44,3 +44,4 @@ Archive the PHP repo (`urban-dry-clean-crm-backup` stays as the reference), remo
 * Photo auto-delete (30 days) removes dispute evidence by design; `PHOTO_RETENTION_DAYS=0` turns it off.
 * Invalid JSON bodies on some JSON actions return Fastify's generic 400 envelope instead of PHP's envelope.
 * PHP defects that Node deliberately does not copy are listed in `docs/PARITY.md` (customer/order import abort, laundry garment detail 500).
+* **Database = `crm.urbandryclean.in`'s** (not the old `test.` one) since 2026-10-20. Take the dump from `crm`, import it, then `npm run preflight && npm run migrate` — the migrations only record what PHP's hand-made ALTERs already did (and add `tag_design_fields`, `invoice_design_*`, `workshop_bill_photos` if they are missing). The drifted counters no longer matter: numbers are generated from `MAX(existing)+1`.

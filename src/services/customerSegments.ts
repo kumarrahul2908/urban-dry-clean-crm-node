@@ -18,6 +18,8 @@ export class CustomerSegments {
     '60_day_inactive': '60 Days Inactive',
     '90_day_inactive': '90 Days Inactive',
     '90plus_day_inactive': '90+ Days Inactive',
+    '120_day_inactive': '120 Days Inactive',
+    '180plus_day_inactive': '180+ Days Inactive',
     top_10_revenue: 'Top 10 by Revenue',
     top_25_revenue: 'Top 25 by Revenue',
     birthday_today: 'Birthday Today',
@@ -35,16 +37,35 @@ export class CustomerSegments {
     return ['', []];
   }
 
+  /** WhatsApp Campaign Console: only customers reachable on WhatsApp (sending is its whole purpose); most dormant first. */
   async inactiveDays(min: number, max: number | null = null, storeId: number | null = null): Promise<Row[]> {
+    return this.inactive(min, max, storeId, true);
+  }
+
+  /** Dormant Customers report: EVERY dormant customer, whether or not they opted into WhatsApp. Same DATEDIFF logic, no preference filter. */
+  async inactiveDaysReport(min: number, max: number | null = null, storeId: number | null = null): Promise<Row[]> {
+    return this.inactive(min, max, storeId, false);
+  }
+
+  private async inactive(min: number, max: number | null, storeId: number | null, whatsAppOnly: boolean): Promise<Row[]> {
     const [sf, sfp] = await this.storeFilter('o', storeId);
     const upper = max !== null ? 'AND DATEDIFF(CURDATE(), MAX(o.order_date)) <= ?' : '';
     return this.db.query(
-      `SELECT c.id, c.full_name, c.mobile, c.communication_preference, MAX(o.order_date) AS last_order_date
-       FROM customers c JOIN orders o ON o.customer_id = c.id
-       WHERE c.is_active = 1 AND c.communication_preference = 'WhatsApp'${sf}
-       GROUP BY c.id
-       HAVING DATEDIFF(CURDATE(), MAX(o.order_date)) >= ? ${upper}`,
+      `SELECT c.id, c.full_name, c.mobile, c.communication_preference, MAX(o.order_date) AS last_order_date,
+             DATEDIFF(CURDATE(), MAX(o.order_date)) AS days_inactive
+             FROM customers c JOIN orders o ON o.customer_id = c.id
+             WHERE c.is_active = 1${whatsAppOnly ? " AND c.communication_preference = 'WhatsApp'" : ''}${sf}
+             GROUP BY c.id
+             HAVING DATEDIFF(CURDATE(), MAX(o.order_date)) >= ? ${upper}
+             ORDER BY days_inactive DESC`,
       [...sfp, min, ...(max !== null ? [max] : [])]);
+  }
+
+  /** Days since one customer's last order, across every store (null = never ordered, which is not the same as 0 = "ordered today"). */
+  async daysSinceLastOrder(customerId: number): Promise<{ last_order_date: string; days_inactive: number } | null> {
+    const [r] = await this.db.query<Row>('SELECT MAX(order_date) AS last_order_date, DATEDIFF(CURDATE(), MAX(order_date)) AS days_inactive FROM orders WHERE customer_id = ?', [customerId]);
+    if (!r || r.last_order_date === null || r.last_order_date === undefined) return null;
+    return r as { last_order_date: string; days_inactive: number };
   }
 
   async topByRevenue(limit = 10, withinDays = 365, storeId: number | null = null): Promise<Row[]> {
@@ -80,6 +101,8 @@ export class CustomerSegments {
       case '60_day_inactive': return this.inactiveDays(60, 89, storeId);
       case '90_day_inactive': return this.inactiveDays(90, 119, storeId);
       case '90plus_day_inactive': return this.inactiveDays(120, null, storeId);
+      case '120_day_inactive': return this.inactiveDays(120, 179, storeId);
+      case '180plus_day_inactive': return this.inactiveDays(180, null, storeId);
       case 'top_10_revenue': return this.topByRevenue(10, 365, storeId);
       case 'top_25_revenue': return this.topByRevenue(25, 365, storeId);
       case 'birthday_today': return this.birthdayInRange(0);

@@ -45,30 +45,30 @@ export async function registerMobileFulfillmentRoutes(app: FastifyInstance) {
     if (!['', 'eligible', 'Scheduled', 'Assigned'].includes(statusFilter)) throw new ApiError('invalid_request', 'Invalid status filter.', 422);
     let ew = ELIGIBLE;
     const ep: unknown[] = [];
-    if (orderSearch !== '') { ew += ' AND o.order_number LIKE ?'; ep.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { ew += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; ep.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { ew += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; ep.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     let eligible: Raw[] = [];
     if (statusFilter === '' || statusFilter === 'eligible') {
       eligible = (await db.query<Raw>(
-        `SELECT o.id, o.order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
+        `SELECT o.id, o.order_number, o.short_order_code, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
                 (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS item_count
          FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
          WHERE ${ew} ORDER BY (o.urgent_level_id IS NULL), o.due_date`, ep)).map((r) => ({
-        order_id: num(r.id), order_number: r.order_number, due_date: r.due_date, due_time: r.due_time, grand_total: num(r.grand_total), current_due: num(r.current_due),
+        order_id: num(r.id), order_number: r.short_order_code ?? r.order_number, due_date: r.due_date, due_time: r.due_time, grand_total: num(r.grand_total), current_due: num(r.current_due),
         customer_name: r.customer_name, mobile: r.mobile, urgent_level_name: r.urgent_level_name, item_count: num(r.item_count),
       }));
     }
     let where = '1=1';
     const params: unknown[] = [];
     if (statusFilter !== '' && statusFilter !== 'eligible') { where += ' AND p.status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const active = (await db.query<Raw>(
-      `SELECT p.*, o.order_number, ul.level_name AS urgent_level_name, c.full_name AS customer_name, c.mobile, dr.driver_name
+      `SELECT p.*, o.order_number, o.short_order_code, ul.level_name AS urgent_level_name, c.full_name AS customer_name, c.mobile, dr.driver_name
        FROM pickup_orders p LEFT JOIN orders o ON o.id = p.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = p.customer_id LEFT JOIN drivers dr ON dr.id = p.driver_id
        WHERE ${where} AND p.status NOT IN ('Picked Up','Cancelled','Completed') ORDER BY p.pickup_date`, params)).map((r) => ({
       pickup_id: num(r.id), pickup_number: r.pickup_number, status: r.status, pickup_date: r.pickup_date, pickup_time: r.pickup_time,
-      order_id: r.order_id !== null ? num(r.order_id) : null, order_number: r.order_number, customer_name: r.customer_name, mobile: r.mobile,
+      order_id: r.order_id !== null ? num(r.order_id) : null, order_number: r.short_order_code ?? r.order_number, customer_name: r.customer_name, mobile: r.mobile,
       driver_id: r.driver_id !== null ? num(r.driver_id) : null, driver_name: r.driver_name, urgent_level_name: r.urgent_level_name,
     }));
     const drivers = (await db.query<Raw>('SELECT id, driver_name FROM drivers WHERE is_active=1 ORDER BY driver_name')).map((r) => ({ id: num(r.id), name: r.driver_name }));
@@ -92,8 +92,8 @@ export async function registerMobileFulfillmentRoutes(app: FastifyInstance) {
         const r = await fulfillment.createPickup(orderId, pickupDate, pickupTime, notes, a);
         if (!r.success) throw new ApiError('action_failed', (r.errors ?? ['Could not schedule the pickup.']).join(' '), 422);
         try {
-          const [row] = await db.query<Raw>('SELECT o.order_number, c.id AS customer_id, c.full_name, c.mobile FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?', [orderId]);
-          if (row && row.mobile) await hooks.pickupScheduled({ customerId: num(row.customer_id), orderId, orderNumber: row.order_number, customerName: row.full_name, mobile: row.mobile, pickupDate });
+          const [row] = await db.query<Raw>('SELECT o.order_number, o.short_order_code, c.id AS customer_id, c.full_name, c.mobile FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?', [orderId]);
+          if (row && row.mobile) await hooks.pickupScheduled({ customerId: num(row.customer_id), orderId, orderNumber: row.short_order_code ?? row.order_number, customerName: row.full_name, mobile: row.mobile, pickupDate });
         } catch (e) { console.error('pickup_scheduled hook failed:', (e as Error).message); }
         return ok({ message: 'Pickup scheduled.' });
       }
@@ -127,30 +127,30 @@ export async function registerMobileFulfillmentRoutes(app: FastifyInstance) {
     if (statusFilter === '' || statusFilter === 'eligible') {
       let ew = ELIGIBLE;
       const ep: unknown[] = [];
-      if (orderSearch !== '') { ew += ' AND o.order_number LIKE ?'; ep.push(`%${orderSearch}%`); }
+      if (orderSearch !== '') { ew += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; ep.push(`%${orderSearch}%`, `%${orderSearch}%`); }
       if (customerSearch !== '') { ew += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; ep.push(`%${customerSearch}%`, `%${customerSearch}%`); }
       eligible = (await db.query<Raw>(
-        `SELECT o.id, o.order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, c.address, ul.level_name AS urgent_level_name,
+        `SELECT o.id, o.order_number, o.short_order_code, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, c.address, ul.level_name AS urgent_level_name,
                 (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS item_count
          FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
          WHERE ${ew} ORDER BY (o.urgent_level_id IS NULL), o.due_date`, ep)).map((o) => ({
-        order_id: num(o.id), order_number: o.order_number, customer_name: o.customer_name, mobile: o.mobile, has_address: String(o.address ?? '').trim() !== '',
+        order_id: num(o.id), order_number: o.short_order_code ?? o.order_number, customer_name: o.customer_name, mobile: o.mobile, has_address: String(o.address ?? '').trim() !== '',
         item_count: num(o.item_count), grand_total: num(o.grand_total), total_paid: num(o.total_paid), current_due: num(o.current_due), due_date: o.due_date, urgent_level_name: o.urgent_level_name,
       }));
     }
     let where = '1=1';
     const params: unknown[] = [];
     if (statusFilter !== '' && statusFilter !== 'eligible') { where += ' AND dl.status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     let active: Raw[] = [];
     if (statusFilter !== 'eligible') {
       active = (await db.query<Raw>(
-        `SELECT dl.id, dl.delivery_number, dl.order_id, dl.phone, dl.address, dl.amount_due, dl.delivery_date, dl.status, dl.driver_id, o.order_number, ul.level_name AS urgent_level_name,
+        `SELECT dl.id, dl.delivery_number, dl.order_id, dl.phone, dl.address, dl.amount_due, dl.delivery_date, dl.status, dl.driver_id, o.order_number, o.short_order_code, ul.level_name AS urgent_level_name,
                 c.full_name AS customer_name, drv.driver_name, (SELECT COUNT(*) FROM order_items WHERE order_id = dl.order_id) AS item_count
          FROM delivery_orders dl JOIN orders o ON o.id = dl.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = dl.customer_id LEFT JOIN drivers drv ON drv.id = dl.driver_id
          WHERE ${where} AND dl.status NOT IN ('Delivered','Cancelled') ORDER BY dl.delivery_date`, params)).map((d) => ({
-        delivery_id: num(d.id), delivery_number: d.delivery_number, order_id: num(d.order_id), order_number: d.order_number, customer_name: d.customer_name, phone: d.phone, address: d.address,
+        delivery_id: num(d.id), delivery_number: d.delivery_number, order_id: num(d.order_id), order_number: d.short_order_code ?? d.order_number, customer_name: d.customer_name, phone: d.phone, address: d.address,
         item_count: num(d.item_count), amount_due: numOrNull(d.amount_due), delivery_date: d.delivery_date, status: d.status, driver_id: d.driver_id !== null ? num(d.driver_id) : null,
         driver_name: d.driver_name, urgent_level_name: d.urgent_level_name, can_assign: d.driver_id === null && ['Pending', 'Assigned'].includes(d.status),
       }));
@@ -206,14 +206,14 @@ export async function registerMobileFulfillmentRoutes(app: FastifyInstance) {
     else if (isDeliveryManager(ctx)) where += ' AND dl.driver_id IS NOT NULL';
     else where += ' AND 1 = 0';
     const rows = await db.query<Raw>(
-      `SELECT dl.id, dl.delivery_number, dl.order_id, o.order_number, dl.customer_id, c.full_name AS customer_name, dl.phone, dl.address, dl.amount_due, dl.status, dl.delivery_date, dl.time_slot,
+      `SELECT dl.id, dl.delivery_number, dl.order_id, o.order_number, o.short_order_code, dl.customer_id, c.full_name AS customer_name, dl.phone, dl.address, dl.amount_due, dl.status, dl.delivery_date, dl.time_slot,
               ul.level_name AS urgent_level_name, (SELECT COUNT(*) FROM order_items WHERE order_id = dl.order_id) AS item_count
        FROM delivery_orders dl JOIN orders o ON o.id = dl.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = dl.customer_id
        WHERE ${where} ORDER BY (o.urgent_level_id IS NULL), dl.delivery_date`, params);
     return ok({
       is_own_deliveries: !!drv,
       deliveries: rows.map((d) => ({
-        id: num(d.id), delivery_number: d.delivery_number, order_id: num(d.order_id), order_number: d.order_number, customer_name: d.customer_name, phone: d.phone, address: d.address,
+        id: num(d.id), delivery_number: d.delivery_number, order_id: num(d.order_id), order_number: d.short_order_code ?? d.order_number, customer_name: d.customer_name, phone: d.phone, address: d.address,
         amount_due: num(d.amount_due), status: d.status, delivery_date: d.delivery_date, time_slot: d.time_slot, urgent_level_name: d.urgent_level_name, item_count: num(d.item_count),
       })),
     });

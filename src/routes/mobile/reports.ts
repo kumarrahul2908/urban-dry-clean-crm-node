@@ -61,19 +61,19 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     if (id <= 0) throw new ApiError('invalid_request', 'A valid customer id is required.', 422);
     if (!(await db.query('SELECT id FROM customers WHERE id = ?', [id])).length) throw new ApiError('not_found', 'Customer not found.', 404);
     const q = (sql: string, params: unknown[]) => db.query<Raw>(sql, params);
-    const orders = await q(`SELECT o.id, o.order_number, o.order_date, o.due_date, o.grand_total, o.current_due, o.order_mode, os.status_label, os.color
+    const orders = await q(`SELECT o.id, o.order_number, o.short_order_code, o.order_date, o.due_date, o.grand_total, o.current_due, o.order_mode, os.status_label, os.color
                             FROM orders o JOIN order_statuses os ON os.id = o.status_id WHERE o.customer_id = ? ORDER BY o.order_date DESC LIMIT 50`, [id]);
     const payments = await q('SELECT id, payment_number, order_id, payment_date, payment_kind, total_amount, remarks FROM payments WHERE customer_id = ? ORDER BY payment_date DESC LIMIT 50', [id]);
     const garments = await q(
-      `SELECT garment_name, service_name, quantity, rate, weight, order_date, order_number, order_id FROM (
+      `SELECT garment_name, service_name, quantity, rate, weight, order_date, order_number, short_order_code, order_id FROM (
          SELECT g.garment_name, s.service_name, oi.quantity,
          CASE WHEN oi.weight IS NOT NULL THEN oi.weight_rate ELSE oi.unit_price END AS rate,
-         oi.weight, o.order_date, o.order_number, o.id AS order_id
+         oi.weight, o.order_date, o.order_number, o.short_order_code, o.id AS order_id
          FROM order_items oi JOIN garments g ON g.id=oi.garment_id
          JOIN services s ON s.id=oi.service_id JOIN orders o ON o.id=oi.order_id
          WHERE o.customer_id=? AND o.order_mode = 'piece'
          UNION ALL
-         SELECT g.garment_name, s.service_name, 1 AS quantity, NULL AS rate, NULL AS weight, o.order_date, o.order_number, o.id AS order_id
+         SELECT g.garment_name, s.service_name, 1 AS quantity, NULL AS rate, NULL AS weight, o.order_date, o.order_number, o.short_order_code, o.id AS order_id
          FROM laundry_garments lg
          JOIN order_items oi ON oi.id = lg.order_item_id
          JOIN garments g ON g.id = lg.garment_id
@@ -83,16 +83,19 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
        ) combined ORDER BY order_date DESC LIMIT 50`, [id, id]);
     const wallet = await q('SELECT id, created_at, txn_type, debit, credit, balance_after, remarks, order_id FROM wallet_transactions WHERE customer_id = ? ORDER BY created_at DESC LIMIT 30', [id]);
     const deliveries = await q('SELECT id, delivery_number, order_id, delivery_date, time_slot, status, amount_due FROM delivery_orders WHERE customer_id = ? ORDER BY delivery_date DESC LIMIT 30', [id]);
-    const feedback = await q(`SELECT f.id, f.order_id, o.order_number, f.rating, f.comments, f.status, f.created_at
+    const feedback = await q(`SELECT f.id, f.order_id, o.order_number, o.short_order_code, f.rating, f.comments, f.status, f.created_at
                               FROM feedback f LEFT JOIN orders o ON o.id = f.order_id WHERE f.customer_id = ? ORDER BY f.created_at DESC LIMIT 20`, [id]);
+    // short_order_code replaces order_number wherever it is shown (all three lists carry it through to the response)
+    const useShortCode = (rows: Raw[]) => rows.map((r) => ('order_number' in r && 'short_order_code' in r ? { ...r, order_number: r.short_order_code ?? r.order_number } : r));
+    const ordersOut = useShortCode(orders), garmentsOut = useShortCode(garments), feedbackOut = useShortCode(feedback);
     const ledger: { date: string; description: string; debit: number; credit: number; order_id: number | null }[] = [];
-    for (const o of orders) ledger.push({ date: o.order_date, description: `Order ${o.order_number}`, debit: num(o.grand_total), credit: 0, order_id: num(o.id) });
+    for (const o of ordersOut) ledger.push({ date: o.order_date, description: `Order ${o.order_number}`, debit: num(o.grand_total), credit: 0, order_id: num(o.id) });
     for (const p of payments) ledger.push({ date: p.payment_date, description: `Payment ${p.payment_number}`, debit: 0, credit: num(p.total_amount), order_id: p.order_id !== null ? num(p.order_id) : null });
     const ts = (d: string) => Date.parse(d.replace(' ', 'T') + 'Z');
     ledger.sort((a, b) => ts(b.date) - ts(a.date));
     const outstanding = await scalar(db, 'SELECT COALESCE(SUM(due_amount),0) FROM accounts_receivable WHERE customer_id=? AND due_amount>0', [id]);
     const walletBal = await scalar(db, 'SELECT balance FROM customer_wallet WHERE customer_id=?', [id]);
-    return ok({ customer_id: id, outstanding: round2(toFloat(outstanding)), wallet_balance: round2(toFloat(walletBal || 0)), orders, payments, garments, wallet, deliveries, feedback, ledger });
+    return ok({ customer_id: id, outstanding: round2(toFloat(outstanding)), wallet_balance: round2(toFloat(walletBal || 0)), orders: ordersOut, payments, garments: garmentsOut, wallet, deliveries, feedback: feedbackOut, ledger });
   });
 
   // ---- daily collection -------------------------------------------------------------------
@@ -110,7 +113,7 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     const fp: unknown[] = [date];
     if (methodFilter) { fw += ' AND ptx.payment_type_id = ?'; fp.push(methodFilter); }
     if (staffFilter) { fw += ' AND p.created_by = ?'; fp.push(staffFilter); }
-    if (orderSearch !== '') { fw += ' AND o.order_number LIKE ?'; fp.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { fw += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; fp.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { fw += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; fp.push(`%${customerSearch}%`, `%${customerSearch}%`); }
 
     const byMethod = async (kind: string) =>
@@ -134,7 +137,7 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     const types = await db.query<Raw>('SELECT id, type_name FROM payment_types ORDER BY sort_order');
     const staff = await db.query<Raw>('SELECT DISTINCT u.id, u.full_name FROM payments p JOIN users u ON u.id = p.created_by ORDER BY u.full_name');
     const details = await db.query<Raw>(
-      `SELECT p.payment_number, p.payment_date, p.payment_kind, p.total_amount, c.full_name, c.mobile, o.order_number, u.full_name AS created_by_name,
+      `SELECT p.payment_number, p.payment_date, p.payment_kind, p.total_amount, c.full_name, c.mobile, o.order_number, o.short_order_code, u.full_name AS created_by_name,
               GROUP_CONCAT(CONCAT(pt.type_name, ': ', ptx.amount) SEPARATOR ', ') AS breakdown
        FROM payments p JOIN customers c ON c.id = p.customer_id LEFT JOIN orders o ON o.id = p.order_id LEFT JOIN users u ON u.id = p.created_by
        JOIN payment_transactions ptx ON ptx.payment_id = p.id JOIN payment_types pt ON pt.id = ptx.payment_type_id
@@ -148,7 +151,7 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
       staff: staff.map((r) => ({ id: num(r.id), full_name: r.full_name })),
       details: details.map((d) => ({
         payment_number: d.payment_number, payment_date: d.payment_date, payment_kind: d.payment_kind, total_amount: num(d.total_amount),
-        customer_name: d.full_name, order_number: d.order_number, created_by_name: d.created_by_name, breakdown: d.breakdown,
+        customer_name: d.full_name, order_number: d.short_order_code ?? d.order_number, created_by_name: d.created_by_name, breakdown: d.breakdown,
       })),
     });
   });
@@ -165,7 +168,7 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     let where = "ar.status = 'Open' AND ar.due_amount > 0.01";
     const params: unknown[] = [];
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (dueDate !== '') { where += ' AND ar.due_date = ?'; params.push(dueDate); }
     if (minAmount !== '' && /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(minAmount)) { where += ' AND ar.due_amount >= ?'; params.push(toFloat(minAmount)); }
     const ageingCase = `CASE
@@ -178,10 +181,10 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     if (ageing !== '') { where += ` AND (${ageingCase}) = ?`; params.push(ageing); }
     const rows = await db.query<Raw>(
       `SELECT ar.order_id, ar.total_amount, ar.paid_amount, ar.due_amount, ar.due_date,
-              c.full_name AS customer_name, c.mobile, o.order_number, o.order_date, ${ageingCase} AS ageing_bucket,
+              c.full_name AS customer_name, c.mobile, o.order_number, o.short_order_code, o.order_date, ${ageingCase} AS ageing_bucket,
               (SELECT MAX(p.payment_date) FROM payments p WHERE p.order_id = ar.order_id AND p.payment_kind != 'Refund') AS last_payment_date
        FROM accounts_receivable ar JOIN orders o ON o.id = ar.order_id JOIN customers c ON c.id = ar.customer_id
-       WHERE ${where} ORDER BY ar.due_date`, params);
+       WHERE ${where} ORDER BY ar.due_date, ar.id`, params); // ar.id: PHP leaves ties unspecified
     const bucketTotals: Record<string, number> = { Current: 0, '1-7 days': 0, '8-30 days': 0, '31-60 days': 0, '61-90 days': 0, '90+ days': 0 };
     let grand = 0;
     const byCustomer = new Map<string, { name: string; mobile: string; orders: number; total_due: number }>();
@@ -195,7 +198,7 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
     }
     return ok({
       receivables: rows.map((r) => ({
-        order_id: num(r.order_id), order_number: r.order_number, order_date: r.order_date, customer_name: r.customer_name, mobile: r.mobile,
+        order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, order_date: r.order_date, customer_name: r.customer_name, mobile: r.mobile,
         total_amount: num(r.total_amount), paid_amount: num(r.paid_amount), due_amount: num(r.due_amount), due_date: r.due_date,
         ageing_bucket: r.ageing_bucket, last_payment_date: r.last_payment_date,
       })),
@@ -277,11 +280,11 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
 
     const fetchOrderRows = async (whereClause: string, params: unknown[]) =>
       (await db.query<Raw>(
-        `SELECT o.id, o.order_number, o.due_time, o.due_date, c.full_name AS customer_name, c.mobile, o.grand_total, o.total_paid, o.current_due,
+        `SELECT o.id, o.order_number, o.short_order_code, o.due_time, o.due_date, c.full_name AS customer_name, c.mobile, o.grand_total, o.total_paid, o.current_due,
                 COALESCE(SUM(oi.quantity),0) AS pcs, COUNT(DISTINCT oi.garment_id) AS garment_types
          FROM orders o JOIN customers c ON c.id = o.customer_id LEFT JOIN order_items oi ON oi.order_id = o.id
          WHERE ${whereClause} GROUP BY o.id ORDER BY o.due_time IS NULL, o.due_time`, params)).map((r) => ({
-        id: num(r.id), order_number: r.order_number, due_date: r.due_date, due_time: r.due_time, customer_name: r.customer_name, mobile: r.mobile,
+        id: num(r.id), order_number: r.short_order_code ?? r.order_number, due_date: r.due_date, due_time: r.due_time, customer_name: r.customer_name, mobile: r.mobile,
         grand_total: num(r.grand_total), total_paid: num(r.total_paid), current_due: num(r.current_due),
         pcs: Math.trunc(num(r.pcs)), garment_types: Math.trunc(num(r.garment_types)),
       }));
@@ -310,13 +313,13 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
       .map((r) => ({ label: r.status_label, count: num(r.order_count) }));
 
     const pend = await db.query<Raw>(
-      `SELECT o.id, o.order_number, o.due_date, c.full_name AS customer_name, c.mobile, COALESCE(SUM(oi.quantity),0) AS pcs
+      `SELECT o.id, o.order_number, o.short_order_code, o.due_date, c.full_name AS customer_name, c.mobile, COALESCE(SUM(oi.quantity),0) AS pcs
        FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_items oi ON oi.order_id = o.id JOIN order_statuses os ON os.id = o.status_id
        WHERE oi.item_status NOT IN ('Ready','Packed','Delivered','Damaged','Missing') AND os.status_key NOT IN ('delivered','cancelled')${sf}
        GROUP BY o.id ORDER BY o.due_date`, sfp);
     const overdue: Raw[] = [], todayList: Raw[] = [], future: Raw[] = [];
     for (const r of pend) {
-      const row = { id: num(r.id), order_number: r.order_number, due_date: r.due_date, customer_name: r.customer_name, mobile: r.mobile, pcs: Math.trunc(num(r.pcs)) };
+      const row = { id: num(r.id), order_number: r.short_order_code ?? r.order_number, due_date: r.due_date, customer_name: r.customer_name, mobile: r.mobile, pcs: Math.trunc(num(r.pcs)) };
       if (String(r.due_date) < selected) overdue.push(row);
       else if (String(r.due_date) === selected) todayList.push(row);
       else future.push(row);

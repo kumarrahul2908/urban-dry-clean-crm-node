@@ -52,6 +52,7 @@ const navSections = (workshopStaff: boolean): Record<string, NavItem[]> => ({
   ],
   Reports: [
     ['All Reports', 'fa-chart-column', 'modules/reports/index.php', 'reports.view'],
+    ['Dormant Customers', 'fa-user-clock', 'modules/reports/dormant_customers.php', 'reports.view'],
     ['Customer Feedback', 'fa-star', 'modules/feedback/index.php', 'feedback.manage'],
     ['WhatsApp — API Settings', 'fa-brands fa-whatsapp', 'modules/reports/whatsapp/settings.php', 'whatsapp.settings'],
     ['WhatsApp — Templates', 'fa-brands fa-whatsapp', 'modules/reports/whatsapp/templates.php', 'whatsapp.settings'],
@@ -74,6 +75,8 @@ const navSections = (workshopStaff: boolean): Record<string, NavItem[]> => ({
     ['Users & Roles', 'fa-user-shield', 'modules/admin/users.php', 'users.manage'],
     ['Admin Settings', 'fa-gear', 'modules/admin/settings.php', 'admin.settings'],
     ['Print Settings', 'fa-print', 'modules/admin/print_settings.php', 'master.manage'],
+    ['Tag Design', 'fa-tags', 'modules/admin/tag_design.php', 'master.manage'],
+    ['Invoice Design', 'fa-file-invoice', 'modules/admin/invoice_design.php', 'master.manage'],
     ['Audit Log', 'fa-clipboard-list', 'modules/audit/index.php', 'audit.view'],
   ],
 });
@@ -233,6 +236,16 @@ export async function layout(ctx: WebCtx, meta: PageMeta, body: Raw | string): P
       </div>
       <script>
       (function () {
+        // Rahul: once this computer has EVER been confirmed to have the service running, trust
+        // that permanently and stop re-checking -- a later page load's ping can fail for reasons
+        // that have nothing to do with "not installed" (the service still starting up when the
+        // browser opens faster, a brief network hiccup, the 1.2s timeout just being too tight in
+        // the moment), and re-prompting on an already-installed computer because of one missed
+        // ping was exactly the complaint. The 24h "Not now"/"Download" snooze below still applies
+        // for a computer that genuinely doesn't have it installed yet.
+        var CONFIRMED_KEY = 'udc_print_svc_confirmed_installed';
+        if (localStorage.getItem(CONFIRMED_KEY) === '1') return;
+
         var DISMISS_KEY = 'udc_print_svc_prompt_dismissed_until';
         var dismissedUntil = parseInt(localStorage.getItem(DISMISS_KEY) || '0', 10);
         if (Date.now() < dismissedUntil) return; // asked recently, don't nag every page load
@@ -241,7 +254,7 @@ export async function layout(ctx: WebCtx, meta: PageMeta, body: Raw | string): P
         var timeout = setTimeout(function () { controller.abort(); }, 1200);
         fetch('http://127.0.0.1:9294/ping', { signal: controller.signal })
           .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-          .then(function () { /* already installed on this computer -- nothing to prompt */ })
+          .then(function () { localStorage.setItem(CONFIRMED_KEY, '1'); }) // installed -- never ask this computer again
           .catch(function () {
             var el = document.getElementById('installPrintSvcModal');
             if (!el || typeof bootstrap === 'undefined') return;

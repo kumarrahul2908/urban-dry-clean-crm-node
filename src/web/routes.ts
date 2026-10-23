@@ -18,6 +18,7 @@ import { registerTrackPage } from './pages/track.js';
 import { registerApiMisc } from './pages/apiMisc.js';
 import { registerWaPages } from './pages/waPages.js';
 import { registerReportPages } from './pages/reports.js';
+import { registerDesignPages } from './pages/designPages.js';
 import { registerMiscPages } from './pages/miscPages.js';
 import { registerAdminSettingsPages } from './pages/adminSettings.js';
 import { registerAdminUsersPage } from './pages/adminUsers.js';
@@ -83,6 +84,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerAdminSettingsPages(app);
   registerMiscPages(app);
   registerReportPages(app);
+  registerDesignPages(app);
   registerWaPages(app);
   registerApiMisc(app);
   registerTrackPage(app);

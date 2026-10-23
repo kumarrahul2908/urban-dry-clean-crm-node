@@ -51,7 +51,7 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     const params: unknown[] = [];
     if (myWs !== null) { where += ' AND wc.workshop_id = ?'; params.push(myWs); }
     if (statusFilter !== '') { where += ' AND oi.item_status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') {
       if (myWs !== null) { where += ' AND c.full_name LIKE ?'; params.push(`%${customerSearch}%`); } // a workshop never searches by customer phone number
       else { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
@@ -64,11 +64,11 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
       LEFT JOIN workshop_items wi ON wi.order_item_id = oi.id AND wi.status NOT IN ('Completed','Rejected') LEFT JOIN workshop_challans wc ON wc.id = wi.challan_id WHERE ${where}`;
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n ${base}`, params)) as [{ n: number }];
     const rows = await db.query<Raw>(
-      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
               g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name, wi.id AS workshop_item_id, wi.status AS workshop_status, wc.challan_number
        ${base} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${(page - 1) * perPage}`, params);
     const pieceItems = rows.map((r) => ({
-      order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.order_number, item_status: r.item_status, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight),
+      order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, item_status: r.item_status, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight),
       unit: r.unit, due_date: r.due_date, due_time: r.due_time, customer_name: r.customer_name, garment_name: r.garment_name, service_name: r.service_name,
       urgent_level_name: r.urgent_level_name, workshop_item_id: r.workshop_item_id !== null ? num(r.workshop_item_id) : null, workshop_status: r.workshop_status, challan_number: r.challan_number,
     }));
@@ -90,7 +90,7 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     }
     const cands = await db.query<Raw>(
       `SELECT wi.id, wi.order_item_id, wi.laundry_garment_id, wi.status AS raw_status, wi.remarks, COALESCE(g1.garment_name, g2.garment_name) AS garment_name,
-              COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.id, o2.id) AS order_id, COALESCE(c1.full_name, c2.full_name) AS customer_name
+              COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(o1.id, o2.id) AS order_id, COALESCE(c1.full_name, c2.full_name) AS customer_name
        FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
        LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
        LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id
@@ -99,7 +99,7 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     const acceptQueue: Raw[] = [], returnQueue: Raw[] = [], storeReceiveQueue: Raw[] = [];
     for (const row of cands) {
       const current = await workshop.getCurrentStatus(Number(row.id));
-      const item = { workshop_item_id: num(row.id), kind: row.laundry_garment_id !== null ? 'laundry' : 'piece', garment_name: row.garment_name, order_id: row.order_id !== null ? num(row.order_id) : null, order_number: row.order_number, customer_name: row.customer_name, current_status: current };
+      const item = { workshop_item_id: num(row.id), kind: row.laundry_garment_id !== null ? 'laundry' : 'piece', garment_name: row.garment_name, order_id: row.order_id !== null ? num(row.order_id) : null, order_number: row.short_order_code ?? row.order_number, customer_name: row.customer_name, current_status: current };
       if (current === 'Received') acceptQueue.push(item);
       else if (current === 'Completed') returnQueue.push(item);
       else if (current === 'Returned') storeReceiveQueue.push(item);
@@ -268,12 +268,12 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     if (scope.workshop_id !== null) { where += ' AND wb.workshop_id = ?'; params.push(scope.workshop_id); }
     if (scope.blocked) where += ' AND 1 = 0';
     const bills = (await db.query<Raw>(
-      `SELECT wb.id, wb.bill_number, wb.period_start, wb.period_end, wb.total_value, wb.workshop_share, wb.store_share, wb.share_percent, wb.status, wb.invoice_date, wb.due_date, wb.amount_paid,
+      `SELECT wb.id, wb.bill_number, wb.period_start, wb.period_end, wb.total_value, wb.workshop_share, wb.store_share, wb.share_percent, wb.status, wb.invoice_date, wb.due_date, wb.amount_paid, wb.grand_total, wb.gst_mode,
               CASE WHEN wb.is_combined = 1 THEN 'All stores (combined)' ELSE s.store_name END AS store_name, w.workshop_name
        FROM workshop_bills wb LEFT JOIN stores s ON s.id = wb.store_id JOIN workshops w ON w.id = wb.workshop_id WHERE ${where} ORDER BY wb.id DESC LIMIT 100`, params)).map((b) => ({
       id: num(b.id), bill_number: b.bill_number, store_name: b.store_name, workshop_name: b.workshop_name, period_start: b.period_start, period_end: b.period_end,
       total_value: num(b.total_value), workshop_share: num(b.workshop_share), store_share: num(b.store_share), share_percent: num(b.share_percent), status: b.status,
-      invoice_date: b.invoice_date, due_date: b.due_date, amount_paid: num(b.amount_paid), balance_due: round2(num(b.workshop_share) - num(b.amount_paid)),
+      invoice_date: b.invoice_date, due_date: b.due_date, amount_paid: num(b.amount_paid), balance_due: round2(num(b.grand_total) - num(b.amount_paid)), // grand_total (GST included where applicable), not workshop_share
     }));
     const stores = await db.query<Raw>('SELECT id, store_name FROM stores WHERE is_active = 1 ORDER BY store_name');
     let workshops = await db.query<Raw>('SELECT id, workshop_name, commission_workshop_percent FROM workshops WHERE is_active = 1 ORDER BY workshop_name');
@@ -297,9 +297,10 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
        FROM workshop_bills wb LEFT JOIN stores s ON s.id = wb.store_id JOIN workshops w ON w.id = wb.workshop_id LEFT JOIN payment_types pt ON pt.id = wb.payment_type_id WHERE wb.id = ?`, [billId]);
     if (!bill || scope.blocked || (scope.workshop_id !== null && Number(bill.workshop_id) !== scope.workshop_id)) throw new ApiError('not_found', 'Bill not found.', 404);
     const items = (await db.query<Raw>(
-      `SELECT wbi.order_item_id, wbi.item_value, o.id AS order_id, o.order_number, g.garment_name, c.full_name AS customer_name
+      `SELECT wbi.id AS bill_item_id, wbi.order_item_id, wbi.item_value, o.id AS order_id, o.order_number, o.short_order_code, g.garment_name, c.full_name AS customer_name
        FROM workshop_bill_items wbi JOIN order_items oi ON oi.id = wbi.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
-       LEFT JOIN garments g ON g.id = oi.garment_id WHERE wbi.bill_id = ? ORDER BY o.order_number`, [billId])).map((it) => ({ order_id: num(it.order_id), order_number: it.order_number, garment_name: it.garment_name, customer_name: it.customer_name, item_value: num(it.item_value) }));
+       LEFT JOIN garments g ON g.id = oi.garment_id WHERE wbi.bill_id = ? ORDER BY o.order_number, wbi.id`, [billId])).map((it) => ({ order_id: num(it.order_id), order_number: it.short_order_code ?? it.order_number, garment_name: it.garment_name, customer_name: it.customer_name, item_value: num(it.item_value),
+      bill_item_id: num(it.bill_item_id) })); // addresses ONE garment line for a photo upload
     const payments = (await db.query<Raw>(
       'SELECT p.amount, p.reference_no, p.paid_on, p.notes, pt.type_name FROM workshop_bill_payments p JOIN payment_types pt ON pt.id = p.payment_type_id WHERE p.bill_id = ? ORDER BY p.paid_on, p.id', [billId]))
       .map((p) => ({ amount: num(p.amount), payment_type_name: p.type_name, reference_no: p.reference_no, paid_on: p.paid_on, notes: p.notes }));
@@ -309,7 +310,8 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
         id: num(bill.id), bill_number: bill.bill_number, store_name: bill.store_name, workshop_name: bill.workshop_name, period_start: bill.period_start, period_end: bill.period_end,
         total_value: num(bill.total_value), share_percent: num(bill.share_percent), workshop_share: num(bill.workshop_share), store_share: num(bill.store_share), status: bill.status,
         payment_type_name: bill.payment_type_name, reference_no: bill.reference_no, paid_at: bill.paid_at, subject: bill.subject, invoice_date: bill.invoice_date, due_date: bill.due_date,
-        amount_paid: num(bill.amount_paid), balance_due: bill.status === 'Void' ? 0 : round2(num(bill.workshop_share) - num(bill.amount_paid)),
+        amount_paid: num(bill.amount_paid), balance_due: bill.status === 'Void' ? 0 : round2(num(bill.grand_total) - num(bill.amount_paid)),
+        gst_mode: bill.gst_mode, gst_rate: num(bill.gst_rate), gst_amount: num(bill.gst_amount), grand_total: num(bill.grand_total), billing_basis: bill.billing_basis,
       },
       items, payments,
     });
@@ -319,10 +321,16 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     const scope = await wsBillingScope(db, ctx.id, ctx.role_name);
     if (!scope.can_manage) throw new ApiError('forbidden', 'You do not have permission to generate bills.', 403);
     const p = body(req);
-    const storeId = toInt(p.store_id), workshopId = toInt(p.workshop_id);
-    if (!storeId || !workshopId) throw new ApiError('invalid_request', 'Select a store and a workshop.', 422);
+    // "all" = a combined invoice for every store
+    const storeIdRaw = typeof p.store_id === 'string' || typeof p.store_id === 'number' ? String(p.store_id) : '';
+    const storeId = storeIdRaw === 'all' ? null : toInt(storeIdRaw), workshopId = toInt(p.workshop_id);
+    let gstMode = String(p.gst_mode ?? 'none');
+    if (!['none', 'inclusive', 'exclusive'].includes(gstMode)) gstMode = 'none';
+    let basis = String(p.basis ?? 'whole');
+    if (!['whole', 'sent_only'].includes(basis)) basis = 'whole';
+    if (storeIdRaw === '' || !workshopId) throw new ApiError('invalid_request', 'Select a store and a workshop.', 422);
     if (scope.workshop_id !== null && workshopId !== scope.workshop_id) throw new ApiError('forbidden', 'You can only bill your own workshop.', 403);
-    const res = await workshopInvoice.createInvoice(storeId, workshopId, String(p.from ?? ''), String(p.to ?? ''), todayIn(tz), null, ctx.id, null, null, 'none', 18, req.ip);
+    const res = await workshopInvoice.createInvoice(storeId, workshopId, String(p.from ?? ''), String(p.to ?? ''), todayIn(tz), null, ctx.id, null, null, gstMode, 18, req.ip, basis);
     if (!res.ok) throw new ApiError(res.code, res.error, ({ no_items: 422, invalid_request: 422, not_found: 404 } as Record<string, number>)[res.code] ?? 500);
     return ok({ bill_id: res.bill_id, bill_number: res.bill_number });
   });
@@ -333,10 +341,10 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     const p = body(req);
     const billId = toInt(p.bill_id), paymentTypeId = toInt(p.payment_type_id);
     if (!billId || !paymentTypeId) throw new ApiError('invalid_request', 'Select a payment method.', 422);
-    const [bill] = await db.query<Raw>('SELECT workshop_id, workshop_share, amount_paid FROM workshop_bills WHERE id = ?', [billId]);
+    const [bill] = await db.query<Raw>('SELECT workshop_id, workshop_share, grand_total, amount_paid FROM workshop_bills WHERE id = ?', [billId]);
     if (!bill || (scope.workshop_id !== null && Number(bill.workshop_id) !== scope.workshop_id)) throw new ApiError('not_found', 'Bill not found.', 404);
     let amount = p.amount !== undefined && p.amount !== null ? parseFloat(String(p.amount)) || 0 : 0;
-    if (amount <= 0) amount = round2(num(bill.workshop_share) - num(bill.amount_paid)); // default: the full balance
+    if (amount <= 0) amount = round2(num(bill.grand_total) - num(bill.amount_paid)); // default: the full balance (grand_total: a GST-exclusive invoice owes more than the workshop share)
     const res = await workshopInvoice.recordPayment(billId, amount, paymentTypeId, String(p.reference_no ?? ''), todayIn(tz), null, ctx.id, scope.workshop_id, req.ip);
     if (!res.ok) throw new ApiError(res.code, res.error, ({ not_found: 404, server_error: 500 } as Record<string, number>)[res.code] ?? 422);
     return ok({ message: res.status === 'Paid' ? 'Bill marked as Paid.' : 'Payment recorded.' });
