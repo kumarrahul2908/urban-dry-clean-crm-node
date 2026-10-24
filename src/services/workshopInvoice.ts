@@ -73,7 +73,7 @@ export class WorkshopInvoice {
        LEFT JOIN stores s ON s.id = o.store_id LEFT JOIN garments g ON g.id = oi.garment_id
        WHERE wi.status != 'Rejected' AND wc.workshop_id = ? AND DATE(wi.sent_at) BETWEEN ? AND ?${storeClause}
          AND oi.id NOT IN (SELECT order_item_id FROM workshop_bill_items)
-       ORDER BY store_name, o.order_number`, params);
+       ORDER BY store_name, o.order_number, oi.id`, params); // oi.id: a deterministic order for items tied on (store, order) -- PHP leaves ties unspecified
     const out: Raw[] = [];
     for (const r of rows) if ((await this.workshops.getCurrentStatus(Number(r.workshop_item_id))) !== 'Unprocessed') out.push(r);
     return out;

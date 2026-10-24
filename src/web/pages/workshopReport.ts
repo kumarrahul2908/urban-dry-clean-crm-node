@@ -42,7 +42,9 @@ export function registerWorkshopReportPage(app: FastifyInstance) {
     const rows = await db.query<Row>(
       `SELECT wi.id, wi.sent_at, COALESCE(o1.store_id, o2.store_id) AS store_id, COALESCE(s1.store_name, s2.store_name) AS store_name, COALESCE(g1.garment_name, g2.garment_name) AS garment_name,
        COALESCE(c1.full_name, c2.full_name) AS customer_name, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.order_number, o2.order_number) AS order_number,
-       COALESCE(oi1.id, oi2.id) AS order_item_id, COALESCE(oi1.total, oi2.total) AS item_value, CASE WHEN wi.laundry_garment_id IS NOT NULL THEN 1 ELSE COALESCE(oi1.quantity, 1) END AS garments
+       COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code,
+       COALESCE(oi1.id, oi2.id) AS order_item_id, COALESCE(oi1.total, oi2.total) AS item_value,
+       CASE WHEN wi.laundry_garment_id IS NOT NULL THEN 1 ELSE COALESCE(oi1.quantity, 1) * COALESCE(oi1.pieces_per_unit, 1) END AS garments
        FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
        LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN stores s1 ON s1.id = o1.store_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
        LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id LEFT JOIN orders o2 ON o2.id = oi2.order_id
@@ -61,7 +63,7 @@ export function registerWorkshopReportPage(app: FastifyInstance) {
       st.garments.set(gname, (st.garments.get(gname) ?? 0) + qty);
       if (!phpEmpty(r.customer_name)) st.customers.add(r.customer_name);
       const oid = int(r.order_id);
-      const o = st.orders.get(oid) ?? st.orders.set(oid, { number: r.order_number, customer: r.customer_name, garments: 0, items: new Map(), amount: 0 }).get(oid)!;
+      const o = st.orders.get(oid) ?? st.orders.set(oid, { number: r.short_order_code ?? r.order_number, customer: r.customer_name, garments: 0, items: new Map(), amount: 0 }).get(oid)!;
       o.garments += qty;
       o.items.set(int(r.order_item_id), flt(r.item_value));
     }
@@ -85,6 +87,7 @@ export function registerWorkshopReportPage(app: FastifyInstance) {
     if (myWs !== null) { upWs = ' AND wc.workshop_id = ?'; upParams.push(myWs); }
     const upRows = await db.query<Row>(
       `SELECT DISTINCT wi.id AS wi_id, h.remarks AS reason, h.changed_at AS marked_at, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.order_number, o2.order_number) AS order_number,
+       COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code,
        COALESCE(s1.store_name, s2.store_name, 'Unassigned') AS store_name, COALESCE(c1.full_name, c2.full_name) AS customer_name, COALESCE(g1.garment_name, g2.garment_name) AS garment_name
        FROM garment_status_history h
        JOIN workshop_items wi ON (h.order_item_id IS NOT NULL AND h.order_item_id = wi.order_item_id) OR (h.laundry_garment_id IS NOT NULL AND h.laundry_garment_id = wi.laundry_garment_id)
@@ -158,7 +161,7 @@ ${upCount > 0 ? html`
             <tbody>
               ${list.map((it) => html`
               <tr class="table-danger">
-                <td><a class="text-danger fw-bold" href="${u('modules/orders/view.php?id=' + it.order_id)}">${String(it.order_number ?? '')}</a></td>
+                <td><a class="text-danger fw-bold" href="${u('modules/orders/view.php?id=' + it.order_id)}">${String(it.short_order_code ?? it.order_number ?? '')}</a></td>
                 <td>${String(it.customer_name ?? '')}</td>
                 <td>${String(it.garment_name ?? '')}</td>
                 <td class="small">${dash(it.reason)}</td>

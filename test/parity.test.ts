@@ -246,7 +246,7 @@ describe.skipIf(!enabled)('PHP ↔ Node parity (OrderService)', () => {
       { op: 'addItem', order_id: 1, item: line(4, 1, { quantity: 3 }) },
       { op: 'addItem', order_id: 1, item: line(5, 2), client_request_id: 'set-1' },
       { op: 'addItem', order_id: 1, item: line(5, 2), client_request_id: 'set-1' },
-      { op: 'removeItem', order_id: 1, item_id: 8 }, // the last item: the next tag number is simply reused (same in PHP)
+      { op: 'removeItem', order_id: 1, item_id: 8 }, // removeItem renumbers EVERY remaining tag to a clean 1..N (2026-10-23..24 changelog) -- removing the last item just happens to leave the lower numbers untouched
       { op: 'addItem', order_id: 1, item: line(1, 1) },
       // garment master changes after the order: the order keeps its own copy of pieces_per_unit / piece_names
       { op: 'createOrder', can_override_discount: true, input: { customer_id: 2, items: [line(4, 1), line(6, 1, { quantity: 2 })], payments: [{ payment_type_id: 1, amount: 50 }] } },
@@ -262,6 +262,20 @@ describe.skipIf(!enabled)('PHP ↔ Node parity (OrderService)', () => {
       { op: 'createOrder', input: { customer_id: 2, items: [line(4, 1)] } },
     ]);
     expect(r[0].order_number).toMatch(/^A\d{4}$/);
+  });
+
+  it('removing a MIDDLE item renumbers every remaining tag to a clean 1..N, including the printed tag-id text (2026-10-23..24 changelog)', async () => {
+    const r = await expectParity([
+      // Socks x2 (2pcs each = 4 tags, seq 1-4), Shirt x1 (seq 5), Salwar Set x1 (3pcs, seq 6-8) -- 8 pieces total, 3 order_items
+      { op: 'createOrder', can_override_discount: true, input: { customer_id: 1, items: [line(4, 1, { quantity: 2 }), line(1, 1), line(5, 1)] } },
+      // remove the MIDDLE item (the single Shirt, seq 5) -- the trailing Salwar Set's 3 tags (previously 6,7,8) must renumber to 5,6,7, not stay at 6-8
+      { op: 'removeItem', order_id: 1, item_id: 2 },
+      // a further add continues from the new, renumbered total (7), not the old pre-removal total (8)
+      { op: 'addItem', order_id: 1, item: line(1, 1) },
+    ]);
+    expect(r[0].success, JSON.stringify(r[0])).toBe(true);
+    expect(r[1].success, JSON.stringify(r[1])).toBe(true);
+    expect(r[2].success, JSON.stringify(r[2])).toBe(true);
   });
 
   it('updateItem: quantity, rate, remarks, brand/colour, defects; the same guards as addItem', async () => {

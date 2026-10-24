@@ -120,3 +120,20 @@ Deliberate differences / things the PHP backup repo does not have yet:
 * **Workshop invoice photos** (`workshop_billing_photos`, `…_photo_upload`, `…_photo_delete`): new table `workshop_bill_photos`; like the order photos there is no hard 8 MB cap (the configured upload limit applies). Node-only tests (`test/changelog.test.ts`) because the PHP side cannot be driven with multipart in the endpoint harness.
 * Tie-breakers for rows with equal sort keys (`ORDER BY …, oi.id / wbi.id / t.wi_id`) — PHP leaves them unspecified; the parity copy gets the same ones.
 * Migrations: `2026_10_21*` / `2026_10_22*` are idempotent — on the live `crm` database (where PHP's own ALTERs were applied by hand) `npm run migrate` just records them (`Duplicate column`/`already exists` are treated as applied).
+
+## Changelog 2026-10-23..24 (live PHP CRM)
+Ported from the 2nd changelog + the backup repo's commits `aebc87c..4bb0fa2`; compared with the real updated PHP.
+
+| Item | Node | Test |
+|---|---|---|
+| `OrderService.removeItem` renumbers every remaining tag to a gapless 1..N (sequence AND the pre-built `barcode_value`/`short_qr_payload` text) — new business rule, accepted tradeoff that an already-printed tag may no longer match | `OrderService.renumberTagSequences` | `parity` ("removing a MIDDLE item renumbers…"), `changelog.test.ts` |
+| Tag print: `total_items` denominator is `SUM(quantity*pieces_per_unit)` (physical pieces), not a line `COUNT(*)`; `piece_names` cycles within a Set via `((piece_index-1) % pieces_per_unit)+1` for `quantity > 1`; the piece particular is unconditional (not gated by the Tag Design toggle, which still only controls its styling and the generic "Piece X of Y" fallback); combined `garment_name` is omitted once a particular is shown, replaced by `"<particular> (<item_sequence>/<total_items>)"` | `barcodeTags.ts` | `web-design` (tags print), `parity` (Set garments) |
+| Workshop piece-vs-line undercount, fixed in 4 places independently in PHP: dashboard badges/store-wise summary/queue-card badges, `challan_print`/`challan_view` (+ new Amount column, laundry "once per batch", `challan_print`'s Driver Name/Signature line), `report.php`'s Bill Summary garments column + short order code. Centralized into one helper (`piecesInLine`) instead of repeating the pattern | `lib/garmentPieces.ts`, `workshop.ts`, `workshopReport.ts` | `web-workshop` ("Set garments through the workshop…") |
+| Customer invoice "Download PDF" (html2pdf.js, client-side, zero server dependency) | `invoice.static.ts` (`invoicePdfScriptTag`, `invoiceScriptPdf`), `orders.ts` | `web-orders` (byte-identical against PHP) |
+| "Send Invoice" on WhatsApp button added to Order Details (same endpoint the Invoice page already used) | `orders.static.ts` (`orderViewScript`), `orders.ts` | `web-orders` |
+| New services Starching + Polishing (piece, garment-scoped) + price_list_items at every existing garment × price list, seeded at 0.00 | `db/migrations/2026_10_24_starching_polishing_services.sql` | smoke-tested via migration run; exercised incidentally by every parity test that reads `services` |
+
+Not ported (PHP itself hasn't done them, so Node stays bug-for-bug consistent with PHP rather than fixing ahead of it):
+* `modules/workshop/index.php`'s own counts — explicitly flagged in the changelog as "not yet audited" even in PHP.
+* Customer bulk import (one-off `phpMyAdmin` SQL run against the live DB, not a feature — nothing to port). The self-correcting `customer_code` pattern it uses was already adopted in Node for the first changelog's counter-drift fix.
+* Android-only items (camera permission fix, backup-script commit message) — not applicable to the web/Node port.

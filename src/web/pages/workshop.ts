@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { piecesInLine } from '../../lib/garmentPieces.js';
 import { phpEmpty } from '../../lib/php.js';
 import { wiStates, wiTerms } from '../../services/workshopInvoice.js';
 import { wsBillingScope, wsItemBelongs, wsScheduleData, wsScope } from '../../services/workshopScope.js';
@@ -48,6 +49,7 @@ export function registerWorkshopPages(app: FastifyInstance) {
     const ws = await myWs(ctx);
     const rows = await db.query<Row>(
       `SELECT wi.id, wi.status AS raw_status, wi.remarks AS store_instruction, wi.sent_at,
+       oi1.quantity AS piece_quantity, oi1.pieces_per_unit AS piece_pieces_per_unit,
        COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.id, o2.id) AS order_id,
        COALESCE(o1.store_id, o2.store_id) AS store_id, COALESCE(s1.store_name, s2.store_name) AS store_name, COALESCE(o1.due_date, o2.due_date) AS due_date,
        COALESCE(o1.urgent_level_id, o2.urgent_level_id) IS NOT NULL AS is_urgent, COALESCE(c1.full_name, c2.full_name) AS customer_name
@@ -61,10 +63,13 @@ export function registerWorkshopPages(app: FastifyInstance) {
     const urgent: Row[] = [], delayed: Row[] = [];
     const storeCounts = new Map<number, { name: string; count: number }>();
     for (const row of rows) {
+      // physical pieces, not order_item LINES — a 3-piece Set garment is 1 workshop_items row but 3 garments.
+      // Laundry rows (piece_quantity null, no oi1 join) already represent one physical garment each — no multiplication needed there.
+      row.piece_count = row.piece_quantity !== null ? piecesInLine({ quantity: row.piece_quantity, pieces_per_unit: row.piece_pieces_per_unit }) : 1;
       const current = await workshop.getCurrentStatus(Number(row.id));
       if (current === 'Store Received') continue;
       const sid = int(row.store_id);
-      if (sid) { const s = storeCounts.get(sid) ?? storeCounts.set(sid, { name: row.store_name, count: 0 }).get(sid)!; s.count++; }
+      if (sid) { const s = storeCounts.get(sid) ?? storeCounts.set(sid, { name: row.store_name, count: 0 }).get(sid)!; s.count += row.piece_count; }
       if (sourceStoreFilter && sid !== sourceStoreFilter) continue;
       row.current_status = current;
       if (['Sent', 'Received', 'Workshop'].includes(current)) buckets.Incoming!.push(row);
@@ -82,15 +87,16 @@ export function registerWorkshopPages(app: FastifyInstance) {
     const money = await ctx.loadMoney();
     const u = (p: string) => ctx.baseUrl(p);
     const schedule = await wsScheduleData(db, ws, today);
+    const pieceSum = (list: Row[]) => list.reduce((s, r) => s + Number(r.piece_count ?? 1), 0);
     const counterRows: [string, number, string, string][][] = [
-      [['Incoming', buckets.Incoming!.length, 'secondary', 'fa-inbox'], ['Accepted', buckets.Accepted!.length, 'info', 'fa-circle-check'], ['Processing', buckets.Processing!.length, 'primary', 'fa-gear'], ['Completed', buckets.Completed!.length, 'success', 'fa-box-check']],
-      [['Ready to Return', buckets.Completed!.length, 'success', 'fa-truck-ramp-box'], ['Returned', buckets.Returned!.length, 'warning', 'fa-rotate-left'], ['Unprocessed', buckets.Unprocessed!.length, 'danger', 'fa-triangle-exclamation'], ['Delayed', delayed.length, 'danger', 'fa-triangle-exclamation'], ['Urgent', urgent.length, 'danger', 'fa-bolt']],
+      [['Incoming', pieceSum(buckets.Incoming!), 'secondary', 'fa-inbox'], ['Accepted', pieceSum(buckets.Accepted!), 'info', 'fa-circle-check'], ['Processing', pieceSum(buckets.Processing!), 'primary', 'fa-gear'], ['Completed', pieceSum(buckets.Completed!), 'success', 'fa-box-check']],
+      [['Ready to Return', pieceSum(buckets.Completed!), 'success', 'fa-truck-ramp-box'], ['Returned', pieceSum(buckets.Returned!), 'warning', 'fa-rotate-left'], ['Unprocessed', pieceSum(buckets.Unprocessed!), 'danger', 'fa-triangle-exclamation'], ['Delayed', pieceSum(delayed), 'danger', 'fa-triangle-exclamation'], ['Urgent', pieceSum(urgent), 'danger', 'fa-bolt']],
     ];
     const queue = (title: string, icon: string, list: Row[], emptyMsg: string, color: string) => html`
     <div class="card wd-queue-card mb-3">
       <div class="wd-queue-header" style="border-left:4px solid var(--bs-${color}, #6c757d);">
         <span class="title"><span>${raw(icon)}</span> ${title}</span>
-        <span class="wd-queue-badge bg-${color} text-white">${list.length}</span>
+        <span class="wd-queue-badge bg-${color} text-white">${pieceSum(list)}</span>
       </div>
       ${list.length === 0 ? html`
         <div class="wd-empty-state">${emptyMsg}</div>` : html`
@@ -274,11 +280,11 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
     for (const r of anchors) (r.is_piece ? pieceIds : laundryIds).push(Number(r.id));
     const byId = new Map<number, Row>();
     if (pieceIds.length) for (const r of await db.query<Row>(
-      `SELECT wi.*, oi.quantity, oi.weight, oi.unit, oi.item_status, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
+      `SELECT wi.*, oi.quantity, oi.weight, oi.unit, oi.item_status, oi.pieces_per_unit, oi.total AS line_total, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
        FROM workshop_items wi JOIN order_items oi ON oi.id = wi.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
        WHERE wi.id IN (${pieceIds.map(() => '?').join(',')})`, pieceIds)) byId.set(Number(r.id), r);
     if (laundryIds.length) for (const r of await db.query<Row>(
-      `SELECT wi.*, lg.sequence, oi.quantity AS total_garments, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
+      `SELECT wi.*, lg.sequence, oi.quantity AS total_garments, oi.total AS line_total, oi.quantity AS batch_qty, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
        FROM workshop_items wi JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id
        WHERE wi.id IN (${laundryIds.map(() => '?').join(',')})`, laundryIds)) byId.set(Number(r.id), r);
@@ -324,19 +330,24 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
             <td><span class="badge bg-info text-dark">${it.status}</span></td>
           </tr>`)}
         </tbody>` : html`
-        <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Billing Unit</th><th>Status</th></tr></thead>
+        <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Billing Unit</th><th>Amount</th><th>Status</th></tr></thead>
         <tbody>
-        ${items.map((it, i) => html`
+        ${items.map((it, i) => {
+          const pcs = Math.max(1, int(it.pieces_per_unit ?? 1));
+          return html`
           <tr>
             <td>${i + 1}</td>
             <td>${it.order_number}</td>
             <td>${it.customer_name}</td>
             <td>${it.garment_name}</td>
             <td>${it.service_name}</td>
-            <td>${it.weight !== null ? String(it.weight) : String(it.quantity)}</td>
+            <td>${it.weight !== null ? String(it.weight) : html`${String(it.quantity)}${pcs > 1 ? html` (${flt(it.quantity) * pcs} pcs)` : ''}`}</td>
             <td>${it.billing_unit === 'weight' ? 'KG' : 'Pcs'}</td>
+            <td>${numberFormat(flt(it.line_total ?? 0), 2)}</td>
             <td><span class="badge bg-info text-dark">${it.status}</span></td>
-          </tr>`)}
+          </tr>`;
+        })}
+        <tr><td colspan="7" class="text-end fw-bold">Total Amount</td><td class="fw-bold">${numberFormat(items.reduce((s, it) => s + flt(it.line_total ?? 0), 0), 2)}</td><td></td></tr>
         </tbody>`}
       </table>
     </div>
@@ -399,10 +410,17 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
   </div>
   ${!phpEmpty(challan.remarks) ? html`<p><strong>Remarks:</strong> ${challan.remarks}</p>` : ''}
   <table>
-    ${isLaundry ? html`
-    <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Sequence</th><th>Garment</th><th>Service</th></tr></thead>
-    <tbody>
-    ${items.map((it, i) => html`
+    ${isLaundry ? (() => {
+      // a laundry batch's amount is for the WHOLE order_item (the whole weighed batch), not per individual garment within it --
+      // showing it once, on the batch's first row, avoids implying each garment has its own separate price.
+      const seenBatch = new Set<string>();
+      let total = 0;
+      const rows = items.map((it, i) => {
+        const batchKey = `${it.order_number}|${it.garment_name}|${it.total_garments}`;
+        const showAmount = !seenBatch.has(batchKey);
+        seenBatch.add(batchKey);
+        if (showAmount) total += flt(it.line_total ?? 0);
+        return html`
       <tr>
         <td>${i + 1}</td>
         <td>${it.order_number}</td>
@@ -410,23 +428,47 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         <td>${int(it.sequence)} / ${int(it.total_garments)}</td>
         <td>${it.garment_name}</td>
         <td>${it.service_name}</td>
-      </tr>`)}
-    </tbody>` : html`
-    <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Unit</th></tr></thead>
+        <td style="text-align:right;">${showAmount ? numberFormat(flt(it.line_total ?? 0), 2) : raw('&mdash;')}</td>
+      </tr>`;
+      });
+      return html`
+    <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Sequence</th><th>Garment</th><th>Service</th><th style="text-align:right;">Amount (whole batch)</th></tr></thead>
     <tbody>
-    ${items.map((it, i) => html`
+    ${rows}
+    </tbody>
+    <tfoot><tr><td colspan="6" style="text-align:right;font-weight:700;">Total Amount</td><td style="text-align:right;font-weight:700;">${numberFormat(total, 2)}</td></tr></tfoot>`;
+    })() : (() => {
+      let total = 0;
+      const rows = items.map((it, i) => {
+        const pcs = Math.max(1, int(it.pieces_per_unit ?? 1));
+        total += flt(it.line_total ?? 0);
+        return html`
       <tr>
         <td>${i + 1}</td>
         <td>${it.order_number}</td>
         <td>${it.customer_name}</td>
         <td>${it.garment_name}</td>
         <td>${it.service_name}</td>
-        <td>${it.weight !== null ? String(it.weight) : String(it.quantity)}</td>
+        <td>${it.weight !== null ? String(it.weight) : html`${String(it.quantity)}${pcs > 1 ? html` (${flt(it.quantity) * pcs} pcs)` : ''}`}</td>
         <td>${it.billing_unit === 'weight' ? 'KG' : 'Pcs'}</td>
-      </tr>`)}
-    </tbody>`}
+        <td style="text-align:right;">${numberFormat(flt(it.line_total ?? 0), 2)}</td>
+      </tr>`;
+      });
+      return html`
+    <thead><tr><th>#</th><th>Order</th><th>Customer</th><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Unit</th><th style="text-align:right;">Amount</th></tr></thead>
+    <tbody>
+    ${rows}
+    </tbody>
+    <tfoot><tr><td colspan="7" style="text-align:right;font-weight:700;">Total Amount</td><td style="text-align:right;font-weight:700;">${numberFormat(total, 2)}</td></tr></tfoot>`;
+    })()}
   </table>
-  <p style="margin-top:20px;font-size:11px;color:#888;">Total items: ${items.length}</p>
+  <!-- the same piece-vs-line undercount pattern as tag printing / the workshop dashboard: a weight-mode row already represents one
+       physical garment (laundry_garments are tracked individually), a piece-mode row needs its own pieces_per_unit folded in. -->
+  <p style="margin-top:20px;font-size:11px;color:#888;">Total garments (pieces): ${items.reduce((s, it) => s + (it.billing_unit === 'weight' ? 1 : piecesInLine({ quantity: it.quantity, pieces_per_unit: it.pieces_per_unit })), 0)} &middot; Total lines: ${items.length}</p>
+  <div style="display:flex;justify-content:space-between;margin-top:36px;font-size:12px;">
+    <div>Driver Name: _______________________</div>
+    <div>Driver Signature: _______________________</div>
+  </div>
 </div>
 </body>
 </html>`;

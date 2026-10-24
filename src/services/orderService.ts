@@ -888,6 +888,34 @@ export class OrderService {
     return { success: true };
   }
 
+  /**
+   * Renumbers every remaining tag/barcode on an order to a clean, gapless 1..N (N = total
+   * physical pieces across its order_items), in their existing relative order. Called after
+   * removeItem() closes a gap left by a deleted item. Also rebuilds barcode_value/
+   * short_qr_payload — they are separate, pre-built strings (e.g. "A0005-18") stored at
+   * tag-creation time via GarmentTagService.buildIdentifier(), not a live view of item_sequence,
+   * so fixing the sequence column alone leaves the printed tag-id text stale.
+   * Deliberately simple: doesn't try to preserve any particular tag's OLD number — the whole
+   * point is that the old numbering is no longer trustworthy once an item's gone. Accepted
+   * tradeoff: a tag already printed before the removal may no longer match its physical
+   * garment's new number (items changed, so tags need reprinting anyway; a clean 1..N beats a
+   * confusing 1..N-with-a-hole).
+   */
+  private async renumberTagSequences(t: Db, orderId: number): Promise<void> {
+    const [order] = await t.query<{ short_order_code: string | null; order_number: string }>('SELECT short_order_code, order_number FROM orders WHERE id = ?', [orderId]);
+    const code = order?.short_order_code ?? order?.order_number ?? null;
+    if (code === null) return;
+    const ids = (await t.query<{ id: number }>('SELECT id FROM barcodes WHERE order_id = ? ORDER BY item_sequence ASC, piece_index ASC', [orderId])).map((r) => Number(r.id));
+    if (!ids.length) return;
+    const tags = new GarmentTagService(t);
+    let seq = 1;
+    for (const barcodeId of ids) {
+      const newIdentifier = await tags.buildIdentifier(code, seq);
+      await t.execute('UPDATE barcodes SET item_sequence = ?, barcode_value = ?, short_qr_payload = ? WHERE id = ?', [seq, newIdentifier, newIdentifier, barcodeId]);
+      seq++;
+    }
+  }
+
   async removeItem(orderId: number, itemId: number, actor: Actor): Promise<Result> {
     const [order] = await this.db.query<Raw>('SELECT * FROM orders WHERE id = ?', [orderId]);
     if (!order) return fail('Order not found.');
@@ -903,6 +931,7 @@ export class OrderService {
         if (!locked || !(await this.isEditable(locked as { status_id: number }, t))) throw new BusinessError('This order can no longer be edited — its status changed a moment ago.');
         await t.execute('DELETE FROM order_items WHERE id = ?', [itemId]);
         await sc.audit.record({ action: 'edit', module: 'orders', recordId: String(orderId), oldValue: item, newValue: { item_removed: itemId }, userId: actor.userId, ip: actor.ip });
+        await this.renumberTagSequences(t, orderId);
         await this.recalculateAggregates(sc, orderId, actor, true);
       });
     } catch (e) {

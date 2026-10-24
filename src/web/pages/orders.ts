@@ -5,7 +5,7 @@ import { WebRedirect, WebText, forbiddenPage, webPage, type WebCtx } from '../co
 import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
-import { invoiceScriptBase, invoiceScriptEnd, invoiceScriptWhatsapp, invoiceStyle } from './invoice.static.js';
+import { invoicePdfScriptTag, invoiceScriptBase, invoiceScriptEnd, invoiceScriptPdf, invoiceScriptWhatsapp, invoiceStyle } from './invoice.static.js';
 import { orderListStyle, orderPaymentScript, orderRefundScript, orderViewScript, orderViewStyle, receiptStyle } from './orders.static.js';
 
 type Row = Record<string, any>;
@@ -221,6 +221,8 @@ ${raw(orderListStyle(u, jsonEncode, e))}
         <a href="${u('modules/orders/add_items.php?order_id=' + id)}" class="ov-btn"><i class="fa-solid fa-plus"></i>Add Item</a>` : ''}` : ''}
       ${ctx.can('billing.view') ? html`
         <a href="${u('modules/orders/invoice.php?id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-file-invoice"></i>Invoice</a>
+        ${!phpEmpty(order.customer_mobile) ? html`
+        <button type="button" class="ov-btn" id="btnSendInvoiceWhatsapp" style="background:#25D366;color:#fff;border-color:#25D366;"><i class="fa-brands fa-whatsapp"></i>Send Invoice</button>` : ''}
         ${ctx.can('garment_tags.print') || ctx.can('garment_tags.reprint') ? html`
         <a href="${u('modules/barcode/tags_print.php?order_id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-tag"></i>Tags</a>` : ''}` : ''}
       ${ctx.can('payments.refund') && flt(order.total_paid) > 0 ? html`
@@ -418,7 +420,7 @@ ${isEditable && (ctx.can('orders.edit') || ctx.can('orders.cancel')) ? html`
   </div>
 </div>
 
-${raw(orderViewScript(u, jsonEncode, e, { id }))}` : ''}
+${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken() }))}` : ''}
 `);
   });
 
@@ -898,6 +900,7 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
 </head>
 <body>
 <div class="actions"><button onclick="window.print()">Print Invoice</button>
+  <button type="button" id="downloadInvoicePdfBtn">Download PDF</button>
   ${hasMobile ? html`
   <button type="button" id="sendWhatsappInvoiceBtn" style="background:#25D366;">Send via WhatsApp</button>` : ''}
   <span id="localPrintWrap" style="display:none;">
@@ -905,7 +908,7 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
     <button type="button" id="localPrintBtn">Print via Local Service</button>
   </span>
   <a href="${u('modules/orders/view.php?id=' + id)}">Back to Order</a></div>
-<div class="sheet">
+<div class="sheet" id="invoiceSheet">
   <div class="header">
     <div>
       ${!phpEmpty(logoPath) && invOn('show_logo') ? html`<img src="${u('uploads/logo/' + logoPath)}" style="max-height:50px;margin-bottom:8px;">` : ''}
@@ -1006,6 +1009,10 @@ ${raw(invoiceStyle({ isDefaultA4, isThermal, widthMm, heightMm }))}
   </div>` : ''}
 </div>
 ${raw(invoiceScriptBase())}${hasMobile ? raw(invoiceScriptWhatsapp(u, jsonEncode, e, id, ctx.csrfToken())) : ''}${raw(invoiceScriptEnd)}
+${raw(invoicePdfScriptTag)}
+<script>
+${raw(invoiceScriptPdf(String(order.invoice_number ?? '').replace(/[^A-Za-z0-9_-]/g, '_')))}
+</script>
 </body>
 </html>`;
   });

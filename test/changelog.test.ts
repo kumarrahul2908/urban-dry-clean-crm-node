@@ -77,17 +77,28 @@ describe.skipIf(!enabled)('changelog 2026-10-20..22 (Node-only checks)', () => {
     expect((await db.query<any>('SELECT payment_number FROM payments ORDER BY id DESC LIMIT 1'))[0].payment_number).toMatch(/^PAY-\d{6}$/);
   });
 
-  it('tag numbers never collide after an item in the middle of an order was removed', async () => {
-    const o = await app.services.orders.createOrder({ customer_id: 2, items: [line(4, 1, 2), line(1, 1, 1), line(5, 1, 1)] }, A, true, 1); // 4 + 1 + 3 pieces
+  it('removing an item renumbers the remaining tags to a clean 1..N (new business rule, 2026-10-23..24 changelog) -- both item_sequence AND the printed tag-id text', async () => {
+    const o = await app.services.orders.createOrder({ customer_id: 2, items: [line(4, 1, 2), line(1, 1, 1), line(5, 1, 1)] }, A, true, 1); // 4 + 1 + 3 = 8 pieces
     expect(o.success).toBe(true);
+    const [shortCode] = await db.query<any>('SELECT short_order_code FROM orders WHERE id = ?', [o.order_id]);
     const items = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ? ORDER BY id', [o.order_id])).map((r: any) => r.id);
+    const before = await db.query<any>('SELECT item_sequence FROM barcodes WHERE order_id = ? ORDER BY item_sequence', [o.order_id]);
+    expect(before.map((r: any) => r.item_sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+
+    // remove the first item (4 pieces: sequences 1-4) -- the remaining 4 pieces (previously 5-8) must renumber to a gapless 1..4, not stay 5..8
     const rm = await app.services.orders.removeItem(o.order_id as number, items[0], A);
-    expect(rm.success).toBe(true);
+    expect(rm.success, JSON.stringify(rm)).toBe(true);
+    const after = await db.query<any>('SELECT item_sequence, piece_index, barcode_value, short_qr_payload FROM barcodes WHERE order_id = ? ORDER BY item_sequence', [o.order_id]);
+    expect(after.map((r: any) => r.item_sequence)).toEqual([1, 2, 3, 4]);
+    // the printed tag-id text is a SEPARATE pre-built string (barcode_value/short_qr_payload) -- must be rebuilt to match the NEW sequence, not left stale
+    expect(after.map((r: any) => r.barcode_value)).toEqual([1, 2, 3, 4].map((n) => `${shortCode.short_order_code}-0${n}`));
+    expect(after.map((r: any) => r.short_qr_payload)).toEqual(after.map((r: any) => r.barcode_value));
+
+    // a new item's sequence picks up right after the renumbered total (4), with no gap and no collision
     const add = await app.services.orders.addItem(o.order_id as number, line(1, 1, 1), A);
     expect(add.success, JSON.stringify(add)).toBe(true);
     const seq = (await db.query<any>('SELECT item_sequence FROM barcodes WHERE order_id = ? ORDER BY item_sequence', [o.order_id])).map((r: any) => r.item_sequence);
-    expect(new Set(seq).size).toBe(seq.length);
-    expect(Math.max(...seq)).toBe(9); // the new tag continues after the highest tag already printed (8)
+    expect(seq).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('workshop invoice photos: upload (bill / garment line), list, delete, scoped to the workshop that owns the bill', async () => {

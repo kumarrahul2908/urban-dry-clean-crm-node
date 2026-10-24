@@ -50,7 +50,7 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
       for (const r of await db.query<Row>(
         `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names,
          o.order_number, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
-         COALESCE(gt.printed_count, 0) AS printed_count, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS total_items
+         COALESCE(gt.printed_count, 0) AS printed_count, (SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) FROM order_items WHERE order_id = o.id) AS total_items
          FROM barcodes bc JOIN order_items oi ON oi.id = bc.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id
          JOIN services s ON s.id = oi.service_id LEFT JOIN colors col ON col.id = oi.color_id LEFT JOIN brands br ON br.id = oi.brand_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id
          WHERE bc.id IN (${pieceIds.map(() => '?').join(',')})`, pieceIds)) byId.set(int(r.barcode_id), r);
@@ -119,10 +119,13 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
       if (!phpEmpty(t.brand_name)) extras.push(e(t.brand_name));
       const defects = t.order_item_id !== null ? defectsByItem.get(Number(t.order_item_id)) : undefined;
       if (defects && defects.length) extras.push(e(defects.join(', ')));
-      // a Set garment prints ONE tag per physical piece: show the garment name AND (when Piece Names are set) this piece's own name
+      // a Set garment prints ONE tag per physical piece: show the garment name AND (when Piece Names are set) this piece's own name.
+      // With quantity > 1 of the same Set garment, piece_index keeps counting past pieces_per_unit (e.g. 1..9 for 3 outfits of 3), so the
+      // within-set name must cycle: ((piece_index - 1) % pieces_per_unit) + 1, not piece_index itself.
       const pieceNameList = !phpEmpty(t.piece_names) ? String(t.piece_names).split(',').map((x) => x.trim()) : [];
-      const pieceParticular = pieceNameList[int(t.piece_index) - 1] ?? null;
       const piecesPerUnit = int(t.pieces_per_unit);
+      const withinSetIndex = ((int(t.piece_index) - 1) % piecesPerUnit) + 1;
+      const pieceParticular = pieceNameList[withinSetIndex - 1] ?? null;
       const totalPieces = Math.round(Number(t.quantity) * piecesPerUnit);
       tagBlocks.push(html`
   <div class="tag"${raw(inline)}>
@@ -143,8 +146,13 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     ${!phpEmpty(t.remarks) && visible('remark') ? html`<div class="remark" style="${fieldStyle('remark', 'margin-bottom:2px;')}">${t.remarks}</div>` : ''}
     ${visible('create_date') ? html`<div class="create-date" style="${fieldStyle('create_date', 'margin-bottom:6px;')}">${raw(ctx.date(t.order_date, 'd M y D'))}</div>` : ''}
 
-    ${visible('garment_name') ? html`<div class="garment-name" style="${fieldStyle('garment_name', 'margin-bottom:4px;')}">${t.garment_name}</div>` : ''}
-    ${pieceParticular !== null && visible('piece_of_set') ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-bottom:2px;')}">${pieceParticular}</div>` : ''}
+    <!-- a specific piece particular (e.g. "Kameez") replaces the combined garment name on this tag, redundant once it's shown; a garment with
+         no particular (ordinary, or a Set with no piece_names configured) still shows garment_name as its only identifying text -->
+    ${pieceParticular === null && visible('garment_name') ? html`<div class="garment-name" style="${fieldStyle('garment_name', 'margin-bottom:4px;')}">${t.garment_name}</div>` : ''}
+    <!-- unconditional (not gated by the piece_of_set toggle): which physical piece this is, is load-bearing for a Set garment, not decorative --
+         the toggle still controls styling via fieldStyle() below. "(item_sequence/total_items)" is the order-wide piece position, same numbers
+         as the tag-id's own "X / Y" line above, not which numbered instance of a repeated outfit this is. -->
+    ${pieceParticular !== null ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-bottom:2px;')}">${pieceParticular} (${int(t.item_sequence)}/${int(t.total_items)})</div>` : ''}
     ${visible('due_date') ? html`<div class="due-date" style="${fieldStyle('due_date', 'margin-top:4px;')}">${raw(ctx.date(t.due_date, 'd M y D'))}${!phpEmpty(t.due_time) ? raw(' ' + ctx.date(t.due_time, 'h:i A')) : ''}</div>` : ''}
 
     ${extras.length && visible('extra_details') ? html`<div class="extra-details" style="${fieldStyle('extra_details', 'margin-top:6px;')}">${raw(extras.join(' &middot; '))}</div>` : ''}

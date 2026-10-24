@@ -263,6 +263,29 @@ if (cancelConfirmBtn) cancelConfirmBtn.addEventListener('click', function () {
     }
   });
 });
+const btnSendInvoiceWhatsapp = document.getElementById('btnSendInvoiceWhatsapp');
+if (btnSendInvoiceWhatsapp) btnSendInvoiceWhatsapp.addEventListener('click', function () {
+  const btn = this;
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = 'Sending...';
+  const formData = new FormData();
+  formData.append('order_id', ORDER_ID);
+  formData.append('csrf_token', ${j(a.csrf)});
+  fetch('${h(u('api/whatsapp_send_invoice.php'))}', { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(function (result) {
+      btn.disabled = false; btn.innerHTML = originalHtml;
+      if (result.success) {
+        alert('Invoice sent via WhatsApp.');
+      } else {
+        alert('Could not send: ' + (result.error || 'Unknown error.'));
+      }
+    })
+    .catch(function () {
+      btn.disabled = false; btn.innerHTML = originalHtml;
+      alert('Could not reach the server. Please try again.');
+    });
+});
 </script>`;
 export const orderPaymentScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}): string => `<script>
 document.getElementById('addRow')?.addEventListener('click', function () {

@@ -139,3 +139,34 @@ export const invoiceScriptWhatsapp = (u: (p: string) => string, j: (v: unknown) 
 });`;
 
 export const invoiceScriptEnd = '\n</script>';
+
+/**
+ * Rahul: a real one-click PDF download for the customer invoice -- the browser's own "Print >
+ * Save as PDF" always technically worked but wasn't obvious/discoverable. No server-side PDF
+ * library exists in this app (would need a Composer install on shared hosting) -- html2pdf.js
+ * (client-side, renders the .sheet element itself) avoids that entirely and needs nothing
+ * server-side beyond this one CDN script tag.
+ */
+export const invoicePdfScriptTag = '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>';
+export const invoiceScriptPdf = (sanitizedInvoiceNumber: string): string => `// Rahul: a real one-click PDF download for the customer invoice -- the browser's own
+// "Print > Save as PDF" always technically worked but wasn't obvious/discoverable. No
+// server-side PDF library exists in this app (would need a Composer install on shared
+// hosting) -- html2pdf.js (client-side, renders the .sheet element itself) avoids that
+// entirely and needs nothing server-side beyond this one CDN script tag.
+document.getElementById('downloadInvoicePdfBtn').addEventListener('click', function () {
+  const btn = this;
+  const original = btn.textContent;
+  btn.textContent = 'Preparing...';
+  btn.disabled = true;
+  const filename = 'Invoice-${sanitizedInvoiceNumber}.pdf';
+  html2pdf().set({
+    margin: 10,
+    filename: filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+  }).from(document.getElementById('invoiceSheet')).save().finally(function () {
+    btn.textContent = original;
+    btn.disabled = false;
+  });
+});`;

@@ -28,6 +28,7 @@ PY
 # explicit tie-breakers to this throwaway copy that the Node port has; otherwise a parity run could flake on ordering alone.
 sed -i "s/ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number\"/ORDER BY t.store_name, t.due_date, t.due_time IS NULL, t.due_time, t.order_number, t.wi_id\"/" "$OUT/includes/WorkshopScope.php"
 sed -i "s/ORDER BY store_name, order_number\"/ORDER BY store_name, order_number, oi.id\"/" "$OUT/includes/WorkshopInvoice.php"
+sed -i "s/ORDER BY store_name, o.order_number\"/ORDER BY store_name, o.order_number, oi.id\"/" "$OUT/includes/WorkshopInvoice.php"
 sed -i "s/WHERE wbi.bill_id = ? ORDER BY o.order_number\"/WHERE wbi.bill_id = ? ORDER BY o.order_number, wbi.id\"/" "$OUT/api/mobile/workshop_billing_detail.php"
 sed -i "s/     ORDER BY ar.due_date\"/     ORDER BY ar.due_date, ar.id\"/" "$OUT/api/mobile/outstanding_list.php"
 mkdir -p "$OUT/config"

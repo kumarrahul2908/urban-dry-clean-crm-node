@@ -129,6 +129,37 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     for (const who of ['ws', 'orphan', 'admin'] as const) { const c = await login(who); await both(c.php, c.node, '/modules/workshop/report.php?period=30days', `report ${who}`, true); }
   });
 
+  /**
+   * seedRich's base dataset only uses pieces_per_unit=1 garments, so the plain `prepare()` tests above never actually
+   * exercise the piece-vs-line undercount fix (2026-10-23..24 changelog, section 3) -- old and new code produce
+   * identical output when every multiplier is 1. This sends a Set garment (Socks, pieces_per_unit=2) through a real
+   * challan so dashboard/challan/report counts and amounts are compared against the real, updated PHP with a
+   * multiplier that actually matters.
+   */
+  const prepareSetGarment = async (db: Db): Promise<void> => {
+    const svc = buildServices(h.env, db, { hooks: noopOrderHooks });
+    const A = { userId: 1 };
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('workshop.manage','x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 1, id FROM permissions WHERE permission_key = 'workshop.manage'");
+    // Socks (garment 4, pieces_per_unit=2) x2 = 4 pieces, 1 line; Shirt (garment 1) x1 = 1 piece, 1 line -- 5 pieces, 2 lines, 2 order_items
+    const o = await svc.orders.createOrder({ customer_id: 2, items: [{ garment_id: 4, service_id: 1, quantity: 2 }, { garment_id: 1, service_id: 1, quantity: 1 }] }, A, true, 1, true);
+    if (!o.success) throw new Error(JSON.stringify(o));
+    const items = await db.query<any>('SELECT id FROM order_items WHERE order_id = ? ORDER BY id', [o.order_id]);
+    const c = await svc.workshop.createChallan(1, items.map((i: any) => i.id), 'set garment batch', A) as any;
+    if (!c.success) throw new Error(JSON.stringify(c));
+  };
+
+  it('Set garments through the workshop: dashboard piece counts, challan amount/pieces/driver-signature, report piece counts + short code', async () => {
+    await seedRich(prepareSetGarment);
+    const challanId = (await h.db.query<any>('SELECT id FROM workshop_challans ORDER BY id'))[0].id;
+    const { php, node } = await asBoss();
+    await both(php, node, '/modules/workshop/dashboard.php', 'dashboard (Set garment piece counts)', true);
+    await both(php, node, `/modules/workshop/challan_view.php?id=${challanId}`, 'challan_view (Set garment amount)', true);
+    await both(php, node, `/modules/workshop/challan_print.php?id=${challanId}`, 'challan_print (Set garment amount + driver signature)', true);
+    await h.db.execute("UPDATE workshop_items SET sent_at = NOW() - INTERVAL 1 DAY");
+    await both(php, node, '/modules/workshop/report.php?period=30days', 'report (Set garment piece counts + short code)', true);
+  });
+
   const prepareBills = async (db: Db) => {
     await prepare(db);
     await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 5, id FROM permissions WHERE permission_key = 'billing.view'");
