@@ -37,7 +37,7 @@ searchInput.addEventListener('input', function () {
         (data.results || []).forEach(function (o) {
           const div = document.createElement('div');
           div.style.padding = '8px 12px'; div.style.cursor = 'pointer';
-          div.textContent = o.order_number + ' — ' + o.customer_name + ' (' + o.mobile + ')';
+          div.textContent = (o.short_order_code || o.order_number) + ' — ' + o.customer_name + ' (' + o.mobile + ')';
           div.addEventListener('click', function () { window.location.href = '?order_id=' + o.id; });
           results.appendChild(div);
         });

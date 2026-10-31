@@ -476,7 +476,20 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
     WA('store_receive', { workshop_item_id: 999 }),
     WA('start_processing', { workshop_item_id: 0 }),
     WA('explode', { workshop_item_id: 1 }),
-    G('workshop_queue'),
+    // QC/Ironing/Packaging (changelog 2026-10-23..30): Processing -> QC -> Ready -> Packed, between start_processing
+    // and complete_processing, for a piece item -- wi2 is at raw 'Processing' from the seed (laundry items reject these).
+    WA('complete_washing', { workshop_item_id: 4 }), // laundry-anchored -- rejected outright, not a silent no-op
+    WA('complete_washing', { workshop_item_id: 2 }),
+    WA('pass_qc', { workshop_item_id: 2, remarks: 'looks good' }),
+    WA('pass_qc', { workshop_item_id: 2 }), // wrong stage now (already Ready) -- same error both sides
+    WA('complete_ironing', { workshop_item_id: 2, remarks: 'pressed' }),
+    WA('complete_processing', { workshop_item_id: 2 }), // wi2 is 'Completed' now, not 'Processing' -- rejected on the OUTER from-state check, not the QC gate
+    // force-receive: jumps straight to Store Received from whatever state an item is actually at,
+    // bypassing every intermediate check, for a garment that physically came back untracked.
+    WA('force_receive', { workshop_item_id: 3, remarks: 'checked by store' }), // wi3 was Accepted above (never fully processed)
+    WA('force_receive', { workshop_item_id: 3 }), // already Store Received -- nothing to force-receive
+    WA('force_receive', { workshop_item_id: 999 }),
+    G('workshop_queue'), // current_status now present on every piece/laundry row; store_receive_queue broadened
     G('workshop_schedule'),
     // billing
     G('workshop_billing_list'),

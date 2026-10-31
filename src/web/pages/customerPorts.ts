@@ -6,7 +6,7 @@ import { WebText, webPage, type WebCtx } from '../context.js';
 import { csvBody } from '../csv.js';
 import { httpBuildQuery, int } from '../format.js';
 import { html, raw, type Raw } from '../html.js';
-import { importCleanupTemp, importStoreTempUpload, importTempPath, parseCsvFile } from '../importTemp.js';
+import { importCleanupTemp, importParseTemp, importStoreTempUpload } from '../importTemp.js';
 import { layout } from '../layout.js';
 
 type Row = Record<string, any>;
@@ -25,8 +25,9 @@ const IMPORT_TARGET_FIELDS: Record<string, string> = {
 
 const GUESS: Record<string, string[]> = {
   customer_code: ['customer code', 'code', 'custcode', 'cust code'], title: ['title'], full_name: ['name', 'customer name', 'full name'],
-  mobile: ['mobile', 'phone', 'mobile number', 'phone number'], alt_mobile: ['alternate mobile', 'alt mobile', 'secondary mobile'], email: ['email', 'email address'],
-  address: ['address'], city: ['city'], area: ['area', 'locality'], state: ['state'], pincode: ['pincode', 'pin', 'zip', 'postal code'], company: ['company'],
+  mobile: ['mobile', 'phone', 'mobile number', 'phone number', 'mobile no', 'mob no', 'mob', 'contact', 'contact number', 'contact no'], alt_mobile: ['alternate mobile', 'alt mobile', 'secondary mobile'], email: ['email', 'email address'],
+  // Rahul's own customer list used "ADRESS" (one 'd') -- common enough a typo in real-world spreadsheets to list explicitly.
+  address: ['address', 'adress', 'addres'], city: ['city'], area: ['area', 'locality'], state: ['state'], pincode: ['pincode', 'pin', 'zip', 'postal code'], company: ['company'],
   birthday: ['dob', 'date of birth', 'birthday'], anniversary: ['anniversary'], notes: ['notes', 'remarks'], price_list: ['price list', 'pricelist'],
   opening_wallet: ['opening balance', 'wallet', 'advance', 'opening wallet'],
 };
@@ -184,7 +185,7 @@ export function registerCustomerPortPages(app: FastifyInstance) {
       if (step === 'upload') {
         try {
           token = await importStoreTempUpload(ctx, 'file');
-          const parsed = await parseCsvFile(importTempPath(ctx, token));
+          const parsed = await importParseTemp(ctx, token);
           if (parsed.headers.length === 0 || parsed.rows.length === 0) {
             await importCleanupTemp(ctx, token);
             errors.push('The file has no headers or no data rows.');
@@ -199,7 +200,7 @@ export function registerCustomerPortPages(app: FastifyInstance) {
         const mapping: Record<string, string> = {};
         for (const h of hs) mapping[h] = clean(body(ctx)[`map[${h}]`]);
         try {
-          const parsed = await parseCsvFile(importTempPath(ctx, token));
+          const parsed = await importParseTemp(ctx, token);
           preview = await buildPreview(parsed.rows, mapping);
           ctx.set('customer_import_mapping', mapping);
           step = 'preview';
@@ -209,7 +210,7 @@ export function registerCustomerPortPages(app: FastifyInstance) {
         const policy = ['skip', 'update', 'create'].includes(policyRaw) ? policyRaw : 'skip';
         const mapping = (ctx.data.customer_import_mapping as Record<string, string> | undefined) ?? {};
         try {
-          const parsed = await parseCsvFile(importTempPath(ctx, token));
+          const parsed = await importParseTemp(ctx, token);
           const rows = await buildPreview(parsed.rows, mapping);
           let created = 0, updated = 0, skipped = 0, errorCount = 0;
           await db.tx(async (t) => {
@@ -264,7 +265,7 @@ export function registerCustomerPortPages(app: FastifyInstance) {
       headers = (ctx.data.customer_import_headers as string[] | undefined) ?? [];
       const mapping = (ctx.data.customer_import_mapping as Record<string, string> | undefined) ?? {};
       try {
-        const parsed = await parseCsvFile(importTempPath(ctx, token));
+        const parsed = await importParseTemp(ctx, token);
         preview = await buildPreview(parsed.rows, mapping);
       } catch (e) { errors.push((e as Error).message); step = 'upload'; }
     }
@@ -273,13 +274,13 @@ export function registerCustomerPortPages(app: FastifyInstance) {
     let content: Raw | string = '';
     if (step === 'upload') {
       content = html`
-        <h6 class="fw-bold">Import Customers from CSV</h6>
+        <h6 class="fw-bold">Import Customers</h6>
         <p class="text-muted">Migrate your customer database (e.g. from QDC). You'll map your file's columns to Urban Dry Clean fields before anything is imported.</p>
         <a href="?template=1" class="btn btn-outline-secondary btn-sm mb-3"><i class="fa-solid fa-download me-1"></i>Download Sample Template</a>
         <form method="POST" enctype="multipart/form-data">
           ${ctx.csrfField()}
           <input type="hidden" name="step" value="upload">
-          <div class="mb-3"><input type="file" name="file" class="form-control" accept=".csv" required></div>
+          <div class="mb-3"><input type="file" name="file" class="form-control" accept=".csv,.xlsx" required><div class="form-text">CSV or Excel (.xlsx). A multi-sheet Excel file has every sheet's rows combined together.</div></div>
           <button class="btn btn-primary" type="submit"><i class="fa-solid fa-upload me-1"></i>Upload</button>
         </form>`;
     } else if (step === 'mapping') {

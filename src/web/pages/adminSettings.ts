@@ -35,6 +35,18 @@ export function registerAdminSettingsPages(app: FastifyInstance) {
     if (req.method === 'POST' && 'save_settings' in p) {
       if (!ctx.csrfValid()) return csrfFail();
       if ('short_order_code_prefix' in p && !/^[A-Za-z]$/.test(str(p.short_order_code_prefix).trim())) errors.push('Order Code prefix must be exactly one alphabetic character.');
+      // Each store can have its own Order Code prefix letter -- a per-store override of the single
+      // global prefix above. Stores this page doesn't list (deactivated, or new ones added after
+      // page load) are simply not in the body, so nothing to validate/save for those.
+      const storePrefixUpdates = new Map<number, string | null>();
+      for (const [k, v] of Object.entries(p)) {
+        const m = /^store_prefix_(\d+)$/.exec(k);
+        if (!m) continue;
+        const sid = toInt(m[1]);
+        const val = str(v).trim().toUpperCase();
+        if (val !== '' && !/^[A-Z]$/.test(val)) { errors.push(`Store #${sid}'s Order Code prefix must be exactly one alphabetic character.`); continue; }
+        storePrefixUpdates.set(sid, val === '' ? null : val);
+      }
       if ('short_order_code_digits' in p) {
         const d = toInt(p.short_order_code_digits);
         if (d < 1 || d > 10) errors.push('Order Code digit length must be between 1 and 10.');
@@ -47,6 +59,10 @@ export function registerAdminSettingsPages(app: FastifyInstance) {
           if (key === 'short_order_code_enabled') value = 'short_order_code_enabled' in p ? '1' : '0';
           if (key === 'short_order_code_prefix') value = value.trim().toUpperCase();
           await db.execute('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)', [key, value]);
+        }
+        if (storePrefixUpdates.size) {
+          for (const [sid, val] of storePrefixUpdates) await db.execute('UPDATE stores SET code_prefix = ? WHERE id = ?', [val, sid]);
+          await audit.record({ action: 'edit', module: 'stores', recordId: 'code_prefix', newValue: Object.fromEntries(storePrefixUpdates), userId, ip: req.ip });
         }
         await audit.record({ action: 'edit', module: 'settings', recordId: 'business_settings', newValue: { keys: EDITABLE_KEYS }, userId, ip: req.ip });
         ctx.flashSet('success', 'Settings updated successfully.');
@@ -78,8 +94,9 @@ export function registerAdminSettingsPages(app: FastifyInstance) {
       if (!errors.length) return new WebRedirect('modules/admin/settings.php');
     }
     const currentLogo = (await ctx.setting('logo_path', '')) ?? '';
+    const activeStores = await db.query<Row>('SELECT id, store_name, code_prefix FROM stores WHERE is_active=1 ORDER BY store_name');
     const h = await tplHelpers(ctx);
-    return layout(ctx, { title: 'Admin Settings' }, raw(tplAdminSettings({ MAX_UPLOAD_SIZE_MB, currentLogo, errors }, h)));
+    return layout(ctx, { title: 'Admin Settings' }, raw(tplAdminSettings({ MAX_UPLOAD_SIZE_MB, currentLogo, errors, activeStores }, h)));
   });
 
   // ---- admin/print_settings ---------------------------------------------------------------------

@@ -173,7 +173,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       if (viewBill) {
         try { viewSnap = JSON.parse(String(viewBill.snapshot_json ?? '')) || {}; } catch { viewSnap = {}; }
         viewItems = await db.query<Row>(
-          `SELECT wbi.order_item_id, wbi.item_value, o.id AS order_id, o.order_number, g.garment_name, c.full_name AS customer_name, COALESCE(s2.store_name, 'Unassigned') AS store_name
+          `SELECT wbi.order_item_id, wbi.item_value, o.id AS order_id, o.order_number, o.short_order_code, g.garment_name, c.full_name AS customer_name, COALESCE(s2.store_name, 'Unassigned') AS store_name
            FROM workshop_bill_items wbi JOIN order_items oi ON oi.id = wbi.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
            LEFT JOIN stores s2 ON s2.id = o.store_id LEFT JOIN garments g ON g.id = oi.garment_id WHERE wbi.bill_id = ? ORDER BY store_name, o.order_number`, [viewId]);
         viewGroups = groupByStore(viewItems);
@@ -329,7 +329,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
                 </tr>` : ''}
                 ${grp.items.map((it) => html`
                 <tr>
-                  <td><a href="${u('modules/orders/view.php?id=' + it.order_id)}" target="_blank">${it.order_number}</a></td>
+                  <td><a href="${u('modules/orders/view.php?id=' + it.order_id)}" target="_blank">${it.short_order_code ?? it.order_number}</a></td>
                   <td>${it.customer_name}</td>
                   <td>${String(it.garment_name ?? '')}
                     ${r.basis === 'whole' && phpEmpty(it.was_sent) ? html`
@@ -469,7 +469,7 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
                 </tr>` : ''}
                 ${grp.items.map((it) => html`
                 <tr>
-                  <td><a href="${u('modules/orders/view.php?id=' + it.order_id)}">${it.order_number}</a></td>
+                  <td><a href="${u('modules/orders/view.php?id=' + it.order_id)}">${it.short_order_code ?? it.order_number}</a></td>
                   <td>${it.customer_name}</td>
                   <td>${String(it.garment_name ?? '')}</td>
                   <td class="text-end">${raw(money(it.item_value))}</td>

@@ -127,7 +127,7 @@ ${raw(barcodeSearchScript(u, JSON.stringify, e))}
   ${order ? html`
   <div class="card mb-3">
     <div class="card-body">
-      <h6 class="fw-bold">Order ${order.order_number}</h6>
+      <h6 class="fw-bold">Order ${order.short_order_code ?? order.order_number}</h6>
       <p class="text-muted">Customer: ${order.full_name} (${order.mobile}) &middot; Items: ${itemCount} &middot; Due: ${raw(ctx.date(order.due_date))}</p>
 
       ${errors.length ? html`<div class="alert alert-danger"><ul class="mb-0">${errors.map((er) => html`<li>${er}</li>`)}</ul></div>` : ''}

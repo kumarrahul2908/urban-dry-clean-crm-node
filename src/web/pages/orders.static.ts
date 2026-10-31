@@ -286,6 +286,76 @@ if (btnSendInvoiceWhatsapp) btnSendInvoiceWhatsapp.addEventListener('click', fun
       alert('Could not reach the server. Please try again.');
     });
 });
+
+// Rahul: Mark as Delivered + optional payment, and the standalone Add Payment button, share
+// one modal -- #pmMode tracks which action opened it so pmConfirmBtn's click handler knows
+// which API endpoint to call. A fresh bootstrap.Modal instance is created once and reused for
+// both triggers rather than two separate modals, since the same fields apply to both.
+let pmMode = null;
+// Rahul: bootstrap.bundle.js loads from footer.php, which comes AFTER this inline script in
+// the page -- instantiating \`new bootstrap.Modal(...)\` here at parse time would run before that
+// script has executed. Created lazily on first use instead (by which point the user has had to
+// click a button, long after every script on the page has loaded), not at the top level.
+let paymentModal = null;
+function getPaymentModal() {
+  if (!paymentModal) paymentModal = new bootstrap.Modal(document.getElementById('paymentModal'));
+  return paymentModal;
+}
+const btnMarkDelivered = document.getElementById('btnMarkDelivered');
+if (btnMarkDelivered) btnMarkDelivered.addEventListener('click', function () {
+  pmMode = 'deliver';
+  document.getElementById('paymentModalTitle').textContent = 'Mark as Delivered';
+  document.getElementById('paymentModalNote').textContent = 'Record a payment now, or leave it as Due to collect later.';
+  document.getElementById('pmError').classList.add('d-none');
+  getPaymentModal().show();
+});
+const btnAddPayment = document.getElementById('btnAddPayment');
+if (btnAddPayment) btnAddPayment.addEventListener('click', function () {
+  pmMode = 'payment';
+  document.getElementById('paymentModalTitle').textContent = 'Add Payment';
+  document.getElementById('paymentModalNote').textContent = 'Record a payment against this order\\'s outstanding due.';
+  document.getElementById('pmPaymentType').value = ${j(a.defaultPaymentTypeId)}; // default to the first real method, not "Due" -- this button exists specifically to take a payment
+  document.getElementById('pmError').classList.add('d-none');
+  getPaymentModal().show();
+});
+document.getElementById('pmConfirmBtn')?.addEventListener('click', function () {
+  const btn = this;
+  const paymentTypeId = document.getElementById('pmPaymentType').value;
+  const amount = document.getElementById('pmAmount').value;
+  const errBox = document.getElementById('pmError');
+  errBox.classList.add('d-none');
+  if (pmMode === 'payment' && (paymentTypeId === '0' || !amount || parseFloat(amount) <= 0)) {
+    errBox.textContent = 'Choose a payment method and enter an amount greater than zero.';
+    errBox.classList.remove('d-none');
+    return;
+  }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving...';
+  const formData = new FormData();
+  formData.append('order_id', ORDER_ID);
+  formData.append('payment_type_id', paymentTypeId);
+  formData.append('amount', amount);
+  formData.append('csrf_token', ${j(a.csrf)});
+  const endpoint = pmMode === 'deliver'
+    ? ${j(u('api/orders_mark_delivered.php'))}
+    : ${j(u('api/orders_record_payment.php'))};
+  fetch(endpoint, { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(function (result) {
+      btn.disabled = false; btn.textContent = original;
+      if (result.success) {
+        location.reload();
+      } else {
+        errBox.textContent = result.error || 'Something went wrong.';
+        errBox.classList.remove('d-none');
+      }
+    })
+    .catch(function () {
+      btn.disabled = false; btn.textContent = original;
+      errBox.textContent = 'Could not reach the server. Please try again.';
+      errBox.classList.remove('d-none');
+    });
+});
 </script>`;
 export const orderPaymentScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}): string => `<script>
 document.getElementById('addRow')?.addEventListener('click', function () {

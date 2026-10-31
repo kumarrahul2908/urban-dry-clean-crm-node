@@ -141,14 +141,15 @@ export function registerOrderPortPages(app: FastifyInstance) {
             <label class="form-label small">Estimated Line Total</label>
             <input type="text" id="agLineTotalDisplay" class="form-control form-control-sm fw-bold" readonly>
           </div>
-          <div class="col-6">
+          <!-- hidden for now, same as the New Order form -- fields/JS/submit wiring untouched, just not shown. -->
+          <div class="col-6" style="display:none;">
             <label class="form-label small">Brand</label>
             <select id="agBrand" class="form-select form-select-sm">
               <option value="">None</option>
               ${brands.map((b) => html`<option value="${b.id}">${b.brand_name}</option>`)}
             </select>
           </div>
-          <div class="col-6">
+          <div class="col-6" style="display:none;">
             <label class="form-label small">Color</label>
             <select id="agColor" class="form-select form-select-sm">
               <option value="">None</option>

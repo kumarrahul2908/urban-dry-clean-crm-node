@@ -51,10 +51,20 @@ export async function generateOrderNumber(db: Db, year: string): Promise<string>
   return `UDC-${year}-${String(n).padStart(6, '0')}`;
 }
 
-/** generate_short_order_code(): null when disabled; prefix + counter padded to `digits` (never truncated). */
-export async function generateShortOrderCode(db: Db): Promise<string | null> {
+/**
+ * generate_short_order_code(): null when disabled; prefix + counter padded to `digits` (never
+ * truncated). Each store can have its own prefix letter (stores.code_prefix), set via Admin >
+ * Settings -- `storeId` is optional and falls back to the single global short_order_code_prefix
+ * setting when omitted or when that store has no prefix of its own (NULL/empty). All stores share
+ * the same running number sequence -- only the letter differs per store.
+ */
+export async function generateShortOrderCode(db: Db, storeId: number | null = null): Promise<string | null> {
   if ((await getSetting(db, 'short_order_code_enabled', '1')) !== '1') return null;
-  const prefix = (await getSetting(db, 'short_order_code_prefix', 'A')) ?? 'A';
+  let prefix = (await getSetting(db, 'short_order_code_prefix', 'A')) ?? 'A';
+  if (storeId !== null) {
+    const [store] = await db.query<{ code_prefix: string | null }>('SELECT code_prefix FROM stores WHERE id = ?', [storeId]);
+    if (store?.code_prefix) prefix = store.code_prefix;
+  }
   const digits = Math.max(1, parseInt((await getSetting(db, 'short_order_code_digits', '4')) ?? '4', 10) || 0);
   const n = await nextCounter(db, 'short_order_seq_counter', () => highestUsed(db, 'orders', 'short_order_code', prefix, `SUBSTRING(\`short_order_code\`, ${prefix.length + 1})`));
   return prefix + String(n).padStart(digits, '0');

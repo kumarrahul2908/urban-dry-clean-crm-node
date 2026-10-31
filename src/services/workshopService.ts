@@ -86,7 +86,34 @@ export class WorkshopService {
   }
 
   startProcessing(id: number, a: Actor) { return this.transition(id, ['Sent', 'Received'], 'Processing', 'Processing', a, null); }
-  completeProcessing(id: number, a: Actor, remarks = '') { return this.transition(id, ['Processing'], 'Completed', null, a, remarks); }
+
+  /**
+   * QC must happen INSIDE the workshop's own process, before ironing and packaging — not after
+   * the garment is already back at the store. These three methods track in-workshop progress on
+   * order_items.item_status (Processing -> QC -> Ready -> Packed) while workshop_items.status
+   * stays 'Processing' throughout — only completeIroning (lands on 'Packed') also flips
+   * workshop_items.status to 'Completed'. Piece (order_item-anchored) items only — a Laundry-
+   * anchored row has no item_status to track this way (one physical garment's progress must never
+   * silently overwrite the shared batch status) and is rejected outright.
+   */
+  completeWashing(id: number, a: Actor, remarks = '') { return this.itemStatusSubStage(id, ['Processing'], 'QC', a, remarks); }
+  passQC(id: number, a: Actor, remarks = '') { return this.itemStatusSubStage(id, ['QC'], 'Ready', a, remarks); }
+  completeIroning(id: number, a: Actor, remarks = '') { return this.itemStatusSubStage(id, ['Ready'], 'Packed', a, remarks, true); }
+
+  /**
+   * Processing -> Completed. For a piece item, this now REQUIRES item_status to already be
+   * 'Packed' — i.e. completeWashing() -> passQC() -> completeIroning() must all have already run.
+   * A Laundry-anchored item has no item_status to check and transitions directly, unaffected.
+   */
+  async completeProcessing(id: number, a: Actor, remarks = ''): Promise<Result> {
+    const [anchor] = await this.db.query<Raw>('SELECT order_item_id, laundry_garment_id FROM workshop_items WHERE id = ?', [id]);
+    if (anchor?.order_item_id) {
+      const [oi] = await this.db.query<{ item_status: string }>('SELECT item_status FROM order_items WHERE id = ?', [anchor.order_item_id]);
+      if (oi && oi.item_status !== 'Packed') return { success: false, errors: [`QC, ironing and packaging must be completed first (currently at "${oi.item_status}").`] };
+    }
+    return this.transition(id, ['Processing'], 'Completed', null, a, remarks);
+  }
+
   acceptItem(id: number, a: Actor, remarks = '') { return this.historyOnly(id, ['Received'], 'Accepted', a, remarks); }
   returnToStore(id: number, a: Actor, remarks = '') { return this.historyOnly(id, ['Completed'], 'Returned', a, remarks); }
 
@@ -97,13 +124,46 @@ export class WorkshopService {
         if (!anchor) throw new BusinessError('Workshop item not found.');
         const current = await this.currentStatus(t, id);
         if (current !== 'Returned') throw new BusinessError(`This item is at status "${current}" — cannot be received by the store from its current state.`);
+        // QC now happens INSIDE the workshop process (completeWashing(), well before this point) --
+        // item_status is already 'Packed' by the time an item can reach 'Returned' at all
+        // (completeProcessing() now requires it), so nothing further to set here.
         if (anchor.laundry_garment_id) {
           await t.execute("INSERT INTO garment_status_history (laundry_garment_id, previous_status, new_status, changed_by, changed_at, remarks, module) VALUES (?,?,?,?,NOW(),?,'workshop')", [anchor.laundry_garment_id, 'Returned', 'Store Received', a.userId, remarks || null]);
         } else {
-          await t.execute("UPDATE order_items SET item_status = 'QC' WHERE id = ?", [anchor.order_item_id]);
           await t.execute("INSERT INTO garment_status_history (order_item_id, previous_status, new_status, changed_by, changed_at, remarks, module) VALUES (?,?,?,?,NOW(),?,'workshop')", [anchor.order_item_id, 'Returned', 'Store Received', a.userId, remarks || null]);
         }
         await this.audit.using(t).record({ action: 'edit', module: 'workshop_items', recordId: String(id), oldValue: { status: 'Returned' }, newValue: { status: 'Store Received' }, userId: a.userId, ip: a.ip });
+      });
+    } catch (e) { return this.fail(e); }
+    return { success: true };
+  }
+
+  /**
+   * If workshop staff never click through every step for a garment that has physically already
+   * come back, the store must still be able to receive it rather than being blocked waiting for
+   * digital tracking that may never happen. Bypasses every intermediate from-state check and jumps
+   * straight to 'Store Received' from whatever state the item is currently at (anything except
+   * already Store Received/Unprocessed/Rejected). Logs the item's actual original status in the
+   * history remarks -- an honest audit trail, never silently pretends QC/Ironing happened. For a
+   * piece item, item_status is also force-set to 'Packed' if it hasn't already reached that point.
+   */
+  async forceStoreReceive(id: number, a: Actor, remarks = ''): Promise<Result> {
+    try {
+      await this.db.tx(async (t) => {
+        const [anchor] = await t.query<Raw>(
+          `SELECT wi.order_item_id, wi.laundry_garment_id, oi.item_status FROM workshop_items wi LEFT JOIN order_items oi ON oi.id = wi.order_item_id WHERE wi.id = ? FOR UPDATE`, [id]);
+        if (!anchor) throw new BusinessError('Workshop item not found.');
+        const current = await this.currentStatus(t, id);
+        if (['Store Received', 'Unprocessed', 'Rejected'].includes(current)) throw new BusinessError(`This item is at status "${current}" — nothing to force-receive.`);
+        const note = `Force-received by store (was at "${current}", workshop did not complete the normal tracking steps).${remarks ? ' ' + remarks : ''}`;
+        if (anchor.laundry_garment_id) {
+          await t.execute("INSERT INTO garment_status_history (laundry_garment_id, previous_status, new_status, changed_by, changed_at, remarks, module) VALUES (?,?,?,?,NOW(),?,'workshop')", [anchor.laundry_garment_id, current, 'Store Received', a.userId, note]);
+        } else {
+          if (anchor.item_status !== 'Packed') await t.execute("UPDATE order_items SET item_status = 'Packed' WHERE id = ?", [anchor.order_item_id]);
+          await t.execute("INSERT INTO garment_status_history (order_item_id, previous_status, new_status, changed_by, changed_at, remarks, module) VALUES (?,?,?,?,NOW(),?,'workshop')", [anchor.order_item_id, current, 'Store Received', a.userId, note]);
+        }
+        await t.execute("UPDATE workshop_items SET status = 'Completed', completed_at = COALESCE(completed_at, NOW()) WHERE id = ?", [id]);
+        await this.audit.using(t).record({ action: 'edit', module: 'workshop_items', recordId: String(id), oldValue: { status: current }, newValue: { status: 'Store Received (forced)' }, userId: a.userId, ip: a.ip });
       });
     } catch (e) { return this.fail(e); }
     return { success: true };
@@ -135,6 +195,37 @@ export class WorkshopService {
        ORDER BY changed_at DESC, id DESC LIMIT 1`, [id, id]);
     const restoreTo = prev && prev.previous_status ? prev.previous_status : 'Sent';
     return this.historyOnly(id, ['Unprocessed'], restoreTo, a, remarks || 'Resolved');
+  }
+
+  /**
+   * Backs completeWashing()/passQC()/completeIroning(): validates and advances
+   * order_items.item_status only, leaving workshop_items.status at 'Processing' throughout —
+   * except when `alsoCompleteWorkshopItem` is true (completeIroning's call, landing on 'Packed'),
+   * which also flips workshop_items.status to 'Completed' in the same transaction. The
+   * garment_status_history row must stay in workshop-vocabulary ('Processing'/'Completed'), never
+   * item_status-vocabulary (QC/Ready/Packed), because getCurrentStatus() below reads history for
+   * its truth source — conflating the two vocabularies there would break every other from-state
+   * check (e.g. returnToStore()'s own).
+   */
+  private async itemStatusSubStage(id: number, allowedFromItemStatus: string[], newItemStatus: string, a: Actor, remarks: string | null, alsoCompleteWorkshopItem = false): Promise<Result> {
+    try {
+      await this.db.tx(async (t) => {
+        const [laundryCheck] = await t.query<Raw>('SELECT laundry_garment_id FROM workshop_items WHERE id = ?', [id]);
+        if (laundryCheck?.laundry_garment_id) throw new BusinessError('Laundry items do not use QC/Ironing/Packaging tracking — use Complete Processing directly.');
+        const [wi] = await t.query<Raw>('SELECT wi.*, oi.item_status, oi.id AS order_item_id FROM workshop_items wi JOIN order_items oi ON oi.id = wi.order_item_id WHERE wi.id = ? FOR UPDATE', [id]);
+        if (!wi) throw new BusinessError('Workshop item not found.');
+        if (wi.status !== 'Processing') throw new BusinessError(`This item is at workshop status "${wi.status}" — QC/Ironing/Packaging only apply while an item is being processed.`);
+        if (!allowedFromItemStatus.includes(wi.item_status)) throw new BusinessError(`This item is at "${wi.item_status}" — cannot perform this action from its current stage (someone may have already actioned it).`);
+        await t.execute('UPDATE order_items SET item_status = ? WHERE id = ?', [newItemStatus, wi.order_item_id]);
+        const workshopVocabStatus = alsoCompleteWorkshopItem ? 'Completed' : 'Processing';
+        await t.execute("INSERT INTO garment_status_history (order_item_id, previous_status, new_status, changed_by, changed_at, remarks, module) VALUES (?,?,?,?,NOW(),?,'workshop')", [wi.order_item_id, wi.status, workshopVocabStatus, a.userId, `${remarks || ''} [item_status -> ${newItemStatus}]`]);
+        if (alsoCompleteWorkshopItem) {
+          await t.execute("UPDATE workshop_items SET status = 'Completed', completed_at = NOW() WHERE id = ?", [id]);
+          await this.audit.using(t).record({ action: 'edit', module: 'workshop_items', recordId: String(id), oldValue: { status: 'Processing' }, newValue: { status: 'Completed' }, userId: a.userId, ip: a.ip });
+        }
+      });
+    } catch (e) { return this.fail(e); }
+    return { success: true };
   }
 
   private async historyOnly(id: number, allowedFrom: string[] | null, newStatus: string, a: Actor, remarks: string | null, disallowedFrom: string[] | null = null): Promise<Result> {

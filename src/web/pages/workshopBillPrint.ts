@@ -38,7 +38,7 @@ export function registerWorkshopBillPrintPage(app: FastifyInstance) {
     const title = phpTrim(String(iss.gstin ?? '')) !== '' ? 'TAX INVOICE' : 'INVOICE';
     const addressLines = String(iss.address ?? '').split('\n').map(phpTrim).filter((l) => l !== '');
     const items = await db.query<Row>(
-      `SELECT wbi.item_value, o.order_number, g.garment_name, c.full_name AS customer_name, COALESCE(s2.store_name, 'Unassigned') AS store_name
+      `SELECT wbi.item_value, o.order_number, o.short_order_code, g.garment_name, c.full_name AS customer_name, COALESCE(s2.store_name, 'Unassigned') AS store_name
        FROM workshop_bill_items wbi JOIN order_items oi ON oi.id = wbi.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
        LEFT JOIN stores s2 ON s2.id = o.store_id LEFT JOIN garments g ON g.id = oi.garment_id WHERE wbi.bill_id = ? ORDER BY store_name, o.order_number`, [id]);
     const groups = new Map<string, Row[]>();
@@ -206,7 +206,7 @@ ${!isVoid && items.length ? html`
         ${int(b.is_combined) === 1 ? html`
           <tr class="store"><td colspan="3">${storeName} (${rows.length} ${plural(rows.length, 'item')})</td><td class="num">${r2(rows.reduce((a, r) => a + flt(r.item_value), 0))}</td></tr>` : ''}
         ${rows.map((it) => html`
-          <tr><td>${it.order_number}</td><td>${it.customer_name}</td><td>${String(it.garment_name ?? '')}</td><td class="num">${r2(it.item_value)}</td></tr>`)}`)}
+          <tr><td>${it.short_order_code ?? it.order_number}</td><td>${it.customer_name}</td><td>${String(it.garment_name ?? '')}</td><td class="num">${r2(it.item_value)}</td></tr>`)}`)}
     </tbody>
     <tfoot>
       <tr><td colspan="3" style="text-align:right;font-weight:700;">Total bill value of these garments</td><td class="num" style="font-weight:700;">${r2(b.total_value)}</td></tr>

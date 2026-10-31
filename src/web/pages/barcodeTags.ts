@@ -49,19 +49,19 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     if (pieceIds.length) {
       for (const r of await db.query<Row>(
         `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names,
-         o.order_number, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
+         o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
          COALESCE(gt.printed_count, 0) AS printed_count, (SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) FROM order_items WHERE order_id = o.id) AS total_items
          FROM barcodes bc JOIN order_items oi ON oi.id = bc.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id
-         JOIN services s ON s.id = oi.service_id LEFT JOIN colors col ON col.id = oi.color_id LEFT JOIN brands br ON br.id = oi.brand_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id
+         JOIN services s ON s.id = oi.service_id LEFT JOIN colors col ON col.id = oi.color_id LEFT JOIN brands br ON br.id = oi.brand_id LEFT JOIN stores st ON st.id = o.store_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id
          WHERE bc.id IN (${pieceIds.map(() => '?').join(',')})`, pieceIds)) byId.set(int(r.barcode_id), r);
     }
     if (laundryIds.length) {
       for (const r of await db.query<Row>(
         `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, 1 AS piece_index, NULL AS order_item_id, NULL AS remarks, oi.quantity AS quantity, NULL AS weight, 'Pcs' AS unit, 1 AS pieces_per_unit, NULL AS piece_names,
-         o.order_number, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, g.garment_name, s.service_name, NULL AS color_name, NULL AS brand_name, c.full_name AS customer_name, c.customer_code,
+         o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, NULL AS color_name, NULL AS brand_name, c.full_name AS customer_name, c.customer_code,
          COALESCE(gt.printed_count, 0) AS printed_count, oi.quantity AS total_items
          FROM barcodes bc JOIN laundry_garments lg ON lg.id = bc.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id
-         JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id WHERE bc.id IN (${laundryIds.map(() => '?').join(',')})`, laundryIds)) byId.set(int(r.barcode_id), r);
+         JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN stores st ON st.id = o.store_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id WHERE bc.id IN (${laundryIds.map(() => '?').join(',')})`, laundryIds)) byId.set(int(r.barcode_id), r);
     }
     const tags: Row[] = [];
     for (const bid of barcodeIds) { const t = byId.get(bid); if (t) tags.push(t); }
@@ -126,14 +126,14 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
       const piecesPerUnit = int(t.pieces_per_unit);
       const withinSetIndex = ((int(t.piece_index) - 1) % piecesPerUnit) + 1;
       const pieceParticular = pieceNameList[withinSetIndex - 1] ?? null;
-      const totalPieces = Math.round(Number(t.quantity) * piecesPerUnit);
       tagBlocks.push(html`
   <div class="tag"${raw(inline)}>
     ${visible('brand_name') ? html`<div class="brand" style="${fieldStyle('brand_name', 'margin-bottom:6px;letter-spacing:.3px;')}">${businessName}</div>` : ''}
     ${!phpEmpty(logoPath) && visible('logo') ? html`<div style="text-align:center;margin-bottom:4px;"><img src="${u('uploads/logo/' + logoPath)}" style="max-height:22px;"></div>` : ''}
 
     ${visible('qr_code') ? html`<div class="qr-wrap">${raw(qrSvg(qrContent, 130))}</div>` : ''}
-    ${visible('tag_id') ? html`<div class="tag-id" style="${fieldStyle('tag_id', 'margin-bottom:4px;')}">${t.barcode_value}</div>` : ''}
+    <!-- the long order_number is retired from every visible tag element -- tag-id shows the short code (fallback to order_number for orders with none), not the full barcode_value with its sequence suffix. QR/linear barcode still encode the full barcode_value, unchanged. -->
+    ${visible('tag_id') ? html`<div class="tag-id" style="${fieldStyle('tag_id', 'margin-bottom:4px;')}">${t.short_order_code ?? t.order_number}</div>` : ''}
 
     ${visible('sequence') ? html`
     <div class="seq-order-line" style="${fieldStyle('sequence', 'margin-bottom:2px;')}">
@@ -141,6 +141,7 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     </div>` : ''}
 
     ${visible('customer_name') ? html`<div class="customer-name" style="${fieldStyle('customer_name', 'margin-bottom:2px;')}">${t.customer_name}</div>` : ''}
+    ${!phpEmpty(t.store_name) && visible('store_name') ? html`<div class="store-name" style="${fieldStyle('store_name', 'margin-bottom:2px;')}">${t.store_name}</div>` : ''}
     ${visible('service_name') ? html`<div class="service-line" style="${fieldStyle('service_name', 'margin-bottom:6px;')}">${t.service_name}</div>` : ''}
 
     ${!phpEmpty(t.remarks) && visible('remark') ? html`<div class="remark" style="${fieldStyle('remark', 'margin-bottom:2px;')}">${t.remarks}</div>` : ''}
@@ -156,7 +157,8 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     ${visible('due_date') ? html`<div class="due-date" style="${fieldStyle('due_date', 'margin-top:4px;')}">${raw(ctx.date(t.due_date, 'd M y D'))}${!phpEmpty(t.due_time) ? raw(' ' + ctx.date(t.due_time, 'h:i A')) : ''}</div>` : ''}
 
     ${extras.length && visible('extra_details') ? html`<div class="extra-details" style="${fieldStyle('extra_details', 'margin-top:6px;')}">${raw(extras.join(' &middot; '))}</div>` : ''}
-    ${piecesPerUnit > 1 && pieceParticular === null && visible('piece_of_set') ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-top:4px;')}">Piece ${int(t.piece_index)} of ${totalPieces}</div>` : ''}
+    <!-- order-wide position (item_sequence/total_items), not per-set (piece_index/totalPieces), and shown on every tag now, not just pieces_per_unit > 1 Sets -->
+    ${pieceParticular === null && visible('piece_of_set') ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-top:4px;')}">Piece ${int(t.item_sequence)} of ${int(t.total_items)}</div>` : ''}
 
     ${visible('barcode_linear') ? html`<div class="barcode-row">${raw(code128Svg(t.barcode_value, 150, 34))}</div>` : ''}
   </div>`);

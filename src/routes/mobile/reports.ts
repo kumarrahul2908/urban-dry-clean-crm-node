@@ -2,9 +2,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Db } from '../../db/pool.js';
 import { addDays, dayMon, isStrtotimeDate, monthStartIn, todayIn } from '../../lib/dates.js';
 import { ApiError, num, ok } from '../../lib/http.js';
-import { round2, toFloat } from '../../lib/php.js';
+import { round2, toFloat, toInt } from '../../lib/php.js';
 import { qInt, qStr } from '../../lib/query.js';
 import { auditOptions, fetchAudit, parseFilters, roleAllowed } from '../../services/auditViewer.js';
+import { CustomerSegments } from '../../services/customerSegments.js';
 
 type Q = Record<string, unknown>;
 type Raw = Record<string, any>;
@@ -418,6 +419,23 @@ export async function registerMobileReportRoutes(app: FastifyInstance) {
         in_rework: num(op?.in_rework ?? 0), ready_to_pack: num(op?.ready_to_pack ?? 0), packed: num(op?.packed ?? 0),
         qc_passed: num(qc?.passed ?? 0), qc_failed: num(qc?.failed ?? 0), overdue_orders: overdue, urgent_orders: urgent,
       },
+    });
+  });
+
+  // Backend half of the web Dormant Customers report's Android screen -- reuses
+  // CustomerSegments.inactiveDaysReport() exactly as the web report does, same query, no
+  // separate logic to drift from it. No bucket params at all -> min_days=30, matching the web
+  // report's default view.
+  route('dormant_customers', async (req) => {
+    const ctx = await auth(req, 'reports.view');
+    const q = req.query as Q;
+    const minDays = q.min_days !== undefined && q.min_days !== '' ? Math.max(0, toInt(q.min_days)) : 30;
+    const maxDays = q.max_days !== undefined && q.max_days !== '' ? Math.max(minDays, toInt(q.max_days)) : null;
+    const storeId = q.store_id !== undefined && q.store_id !== '' ? toInt(q.store_id) : null;
+    const rows = await new CustomerSegments(db, ctx.store_id).inactiveDaysReport(minDays, maxDays, storeId);
+    return ok({
+      customers: rows.map((r) => ({ id: num(r.id), full_name: r.full_name, mobile: r.mobile, communication_preference: r.communication_preference, last_order_date: r.last_order_date, days_inactive: Math.trunc(num(r.days_inactive)) })),
+      min_days: minDays, max_days: maxDays,
     });
   });
 }

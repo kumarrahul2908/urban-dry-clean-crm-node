@@ -23,6 +23,7 @@ export const posStyle = (u: (p: string) => string, j: (v: unknown) => string, h:
 // x[5] = <?= json_encode($paymentTypes) ?>
 // x[6] = <?= !empty($services) ? (int)$services[0]['id'] : 'null' ?>
 // x[7] = <?= json_encode($orderToken) ?>
+// x[8] = <?= !empty($categories) ? (int)$categories[0]['id'] : 'null' ?>
 export const posScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}, x: string[] = []): string => `<script>
 document.addEventListener('DOMContentLoaded', function () {
 
@@ -46,6 +47,7 @@ const API = {
 };
 const PAYMENT_TYPES = ${x[5]};
 const FIRST_SERVICE_ID = ${x[6]};
+const FIRST_CATEGORY_ID = ${x[8]};
 
 /* =====================================================================
  * 2. STATE VARIABLES
@@ -55,7 +57,11 @@ const FIRST_SERVICE_ID = ${x[6]};
 let selectedCustomer = null;
 let selectedPriceListId = DEFAULT_PRICE_LIST_ID;
 let activeServiceId = FIRST_SERVICE_ID;
-let activeCategoryId = null;
+// Rahul: a fresh New Order left Category unselected until tapped, so the garment grid showed
+// nothing on load -- same gap as the Android app had (fixed there first), ported here. Service
+// was already correctly defaulting via FIRST_SERVICE_ID above; Category needed the same
+// treatment.
+let activeCategoryId = FIRST_CATEGORY_ID;
 let cart = [];                 // array of line-item objects shown in the Order Items cart
 let pendingGarment = null;      // the garment currently open in the Add/Edit Garment modal
 let agCurrentRate = null;       // last rate response fetched for pendingGarment (server-authoritative)
@@ -231,6 +237,27 @@ dom.dueDate.addEventListener('input', function () { dueDateManuallyEdited = true
 
 document.querySelectorAll('.svc-tab').forEach(btn => btn.addEventListener('click', onServiceTabClick));
 document.querySelectorAll('.cat-tab').forEach(btn => btn.addEventListener('click', onCategoryTabClick));
+
+// Rahul: visually select the default Service/Category tabs and load the grid immediately, so
+// the page isn't just internally defaulted (activeServiceId/activeCategoryId) while LOOKING
+// like nothing is selected -- matches the toggle logic onServiceTabClick/onCategoryTabClick
+// themselves use, just applied once on load instead of waiting for a click.
+if (FIRST_SERVICE_ID) {
+  const firstSvcTab = document.querySelector('.svc-tab[data-id="' + FIRST_SERVICE_ID + '"]');
+  if (firstSvcTab) firstSvcTab.classList.add('btn-primary');
+}
+if (FIRST_CATEGORY_ID) {
+  const firstCatTab = document.querySelector('.cat-tab[data-id="' + FIRST_CATEGORY_ID + '"]');
+  if (firstCatTab) { firstCatTab.classList.remove('btn-outline-secondary'); firstCatTab.classList.add('btn-secondary'); }
+  loadGarments();
+}
+// Rahul: Due Date stayed blank until the staff member actively touched the Urgent Level
+// dropdown -- suggestDueDate() only ever ran from its own 'change' listener. The "Normal"
+// <option> (blank value, data-day-offset from the default_due_days setting) is already the
+// browser's default selection on a fresh page, so calling this once here needs no further
+// logic change -- it reads the already-correct default selection, same as any user-triggered
+// call would.
+suggestDueDate();
 dom.garmentSearch.addEventListener('input', function () {
   clearTimeout(garmentSearchDebounceTimer);
   garmentSearchDebounceTimer = setTimeout(loadGarments, 300);
@@ -1119,17 +1146,6 @@ function escapeHtml(s) { const d = document.createElement('div'); d.textContent 
  * ===================================================================== */
 addPaymentRow(); // seed one blank payment line so the payment section is never empty
 suggestDueDate(); // pre-fill Due Date with a visible, editable suggestion — never silent
-// Rahul: Service and Category used to stay unselected (and the garment grid empty) until tapped. Pre-select "Dry Cleaning" (or the
-// service this page already treats as active) and the first category ("Men" if present), and load the garment grid immediately.
-(function preselectDefaults() {
-  const svcTabs = Array.prototype.slice.call(document.querySelectorAll('.svc-tab'));
-  const svc = svcTabs.find(function (b) { return b.textContent.trim().toLowerCase() === 'dry cleaning'; })
-    || svcTabs.find(function (b) { return parseInt(b.dataset.id, 10) === activeServiceId; }) || svcTabs[0];
-  if (svc) onServiceTabClick.call(svc);
-  const catTabs = Array.prototype.slice.call(document.querySelectorAll('.cat-tab'));
-  const cat = catTabs.find(function (b) { return b.textContent.trim().toLowerCase() === 'men'; }) || catTabs[0];
-  if (cat) onCategoryTabClick.call(cat);
-})();
 if (PRESELECT_CUSTOMER_ID) {
   selectCustomer(PRESELECT_CUSTOMER_ID);
 }

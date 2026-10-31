@@ -235,4 +235,98 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     const viewer = await login('nobody');
     await write('viewer cannot manage', viewer.php, viewer.node, post({ action: 'void', bill_id: String(bills[0].id), reason: 'abc' }), o);
   });
+
+  /**
+   * QC/Ironing/Packaging redesign (changelog 2026-10-23..30): QC now happens DURING workshop
+   * processing (Processing -> QC -> Ready -> Packed on item_status), not after the garment is
+   * already back at the store. Builds 3 single-item challans, each pre-advanced (via direct
+   * service calls, not through write()/HTTP, so both PHP and Node start a given write() from the
+   * exact same precondition) to a different stage, so every one of the three new transitions, the
+   * gate that now blocks the old one-step shortcut, and the two dedicated Send/Receive pages all
+   * get compared against the real, updated PHP.
+   */
+  const prepareQc = async (db: Db) => {
+    const svc = buildServices(h.env, db, { hooks: noopOrderHooks });
+    const A = { userId: 1 };
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('workshop.manage','x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 1, id FROM permissions WHERE permission_key = 'workshop.manage'");
+    const o = await svc.orders.createOrder({ customer_id: 2, items: [
+      { garment_id: 1, service_id: 1, quantity: 1 }, { garment_id: 1, service_id: 1, quantity: 1 },
+      { garment_id: 1, service_id: 1, quantity: 1 }, { garment_id: 1, service_id: 1, quantity: 1 }, { garment_id: 1, service_id: 1, quantity: 1 },
+    ] }, A, true, 1, true) as any;
+    if (!o.success) throw new Error(JSON.stringify(o));
+    const items = await db.query<any>('SELECT id FROM order_items WHERE order_id = ? ORDER BY id', [o.order_id]);
+    const sendOne = async (idx: number) => {
+      const c = await svc.workshop.createChallan(1, [items[idx].id], '', A) as any;
+      if (!c.success) throw new Error(JSON.stringify(c));
+      return (await db.query<any>('SELECT id FROM workshop_items WHERE order_item_id = ?', [items[idx].id]))[0].id as number;
+    };
+    const wiProcessing = await sendOne(0); await svc.workshop.startProcessing(wiProcessing, A);
+    const wiQC = await sendOne(1); await svc.workshop.startProcessing(wiQC, A); await svc.workshop.completeWashing(wiQC, A, '');
+    const wiReady = await sendOne(2); await svc.workshop.startProcessing(wiReady, A); await svc.workshop.completeWashing(wiReady, A, ''); await svc.workshop.passQC(wiReady, A, '');
+    const wiNeverStarted = await sendOne(3); // stays at raw 'Sent' -- never Accepted/Started, for the force-receive test
+    // fully through the new flow (washing -> QC -> ironing, workshop_items.status now 'Completed', item_status 'Packed') --
+    // for storeReceive()'s own precondition: it must no longer set item_status to 'QC' (moved into the workshop itself, above).
+    const wiCompleted = await sendOne(4);
+    await svc.workshop.startProcessing(wiCompleted, A); await svc.workshop.completeWashing(wiCompleted, A, ''); await svc.workshop.passQC(wiCompleted, A, ''); await svc.workshop.completeIroning(wiCompleted, A, '');
+  };
+
+  it('QC/Ironing/Packaging: completeWashing/passQC/completeIroning, the completeProcessing gate, and force-receive', async () => {
+    await seedRich(prepareQc);
+    const ids = await (async () => {
+      const rows = await h.db.query<any>(
+        `SELECT wi.id, wi.status AS raw_status, oi.item_status FROM workshop_items wi JOIN order_items oi ON oi.id = wi.order_item_id ORDER BY wi.id DESC LIMIT 5`);
+      const byStatus = new Map(rows.map((r: any) => [r.item_status, r.id]));
+      return {
+        wiProcessing: byStatus.get('Processing'), wiQC: byStatus.get('QC'), wiReady: byStatus.get('Ready'),
+        wiNeverStarted: rows.find((r: any) => r.item_status === 'Workshop')?.id,
+        wiCompleted: rows.find((r: any) => r.item_status === 'Packed' && r.raw_status === 'Completed')?.id,
+      };
+    })();
+    const { php, node } = await asBoss();
+    const ix = '/modules/workshop/index.php';
+    const post = (path: string, form: Record<string, string>) => (c: Client) => c.post(path, form);
+
+    // the old one-step shortcut now REJECTS a piece item before the new granular steps have run
+    await write('complete_processing blocked before QC', php, node, post(ix, { action: 'complete_processing', workshop_item_id: String(ids.wiProcessing), remarks: 'skip?' }), opts);
+    await write('complete_washing', php, node, post(ix, { action: 'complete_washing', workshop_item_id: String(ids.wiProcessing), remarks: 'washed' }), opts);
+    await write('pass_qc', php, node, post(ix, { action: 'pass_qc', workshop_item_id: String(ids.wiQC), remarks: 'ok' }), opts);
+    await write('complete_ironing', php, node, post(ix, { action: 'complete_ironing', workshop_item_id: String(ids.wiReady), remarks: 'pressed' }), opts);
+    // out-of-order / wrong-stage calls
+    await write('pass_qc on a Processing item', php, node, post(ix, { action: 'pass_qc', workshop_item_id: String(ids.wiProcessing) }), opts);
+    await write('complete_washing on a Ready item', php, node, post(ix, { action: 'complete_washing', workshop_item_id: String(ids.wiReady) }), opts);
+
+    // the index page itself: new pills (QC/Ironing) + new per-stage action buttons
+    await both(php, node, ix, 'index after QC advances (pills/buttons)', true);
+
+    // Send to Workshop / Receive from Workshop: dedicated pages
+    await both(php, node, '/modules/workshop/send.php', 'send.php listing');
+    await both(php, node, '/modules/workshop/receive.php', 'receive.php listing (broadened queue)', true);
+    // force-receive: an item never Accepted/Started still shows in the broadened queue and can be force-received straight to Store Received
+    await write('force receive (never fully tracked)', php, node, post('/modules/workshop/receive.php', { action: 'receive', workshop_item_id: String(ids.wiNeverStarted) }), opts);
+    // normal path on a fully-QC'd item: Completed -> Returned -> Store Received, item_status stays 'Packed' throughout (storeReceive() no longer resets it to 'QC')
+    await write('return to store (fully QC-d item)', php, node, post('/modules/workshop/receive.php', { action: 'return', workshop_item_id: String(ids.wiCompleted) }), opts);
+    // write() restores the DB after itself -- advance past Returned directly (not through write()) so the next write()'s precondition is real
+    await buildServices(h.env, h.db, { hooks: noopOrderHooks }).workshop.returnToStore(ids.wiCompleted, { userId: 1 });
+    await write('store receive after return (item_status stays Packed)', php, node, post('/modules/workshop/receiving.php', { workshop_item_id: String(ids.wiCompleted) }), opts);
+  });
+
+  it('Send to Workshop -> Send Report: challan creation, grouped report, defects shown', async () => {
+    await seedRich(async (db) => {
+      await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('workshop.manage','x')");
+      await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 1, id FROM permissions WHERE permission_key = 'workshop.manage'");
+      await db.execute("UPDATE order_items SET item_status = 'Pending' WHERE order_id = 1");
+    });
+    const { php, node } = await asBoss();
+    const pend = await h.db.query<any>("SELECT id FROM order_items WHERE item_status = 'Pending' AND order_id = 1 ORDER BY id");
+    await both(php, node, '/modules/workshop/send.php', 'send.php listing (pending items grouped by order)');
+    const sendForm = (c: Client) => c.post('/modules/workshop/send.php', { workshop_id: '1', 'item_ids[]': String(pend[0].id), remarks: 'handle with care' });
+    const a = await write('send selected items', php, node, sendForm, opts);
+    const loc = a.location ?? '';
+    const m = /challan_ids=([\d,]+)/.exec(loc);
+    if (!m) throw new Error(`send.php did not redirect to send_report.php: ${loc}`);
+    await both(php, node, `/modules/workshop/send_report.php?challan_ids=${m[1]}`, 'send_report.php (grouped report)');
+    await both(php, node, '/modules/workshop/send_report.php?challan_ids=999999', 'send_report.php (bad challan)');
+    await both(php, node, '/modules/workshop/send_report.php', 'send_report.php (no challan)');
+  });
 });

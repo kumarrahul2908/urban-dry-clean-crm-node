@@ -267,7 +267,7 @@ export class OrderService {
     let orderNumber: string, shortOrderCode: string | null, invoiceNumber: string, paymentNumber: string | null;
     try {
       orderNumber = await generateOrderNumber(this.db, yearIn(this.tz, this.now()));
-      shortOrderCode = await generateShortOrderCode(this.db);
+      shortOrderCode = await generateShortOrderCode(this.db, storeId);
       invoiceNumber = await generateInvoiceNumber(this.db);
       paymentNumber = willRecordPayment ? await generateDocumentNumber(this.db, 'payment_prefix', 6) : null;
     } catch (e) {
@@ -673,7 +673,7 @@ export class OrderService {
     let orderNumber: string, shortOrderCode: string | null, invoiceNumber: string, paymentNumber: string | null;
     try {
       orderNumber = await generateOrderNumber(this.db, yearIn(this.tz, this.now()));
-      shortOrderCode = await generateShortOrderCode(this.db);
+      shortOrderCode = await generateShortOrderCode(this.db, storeId);
       invoiceNumber = await generateInvoiceNumber(this.db);
       paymentNumber = willRecordPayment ? await generateDocumentNumber(this.db, 'payment_prefix', 6) : null;
     } catch {
@@ -1005,6 +1005,34 @@ export class OrderService {
       ? `This order had a net effective payment of ${await formatCurrency(this.db, effectivePaid)} on file, now due back to the customer as a refund/credit. Payments have NOT been deleted or auto-refunded — process the refund/adjustment manually via the customer wallet or accounts, per your store policy. The receivable has been marked "Refund Due" so it no longer appears as a normal outstanding balance.`
       : null;
     return { success: true, warning };
+  }
+
+  /**
+   * Sets orders.status_id to the 'delivered' order_status, optionally also calling recordPayment()
+   * if payment lines were given. A failed payment attempt does NOT roll back the delivery status
+   * change -- the garment has physically left the counter either way; the order simply stays (or
+   * becomes) Due, retryable later via the Due List. payment_type_id=0 / amount<=0 means "Due" was
+   * chosen -- nothing recorded, same as recordPayment() already does with an empty array.
+   */
+  async markDelivered(orderId: number, actor: Actor, paymentLines: Raw[] = []): Promise<Result> {
+    const [o] = await this.db.query<Raw>('SELECT id, customer_id, status_id FROM orders WHERE id = ?', [orderId]);
+    if (!o) return fail('Order not found.');
+    const [delivered] = await this.db.query<{ id: number }>("SELECT id FROM order_statuses WHERE status_key = 'delivered'");
+    if (!delivered) return fail('Delivered status is not configured.');
+    try {
+      await this.db.tx(async (t) => {
+        await t.execute('UPDATE orders SET status_id = ? WHERE id = ?', [delivered.id, orderId]);
+        await this.audit.using(t).record({ action: 'edit', module: 'orders', recordId: String(orderId), oldValue: { status_id: o.status_id }, newValue: { status_id: delivered.id }, userId: actor.userId, ip: actor.ip });
+      });
+    } catch (e) {
+      return fail(this.prefixed(e, 'Could not mark the order delivered: '));
+    }
+    let paymentErrors: string[] = [];
+    if (paymentLines.length) {
+      const payResult = await this.recordPayment(orderId, Number(o.customer_id), paymentLines, 0.0, actor);
+      if (!payResult.success) paymentErrors = payResult.errors ?? [];
+    }
+    return { success: true, payment_errors: paymentErrors };
   }
 
   /** Re-derives item discount/tax/total, order totals and payments after any edit. Joins the caller's transaction. */

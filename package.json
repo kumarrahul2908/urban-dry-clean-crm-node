@@ -16,6 +16,7 @@
     "job:photo-cleanup": "node dist/jobs/photoCleanup.js",
     "job:whatsapp-worker": "node dist/jobs/whatsappWorker.js",
     "job:whatsapp-marketing": "node dist/jobs/whatsappMarketing.js",
+    "job:nightly-backup": "node dist/jobs/nightlyBackup.js",
     "migrate": "node dist/jobs/migrate.js",
     "preflight": "node dist/jobs/preflight.js",
     "tenant": "node dist/jobs/tenant.js"

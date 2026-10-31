@@ -221,4 +221,37 @@ describe.skipIf(!webEnabled)('orders pages: PHP ↔ Node parity', () => {
       eq(await node.upload('/modules/orders/import.php', { step: 'upload' }, { field: 'file', filename: name, content }), await php.upload('/modules/orders/import.php', { step: 'upload' }, { field: 'file', filename: name, content }), name);
     }
   });
+
+  /**
+   * Mark as Delivered + payment (Cash/UPI/Due) + Due List (changelog 2026-10-23..30, section 5).
+   * markDelivered() does the status change and an optional payment together; a failed payment must
+   * NOT roll back the delivery. recordPayment() via the standalone Add Payment button/Due List is
+   * independent of delivery status.
+   */
+  it('Mark as Delivered + Add Payment + Due List', async () => {
+    await seedRich(prepare);
+    const { php, node } = await asBoss();
+    // an order with a real outstanding balance, not already delivered
+    const due = (await h.db.query<any>(
+      "SELECT ar.order_id FROM accounts_receivable ar JOIN orders o JOIN order_statuses os ON os.id = o.status_id WHERE ar.order_id = o.id AND ar.status = 'Open' AND ar.due_amount > 0.01 AND os.status_key != 'delivered' ORDER BY ar.order_id LIMIT 1"))[0]?.order_id;
+    expect(due, 'need at least one order with a real due balance for this test').toBeTruthy();
+    const paymentTypes = await h.db.query<any>('SELECT id FROM payment_types WHERE is_active=1 ORDER BY sort_order');
+    eq(await node.get(`/modules/orders/view.php?id=${due}`), await php.get(`/modules/orders/view.php?id=${due}`), 'view (Mark as Delivered + Add Payment buttons)', true);
+
+    const api = (path: string, form: Record<string, string>) => (c: { post: (p: string, f: Record<string, string>) => Promise<any> }) => c.post(path, form);
+    await write('mark delivered, Due (no payment)', php, node, api('/api/orders_mark_delivered.php', { order_id: String(due) }), { jsonBody: true });
+    await write('mark delivered, with Cash payment', php, node, api('/api/orders_mark_delivered.php', { order_id: String(due), payment_type_id: String(paymentTypes[0].id), amount: '1' }), { jsonBody: true });
+    await write('mark delivered, missing order_id', php, node, api('/api/orders_mark_delivered.php', {}), { jsonBody: true });
+    await write('mark delivered, unknown order', php, node, api('/api/orders_mark_delivered.php', { order_id: '999999' }), { jsonBody: true });
+    await write('record payment (standalone Add Payment)', php, node, api('/api/orders_record_payment.php', { order_id: String(due), payment_type_id: String(paymentTypes[0].id), amount: '1' }), { jsonBody: true });
+    await write('record payment, no method chosen', php, node, api('/api/orders_record_payment.php', { order_id: String(due), payment_type_id: '0', amount: '1' }), { jsonBody: true });
+    await write('record payment, zero amount', php, node, api('/api/orders_record_payment.php', { order_id: String(due), payment_type_id: String(paymentTypes[0].id), amount: '0' }), { jsonBody: true });
+    await write('record payment, unknown order', php, node, api('/api/orders_record_payment.php', { order_id: '999999', payment_type_id: String(paymentTypes[0].id), amount: '1' }), { jsonBody: true });
+    // verify_csrf() dies with a plain-text body (not JSON) on failure, same on both sides -- compare as text, not JSON.
+    await write('mark delivered, csrf', php, node, (c) => c.post('/api/orders_mark_delivered.php', { order_id: String(due) }, { csrf: false }), {});
+
+    eq(await node.get('/modules/orders/due_list.php'), await php.get('/modules/orders/due_list.php'), 'due list', true);
+    const nobody = await login('nobody');
+    eq(await nobody.node.get('/modules/orders/due_list.php'), await nobody.php.get('/modules/orders/due_list.php'), 'due list (no billing.view)');
+  });
 });

@@ -85,6 +85,9 @@ export const wsIndexStyle = (u: (p: string) => string, j: (v: unknown) => string
 .ws-pill--pending    { background: #eef2f7; color: #475569; }
 .ws-pill--workshop   { background: #e0f7fd; color: #0284a3; }
 .ws-pill--processing { background: #fff4e0; color: #b45309; }
+.ws-pill--qc          { background: #f3e8ff; color: #7e22ce; }
+.ws-pill--ironing      { background: #e0e7ff; color: #4338ca; }
+.ws-pill--packed       { background: #dcfce7; color: #15803d; }
 .ws-pill--urgent     { background: #ffe8ec; color: #be123c; }
 .ws-challan { font-size: .72rem; color: #9aa5b6; margin-top: .15rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ws-empty { text-align: center; padding: 2.2rem 1rem !important; color: #94a3b8; }

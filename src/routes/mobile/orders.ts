@@ -401,6 +401,27 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     return ok({ order_id: orderId, cancelled: true, receivable_status: await receivableStatus(orderId), warning: result.warning ?? null });
   });
 
+  // "Mark as Delivered" status change. Simpler than the web version -- Android already has a
+  // fully-built, always-available payment UI (CollectPaymentSection, calling orders_record_payment
+  // above) shown independently whenever an order has a due balance, regardless of delivery status.
+  // Rather than duplicating payment-collection logic here too, this does ONLY the status change
+  // (markDelivered() with an empty payment-lines array).
+  route('POST', 'orders_mark_delivered', async (req) => {
+    const ctx = await auth(req, 'billing.view');
+    const p = payload(req);
+    const orderId = toInt(p.order_id);
+    if (!orderId) throw new ApiError('invalid_request', 'A valid order_id is required.', 422);
+    const [order] = await db.query<Raw>('SELECT id, store_id FROM orders WHERE id = ?', [orderId]);
+    if (!order) throw new ApiError('not_found', 'Order not found.', 404);
+    // canEditOrderOfStore() (not canActAsStoreForOrder(), which deliberately fails closed for
+    // admin/no-fixed-store identities -- correct for payment collection, wrong here) -- Mark as
+    // Delivered is a status change, same breadth as edit/cancel.
+    if (!canEditOrderOfStore(ctx, Number(order.store_id))) throw new ApiError('forbidden', "You are not authorized to update this order's store.", 403);
+    const result = await orderSvc.markDelivered(orderId, { userId: ctx.id, ip: req.ip }, []);
+    if (!result.success) throw new ApiError('action_failed', (result.errors ?? ['Could not mark the order delivered.']).join(' '), 422);
+    return ok({ order_id: orderId, status: 'Delivered' });
+  });
+
   route('POST', 'order_edit', async (req) => {
     const ctx = await auth(req, 'orders.edit');
     const p = payload(req);

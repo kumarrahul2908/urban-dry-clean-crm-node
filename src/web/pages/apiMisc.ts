@@ -17,12 +17,16 @@ const post = { methods: ['GET', 'POST'] as ('GET' | 'POST')[] };
 const notPost = () => json({ success: false, error: 'Invalid request method.' }, 405);
 
 export function registerApiMisc(app: FastifyInstance) {
-  const { db, audit, whatsapp } = app.services;
+  const { db, audit, whatsapp, orders } = app.services;
 
   // ---- api/voice_pos_parse.php: inert stub ------------------------------------------------------
   webPage(app, '/api/voice_pos_parse', { auth: 'public', ...post }, async () => json({ success: false, error: 'Voice POS has been removed from this environment.' }, 410));
 
   // ---- barcode_lookup / qr_lookup -----------------------------------------------------------------
+  // These are TWO SEPARATE files in the real app, not one shared implementation -- the short_order_code
+  // fix (changelog 2026-10-23..30) only ever touched api/barcode_lookup.php; api/qr_lookup.php's own
+  // query was explicitly left "otherwise untouched", so it still returns the long order_number. Node
+  // shares one lookup() function for both, so that difference has to be threaded through via `kind`.
   const lookup = async (ctx: WebCtx, ip: string, key: string, col: string, kind: 'barcode' | 'qr', token: string) => {
     const uid = ctx.data.user_id ?? null;
     const anchor = (await db.query<Row>(`SELECT order_item_id, laundry_garment_id FROM barcodes WHERE ${col} = ?`, [key]))[0];
@@ -30,24 +34,25 @@ export function registerApiMisc(app: FastifyInstance) {
     const fallbackId = kind === 'barcode' ? token : 'qr:' + token.slice(0, 8);
     const via = kind === 'barcode' ? null : col;
     const meta = (found: boolean, extra: Row) => (kind === 'barcode' ? { barcode: token, found, ...extra } : { via, found, ...extra });
+    const orderNo = (r: Row) => (kind === 'barcode' ? r.short_order_code ?? r.order_number : r.order_number);
     if (anchor && anchor.laundry_garment_id) {
       const row = (await db.query<Row>(
         `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, lg.id AS laundry_garment_id, g.garment_name, s.service_name, oi.item_status, oi.quantity AS total_garments,
-         o.id AS order_id, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
+         o.id AS order_id, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
          FROM barcodes b JOIN laundry_garments lg ON lg.id = b.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN garments g ON g.id = lg.garment_id
          JOIN services s ON s.id = oi.service_id JOIN orders o ON o.id = b.order_id JOIN customers c ON c.id = o.customer_id WHERE b.${col} = ?`, [key]))[0];
       await audit.record({ action: 'lookup', module: 'garment_tags', recordId: String(row?.laundry_garment_id ?? fallbackId), newValue: meta(!!row, { mode: 'weight' }), userId: uid, ip });
       if (!row) return json({ success: false, message: miss });
-      return json({ success: true, laundry_garment_id: row.laundry_garment_id, order_id: row.order_id, order_number: row.order_number, sequence: row.item_sequence, total_garments: row.total_garments,
+      return json({ success: true, laundry_garment_id: row.laundry_garment_id, order_id: row.order_id, order_number: orderNo(row), sequence: row.item_sequence, total_garments: row.total_garments,
         customer_name: row.customer_name, customer_mobile: row.customer_mobile, garment_name: row.garment_name, service_name: row.service_name, status: row.item_status, due_date: ctx.date(row.due_date) });
     }
     const row = (await db.query<Row>(
-      `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, oi.id AS order_item_id, oi.remarks, g.garment_name, s.service_name, oi.item_status, o.id AS order_id, o.order_number, o.due_date, o.due_time,
+      `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, oi.id AS order_item_id, oi.remarks, g.garment_name, s.service_name, oi.item_status, o.id AS order_id, o.order_number, o.short_order_code, o.due_date, o.due_time,
        c.full_name AS customer_name, c.mobile AS customer_mobile FROM barcodes b JOIN order_items oi ON oi.id = b.order_item_id JOIN garments g ON g.id = oi.garment_id
        JOIN services s ON s.id = oi.service_id JOIN orders o ON o.id = b.order_id JOIN customers c ON c.id = o.customer_id WHERE b.${col} = ?`, [key]))[0];
     await audit.record({ action: 'lookup', module: 'garment_tags', recordId: String(row?.order_item_id ?? fallbackId), newValue: meta(!!row, {}), userId: uid, ip });
     if (!row) return json({ success: false, message: miss });
-    return json({ success: true, order_item_id: row.order_item_id, order_id: row.order_id, order_number: row.order_number, sequence: row.item_sequence, customer_name: row.customer_name,
+    return json({ success: true, order_item_id: row.order_item_id, order_id: row.order_id, order_number: orderNo(row), sequence: row.item_sequence, customer_name: row.customer_name,
       customer_mobile: row.customer_mobile, garment_name: row.garment_name, service_name: row.service_name, status: row.item_status, due_date: ctx.date(row.due_date), remarks: row.remarks });
   };
   webPage(app, '/api/barcode_lookup', { auth: 'garment_tags.view', methods: ['GET'] }, async (ctx, req) => {
@@ -137,6 +142,39 @@ export function registerApiMisc(app: FastifyInstance) {
     if (phpEmpty(order.mobile)) return json({ success: false, error: 'This customer has no mobile number on file.' }, 422);
     const r = await whatsapp.sendInvoice(orderId, uid(ctx));
     return json({ success: r.success, error: r.error ?? null, mode: r.mode });
+  });
+  // ---- Mark as Delivered / standalone payment -----------------------------------------------------
+  // "Mark as Delivered" button on Order Detail -- the modal collects a payment method (Cash/UPI/etc)
+  // and amount, or Due (nothing collected, order stays/becomes due). markDelivered() does both the
+  // status change and the optional payment in one call; see its own docblock for why a failed
+  // payment doesn't roll back the delivery status.
+  wa('orders_mark_delivered', 'billing.view', async (ctx, p) => {
+    const orderId = toInt(p.order_id);
+    if (!orderId) return json({ success: false, error: 'Missing order_id.' }, 422);
+    const paymentTypeId = toInt(p.payment_type_id);
+    const amount = Math.round((parseFloat(String(p.amount ?? 0)) || 0) * 100) / 100;
+    // payment_type_id = 0 (or amount <= 0) means "Due" was chosen -- nothing to record, the order's
+    // existing due balance is simply left as-is, same as recordPayment() already treats an empty array.
+    const paymentLines = paymentTypeId > 0 && amount > 0 ? [{ payment_type_id: paymentTypeId, amount }] : [];
+    const result = await orders.markDelivered(orderId, { userId: ctx.data.user_id!, ip: ctx.req.ip }, paymentLines);
+    if (!result.success) return json({ success: false, error: (result.errors ?? []).join(' ') }, 422);
+    return json({ success: true, payment_errors: result.payment_errors ?? [] });
+  });
+  // Standalone payment action, independent of the delivery-status change above -- "payment can be
+  // marked even after delivery too". Used from Order Detail's own "Add Payment" button (available
+  // whether delivered or not) and from the Due List page. Thin wrapper around recordPayment() -- same
+  // function the order-creation flow itself already uses, nothing new there.
+  wa('orders_record_payment', 'billing.view', async (ctx, p) => {
+    const orderId = toInt(p.order_id);
+    const paymentTypeId = toInt(p.payment_type_id);
+    const amount = Math.round((parseFloat(String(p.amount ?? 0)) || 0) * 100) / 100;
+    if (!orderId) return json({ success: false, error: 'Missing order_id.' }, 422);
+    if (!paymentTypeId || amount <= 0) return json({ success: false, error: 'Choose a payment method and enter an amount greater than zero.' }, 422);
+    const order = (await db.query<Row>('SELECT customer_id FROM orders WHERE id = ?', [orderId]))[0];
+    if (!order) return json({ success: false, error: 'Order not found.' }, 404);
+    const result = await orders.recordPayment(orderId, Number(order.customer_id), [{ payment_type_id: paymentTypeId, amount }], 0.0, { userId: ctx.data.user_id!, ip: ctx.req.ip });
+    if (!result.success) return json({ success: false, error: (result.errors ?? []).join(' ') }, 422);
+    return json({ success: true });
   });
   wa('whatsapp_send_media', 'whatsapp.settings', async (ctx, p) => {
     const customerId = toInt(p.customer_id);

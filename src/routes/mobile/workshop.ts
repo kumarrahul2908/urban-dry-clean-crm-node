@@ -67,14 +67,21 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
       `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
               g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name, wi.id AS workshop_item_id, wi.status AS workshop_status, wc.challan_number
        ${base} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${(page - 1) * perPage}`, params);
-    const pieceItems = rows.map((r) => ({
+    // a garment marked Unprocessed stays at its existing RAW workshop_items.status (markUnprocessed()
+    // is a history-only transition, so it can be resolved back to exactly where it was) -- so
+    // workshop_status alone can't tell the app this item is actually Unprocessed right now, which was
+    // showing stale QC/Complete/Mark-Unprocessed buttons for an item already marked Unprocessed.
+    // current_status (the same history-aware value getCurrentStatus() computes for the other queues)
+    // is included here too, so the app can hide those buttons once it reads 'Unprocessed'.
+    const pieceItems = await Promise.all(rows.map(async (r) => ({
       order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, item_status: r.item_status, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight),
       unit: r.unit, due_date: r.due_date, due_time: r.due_time, customer_name: r.customer_name, garment_name: r.garment_name, service_name: r.service_name,
-      urgent_level_name: r.urgent_level_name, workshop_item_id: r.workshop_item_id !== null ? num(r.workshop_item_id) : null, workshop_status: r.workshop_status, challan_number: r.challan_number,
-    }));
+      urgent_level_name: r.urgent_level_name, workshop_item_id: r.workshop_item_id !== null ? num(r.workshop_item_id) : null, workshop_status: r.workshop_status,
+      current_status: r.workshop_item_id !== null ? await workshop.getCurrentStatus(Number(r.workshop_item_id)) : null, challan_number: r.challan_number,
+    })));
     const mapLaundry = (r: Raw) => ({
       laundry_garment_id: num(r.id), sequence: num(r.sequence), garment_name: r.garment_name, total_garments: num(r.total_garments), order_id: num(r.order_id), order_number: r.order_number,
-      due_date: r.due_date, customer_name: r.customer_name, service_name: r.service_name, status: r.status,
+      due_date: r.due_date, customer_name: r.customer_name, service_name: r.service_name, status: r.status, current_status: r.current_status ?? null,
       workshop_item_id: r.workshop_item && r.workshop_item.id !== undefined && r.workshop_item.id !== null ? num(r.workshop_item.id) : null,
     });
     const laundryPending = myWs !== null ? [] : await laundry.listByStatus(['Pending']); // unsent garments are a store-side list
@@ -85,9 +92,18 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
         [laundryInProgress.map((l) => l.id)]);
       const byLg = new Map<number, Raw>();
       for (const w of wis) byLg.set(Number(w.laundry_garment_id), w);
-      for (const lg of laundryInProgress) lg.workshop_item = byLg.get(Number(lg.id)) ?? null;
+      for (const lg of laundryInProgress) {
+        lg.workshop_item = byLg.get(Number(lg.id)) ?? null;
+        // same reasoning as the piece queue above: raw status doesn't change on markUnprocessed().
+        lg.current_status = lg.workshop_item ? await workshop.getCurrentStatus(Number(lg.workshop_item.id)) : null;
+      }
       if (myWs !== null) laundryInProgress = laundryInProgress.filter((lg) => lg.workshop_item && Number(lg.workshop_item.workshop_id) === myWs);
     }
+    // Candidates for Accept / Return-to-Store / Store-Receive -- broadened from 'Received'/'Completed'
+    // only to everything not 'Rejected', matching modules/workshop/receive.php's own broadened query on
+    // web: store_receive_queue now covers EVERYTHING not yet Store Received/Unprocessed (not just
+    // 'Returned'), so the app's force_receive action can pick up an item even if workshop staff never
+    // finished the normal digital tracking.
     const cands = await db.query<Raw>(
       `SELECT wi.id, wi.order_item_id, wi.laundry_garment_id, wi.status AS raw_status, wi.remarks, COALESCE(g1.garment_name, g2.garment_name) AS garment_name,
               COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(o1.id, o2.id) AS order_id, COALESCE(c1.full_name, c2.full_name) AS customer_name
@@ -95,14 +111,14 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
        LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
        LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id
        LEFT JOIN orders o2 ON o2.id = oi2.order_id LEFT JOIN customers c2 ON c2.id = o2.customer_id
-       WHERE wi.status IN ('Received', 'Completed')${myWs !== null ? ' AND wc.workshop_id = ?' : ''} ORDER BY wi.id DESC LIMIT 200`, myWs !== null ? [myWs] : []);
+       WHERE wi.status != 'Rejected'${myWs !== null ? ' AND wc.workshop_id = ?' : ''} ORDER BY wi.id DESC LIMIT 200`, myWs !== null ? [myWs] : []);
     const acceptQueue: Raw[] = [], returnQueue: Raw[] = [], storeReceiveQueue: Raw[] = [];
     for (const row of cands) {
       const current = await workshop.getCurrentStatus(Number(row.id));
       const item = { workshop_item_id: num(row.id), kind: row.laundry_garment_id !== null ? 'laundry' : 'piece', garment_name: row.garment_name, order_id: row.order_id !== null ? num(row.order_id) : null, order_number: row.short_order_code ?? row.order_number, customer_name: row.customer_name, current_status: current };
       if (current === 'Received') acceptQueue.push(item);
       else if (current === 'Completed') returnQueue.push(item);
-      else if (current === 'Returned') storeReceiveQueue.push(item);
+      if (!['Store Received', 'Unprocessed', 'Rejected'].includes(current)) storeReceiveQueue.push(item);
     }
     const workshops = (await db.query<Raw>('SELECT id, workshop_name FROM workshops WHERE is_active=1 ORDER BY workshop_name')).map((r) => ({ id: num(r.id), name: r.workshop_name }));
     return ok({
@@ -141,7 +157,7 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
       if (!result.success) throw new ApiError('action_failed', (result.errors ?? ['Could not create the challan.']).join(' '), 422);
       return ok({ message: `Challan ${result.challan_number} created with ${ids.length} item(s).`, challan_id: num(result.challan_id), challan_number: result.challan_number });
     }
-    const itemActions = ['start_processing', 'complete_processing', 'accept', 'return_to_store', 'store_receive', 'mark_unprocessed', 'resolve_unprocessed'];
+    const itemActions = ['start_processing', 'complete_washing', 'pass_qc', 'complete_ironing', 'complete_processing', 'accept', 'return_to_store', 'store_receive', 'force_receive', 'mark_unprocessed', 'resolve_unprocessed'];
     if (!itemActions.includes(action)) throw new ApiError('invalid_request', 'Unknown action.', 422);
     const wiId = toInt(p.workshop_item_id);
     if (!wiId) throw new ApiError('invalid_request', 'A valid workshop_item_id is required.', 422);
@@ -150,21 +166,37 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     if (action === 'mark_unprocessed' && remarks.trim() === '') throw new ApiError('invalid_request', 'A reason is required to mark an item unprocessed.', 422);
     const result = await ({
       start_processing: () => workshop.startProcessing(wiId, a),
+      // QC must happen DURING workshop processing, not after return to store -- these three now
+      // stand between start_processing and complete_processing (Processing -> QC -> Ready(ironed) ->
+      // Packed, item_status-tracked), same as the web redesign.
+      complete_washing: () => workshop.completeWashing(wiId, a, remarks),
+      pass_qc: () => workshop.passQC(wiId, a, remarks),
+      complete_ironing: () => workshop.completeIroning(wiId, a, remarks),
+      // Piece items now REQUIRE item_status='Packed' first (gated inside the service itself);
+      // Laundry items are unaffected and still go straight through.
       complete_processing: () => workshop.completeProcessing(wiId, a, remarks),
       accept: () => workshop.acceptItem(wiId, a, remarks),
       return_to_store: () => workshop.returnToStore(wiId, a, remarks),
       store_receive: () => workshop.storeReceive(wiId, a, remarks),
+      // Force-advances an item straight to Store Received from WHATEVER stage it's actually at,
+      // bypassing the normal step-by-step checks, when the garment has physically come back but
+      // wasn't fully tracked digitally. Same method the web receive.php page's "Receive" button calls.
+      force_receive: () => workshop.forceStoreReceive(wiId, a, remarks),
       mark_unprocessed: () => workshop.markUnprocessed(wiId, a, remarks),
       resolve_unprocessed: () => workshop.resolveUnprocessed(wiId, a, remarks),
     } as Record<string, () => Promise<{ success: boolean; errors?: string[] }>>)[action]!();
     if (!result.success) throw new ApiError('action_failed', (result.errors ?? ['Could not update this item.']).join(' '), 422);
-    if (action === 'complete_processing') {
+    if (action === 'complete_processing' || action === 'complete_ironing') {
+      // complete_ironing is the REAL completion point for a piece item now; complete_processing
+      // remains the Laundry-only shortcut -- never allowed to turn a committed transition into a
+      // failure response.
       try { await hooks.workshopCompleted(wiId); } catch (e) { console.error('notifyWorkshopCompleted failed:', (e as Error).message); }
     }
     const messages: Record<string, string> = {
-      start_processing: 'Processing started.', complete_processing: 'Marked as processing completed — ready for QC.', accept: 'Item accepted.',
-      return_to_store: 'Item returned to store.', store_receive: 'Received at store — ready for QC.', mark_unprocessed: 'Item marked Unprocessed.',
-      resolve_unprocessed: 'Item resolved — back in the active queue.',
+      start_processing: 'Processing started.', complete_washing: 'Washing done — moved to QC.', pass_qc: 'QC passed — moved to ironing.',
+      complete_ironing: 'Ironing & packaging done — ready to return to store.', complete_processing: 'Marked as processing completed — ready to return to store.',
+      accept: 'Item accepted.', return_to_store: 'Item returned to store.', store_receive: 'Received at store — ready for QC.', force_receive: 'Garment received.',
+      mark_unprocessed: 'Item marked Unprocessed.', resolve_unprocessed: 'Item resolved — back in the active queue.',
     };
     return ok({ message: messages[action], workshop_item_id: wiId });
   });

@@ -35,7 +35,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
         return new WebText(`<h2>403 - Access Denied</h2><p>Workshop Staff cannot send garments to a workshop — this is a Store-side action.</p><p><a href="${u('modules/workshop/dashboard.php')}">Back to Workshop Dashboard</a></p>`, 403);
       }
       const wiId = int(p.workshop_item_id);
-      if (myWs !== null && ['start_processing', 'complete_processing', 'start_processing_laundry', 'complete_processing_laundry', 'accept', 'return_to_store', 'mark_unprocessed', 'resolve_unprocessed'].includes(action) && !(await wsItemBelongs(db, wiId, myWs))) {
+      if (myWs !== null && ['start_processing', 'complete_washing', 'pass_qc', 'complete_ironing', 'complete_processing', 'start_processing_laundry', 'complete_processing_laundry', 'accept', 'return_to_store', 'mark_unprocessed', 'resolve_unprocessed'].includes(action) && !(await wsItemBelongs(db, wiId, myWs))) {
         ctx.flashSet('danger', 'Item not found.');
         return new WebRedirect('modules/workshop/index.php');
       }
@@ -46,9 +46,19 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
         if (r.success) { ctx.flashSet('success', `Challan ${r.challan_number} created with ${ids.length} item(s).`); return new WebRedirect('modules/workshop/challan_view.php?id=' + r.challan_id); }
         errors.push(...r.errors);
       } else if (action === 'start_processing') { flash(await workshop.startProcessing(wiId, actor), 'Processing started.'); return redirectIdx(p.redirect_qs); }
+      else if (action === 'complete_washing') { flash(await workshop.completeWashing(wiId, actor, clean(p.remarks)), 'Washing done — moved to QC.'); return redirectIdx(p.redirect_qs); }
+      else if (action === 'pass_qc') { flash(await workshop.passQC(wiId, actor, clean(p.remarks)), 'QC passed — moved to ironing.'); return redirectIdx(p.redirect_qs); }
+      else if (action === 'complete_ironing') {
+        const r = await workshop.completeIroning(wiId, actor, clean(p.remarks));
+        flash(r, 'Ironing & packaging done — ready to return to store.');
+        if (r.success) await hooks.workshopCompleted(wiId);
+        return redirectIdx(p.redirect_qs);
+      }
+      // this is now a Laundry-only shortcut in practice — a piece (order_item-anchored) item must go through
+      // complete_washing -> pass_qc -> complete_ironing instead (completeProcessing()'s own gate rejects one that hasn't).
       else if (action === 'complete_processing') {
         const r = await workshop.completeProcessing(wiId, actor, clean(p.remarks));
-        flash(r, 'Marked as processing completed — ready for QC.');
+        flash(r, 'Marked as processing completed — ready to return to store.');
         if (r.success) await hooks.workshopCompleted(wiId);
         return redirectIdx(p.redirect_qs);
       } else if (action === 'create_laundry_challan') {
@@ -94,7 +104,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
       LEFT JOIN workshop_challans wc ON wc.id = wi.challan_id WHERE ${where}`;
     const total = int((await db.query<Row>(`SELECT COUNT(*) AS n ${baseSql}`, params))[0]!.n);
     const rows = await db.query<Row>(
-      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit,
+      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit,
        ul.level_name AS urgent_level_name, wi.id AS workshop_item_id, wi.status AS workshop_status, wc.challan_number
        ${baseSql} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${offset}`, params);
     const totalPages = Math.ceil(total / perPage);
@@ -112,7 +122,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
       if (myWs !== null) laundryInProgress = laundryInProgress.filter((l) => !!l.workshop_item && Number(l.workshop_item.workshop_id) === myWs);
     }
 
-    const cols = `COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.id, o2.id) AS order_id, COALESCE(c1.full_name, c2.full_name) AS customer_name`;
+    const cols = `COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(o1.id, o2.id) AS order_id, COALESCE(c1.full_name, c2.full_name) AS customer_name`;
     const joins = `FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
        LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
        LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id LEFT JOIN orders o2 ON o2.id = oi2.order_id LEFT JOIN customers c2 ON c2.id = o2.customer_id`;
@@ -124,7 +134,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
       if (cur === 'Received') acceptQueue.push(row); else if (cur === 'Completed') returnQueue.push(row);
     }
     const upAll = await db.query<Row>(
-      `SELECT DISTINCT wi.id, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(c1.full_name, c2.full_name) AS customer_name, COALESCE(g1.garment_name, g2.garment_name) AS garment_name,
+      `SELECT DISTINCT wi.id, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(c1.full_name, c2.full_name) AS customer_name, COALESCE(g1.garment_name, g2.garment_name) AS garment_name,
        h.remarks AS reason, h.changed_at AS marked_at
        FROM garment_status_history h
        JOIN workshop_items wi ON (h.order_item_id IS NOT NULL AND h.order_item_id = wi.order_item_id) OR (h.laundry_garment_id IS NOT NULL AND h.laundry_garment_id = wi.laundry_garment_id)
@@ -148,6 +158,11 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
                   <input type="hidden" name="redirect_qs" value="${qsForRedirect}">
                   <button type="submit" class="ws-btn ws-btn--xs ws-btn--danger" title="Click to mark this garment unprocessed">Mark Unprocessed</button>
                 </form>`;
+    const ACTION_FOR_STAGE: Record<string, [string, string]> = { Processing: ['complete_washing', 'Washing Done'], QC: ['pass_qc', 'QC Passed'], Ready: ['complete_ironing', 'Ironing & Packaging Done'] };
+    const PILL_CLASS: Record<string, string> = { Pending: 'pending', Processing: 'processing', QC: 'qc', Ready: 'ironing', Packed: 'packed' };
+    const PILL_LABEL: Record<string, string> = { QC: 'QC', Ready: 'Ironing', Packed: 'Packaging' };
+    const pillClass = (s: string) => PILL_CLASS[s] ?? 'workshop';
+    const pillLabel = (s: string) => PILL_LABEL[s] ?? s;
     const rowActions = (r: Row) => html`
                 ${r.item_status === 'Workshop' && r.workshop_item_id ? html`
                   <form method="POST" class="d-inline">
@@ -156,15 +171,15 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
                     <input type="hidden" name="workshop_item_id" value="${r.workshop_item_id}">
                     <input type="hidden" name="redirect_qs" value="${qsForRedirect}">
                     <button type="submit" class="ws-btn ws-btn--xs ws-btn--start">Start</button>
-                  </form>` : r.item_status === 'Processing' && r.workshop_item_id ? html`
+                  </form>` : ACTION_FOR_STAGE[r.item_status] && r.workshop_item_id ? html`
                   <form method="POST" class="d-inline">
                     ${ctx.csrfField()}
-                    <input type="hidden" name="action" value="complete_processing">
+                    <input type="hidden" name="action" value="${ACTION_FOR_STAGE[r.item_status]![0]}">
                     <input type="hidden" name="workshop_item_id" value="${r.workshop_item_id}">
                     <input type="hidden" name="redirect_qs" value="${qsForRedirect}">
-                    <button type="submit" class="ws-btn ws-btn--xs ws-btn--done">Complete</button>
+                    <button type="submit" class="ws-btn ws-btn--xs ws-btn--done">${ACTION_FOR_STAGE[r.item_status]![1]}</button>
                   </form>` : ''}
-                ${['Workshop', 'Processing'].includes(r.item_status) && r.workshop_item_id ? unprocForm(r.workshop_item_id) : ''}`;
+                ${['Workshop', 'Processing', 'QC', 'Ready'].includes(r.item_status) && r.workshop_item_id ? unprocForm(r.workshop_item_id) : ''}`;
 
     let pager: Raw | string = '';
     if (totalPages > 1) {
@@ -211,10 +226,10 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
           <tbody>
           ${procRows.map((r) => html`
             <tr>
-              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
               <td class="udc-card-head">${r.customer_name}</td>
               <td data-label="Garment">${r.garment_name}</td>
-              <td data-label="Status"><span class="ws-pill ws-pill--${r.item_status === 'Processing' ? 'processing' : 'workshop'}">${r.item_status}</span></td>
+              <td data-label="Status"><span class="ws-pill ws-pill--${pillClass(r.item_status)}">${pillLabel(r.item_status)}</span></td>
               <td data-label="Due">${raw(ctx.date(r.due_date))}</td>
               <td class="text-nowrap" data-label="">
                 ${rowActions(r)}
@@ -291,14 +306,14 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
                   ${r.item_status === 'Pending' ? html`
                     <input type="checkbox" name="item_ids[]" value="${r.id}" class="row-check ws-check-box">` : ''}
                 </td>
-                <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+                <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
                 <td class="udc-card-head">${r.customer_name}</td>
                 <td data-label="Garment"><a href="${u('modules/barcode/garment_detail.php?item_id=' + r.id)}">${r.garment_name}</a></td>
                 <td data-label="Service"><span class="ws-chip">${r.service_name}</span></td>
                 <td class="text-end" data-label="Qty/Weight">${r.weight !== null ? String(r.weight) : String(r.quantity)}</td>
                 <td data-label="Unit">${r.billing_unit === 'weight' ? 'KG' : 'Pcs'}</td>
                 <td data-label="Status">
-                  <span class="ws-pill ws-pill--${r.item_status === 'Pending' ? 'pending' : (r.item_status === 'Processing' ? 'processing' : 'workshop')}">${r.item_status}</span>
+                  <span class="ws-pill ws-pill--${pillClass(r.item_status)}">${pillLabel(r.item_status)}</span>
                   ${r.challan_number ? html`<div class="ws-challan">${r.challan_number}</div>` : ''}
                 </td>
                 <td data-label="Due">${dueCell(r.due_date, r.due_time)}</td>
@@ -430,7 +445,7 @@ ${mainBlock}
           <tbody>
           ${acceptQueue.map((r) => html`
             <tr>
-              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
               <td class="udc-card-head">${r.customer_name}</td>
               <td data-label="Garment">${r.garment_name}</td>
               <td class="small" data-label="Instruction">${orDash(r.remarks)}</td>
@@ -465,7 +480,7 @@ ${mainBlock}
           <tbody>
           ${returnQueue.map((r) => html`
             <tr>
-              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
               <td class="udc-card-head">${r.customer_name}</td>
               <td data-label="Garment">${r.garment_name}</td>
               <td data-label="">
@@ -498,7 +513,7 @@ ${unprocessed.length ? html`
           <tbody>
           ${unprocessed.map((r) => html`
             <tr>
-              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${String(r.order_number ?? '')}</a></td>
+              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${String(r.short_order_code ?? r.order_number ?? '')}</a></td>
               <td class="udc-card-head">${String(r.customer_name ?? '')}</td>
               <td data-label="Garment">${String(r.garment_name ?? '')}</td>
               <td class="small" data-label="Reason">${orDash(r.reason)}</td>

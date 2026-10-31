@@ -21,6 +21,7 @@ import { registerReportPages } from './pages/reports.js';
 import { registerDesignPages } from './pages/designPages.js';
 import { registerMiscPages } from './pages/miscPages.js';
 import { registerAdminSettingsPages } from './pages/adminSettings.js';
+import { registerAdminBackupPages } from './pages/adminBackup.js';
 import { registerAdminUsersPage } from './pages/adminUsers.js';
 import { registerPricelistImportPage } from './pages/pricelistImport.js';
 import { registerPricingPages } from './pages/pricing.js';
@@ -82,6 +83,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerPricingPages(app);
   registerAdminUsersPage(app);
   registerAdminSettingsPages(app);
+  registerAdminBackupPages(app);
   registerMiscPages(app);
   registerReportPages(app);
   registerDesignPages(app);
@@ -128,10 +130,10 @@ export async function registerWebRoutes(app: FastifyInstance) {
     if (Buffer.byteLength(q) < 2) return json({ results: [] });
     const like = `%${q}%`;
     const rows = await db.query(
-      `SELECT o.id, o.order_number, o.invoice_number, c.full_name AS customer_name, c.mobile
+      `SELECT o.id, o.order_number, o.short_order_code, o.invoice_number, c.full_name AS customer_name, c.mobile
        FROM orders o JOIN customers c ON c.id = o.customer_id
-       WHERE o.order_number LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?
-       ORDER BY o.id DESC LIMIT 15`, Array(4).fill(like));
+       WHERE o.order_number LIKE ? OR o.short_order_code LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?
+       ORDER BY o.id DESC LIMIT 15`, Array(5).fill(like));
     return json({ results: rows });
   });
 }

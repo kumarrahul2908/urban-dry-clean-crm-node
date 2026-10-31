@@ -34,7 +34,7 @@ export function registerPosPages(app: FastifyInstance) {
     const preselect = int(q.customer_id);
     const u = (p: string) => ctx.baseUrl(p);
     const x = [canOverrideDiscount ? 'true' : 'false', canManual ? 'true' : 'false', jsonEncode(maxDiscount), jsonEncode(defaultPriceListId), jsonEncode(preselect || null), jsonEncode(paymentTypes),
-      services.length ? String(int(services[0]!.id)) : 'null', jsonEncode(orderToken)];
+      services.length ? String(int(services[0]!.id)) : 'null', jsonEncode(orderToken), categories.length ? String(int(categories[0]!.id)) : 'null'];
     return layout(ctx, { title: 'New Order (Dry Cleaning)' }, html`
 ${raw(posStyle(u, jsonEncode, h))}
 
@@ -250,14 +250,17 @@ ${raw(posStyle(u, jsonEncode, h))}
             <label class="form-label small">Tax</label>
             <input type="text" id="agTaxDisplay" class="form-control form-control-sm" readonly>
           </div>
-          <div class="col-6">
+          <!-- hidden for now -- with the garment photo already documenting its own look, typing
+               Brand/Color felt redundant at order-creation time. Fields themselves (and their
+               JS/submit wiring) are untouched, just not shown. -->
+          <div class="col-6" style="display:none;">
             <label class="form-label small">Brand</label>
             <select id="agBrand" class="form-select form-select-sm">
               <option value="">None</option>
               ${brands.map((b) => html`<option value="${b.id}">${b.brand_name}</option>`)}
             </select>
           </div>
-          <div class="col-6">
+          <div class="col-6" style="display:none;">
             <label class="form-label small">Color</label>
             <select id="agColor" class="form-select form-select-sm">
               <option value="">None</option>

@@ -150,6 +150,131 @@ ${raw(orderListStyle(u, jsonEncode, e))}
 `);
   });
 
+  // ---- due list ----------------------------------------------------------------------------------
+  // Every order with an outstanding balance (accounts_receivable.due_amount > 0, status still
+  // 'Open' -- excludes Cancelled/Refund Due, which aren't a collectible balance) shows here,
+  // delivered or not, until fully paid off. Same api/orders_record_payment.php endpoint Order
+  // Detail's own "Add Payment" button uses -- one payment-recording path, reachable from two places.
+  webPage(app, '/modules/orders/due_list', { auth: 'billing.view' }, async (ctx, req) => {
+    const u = (p: string) => ctx.baseUrl(p);
+    const money = await ctx.loadMoney();
+    const rows = await db.query<Row>(
+      `SELECT ar.order_id, ar.due_amount, ar.total_amount, ar.paid_amount, ar.due_date, o.short_order_code, o.order_number, os.status_label, c.full_name AS customer_name, c.mobile
+       FROM accounts_receivable ar JOIN orders o ON o.id = ar.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = ar.customer_id
+       WHERE ar.status = 'Open' AND ar.due_amount > 0.01 ORDER BY ar.due_date ASC, ar.due_amount DESC`);
+    const totalDue = rows.reduce((s, r) => s + flt(r.due_amount), 0);
+    const paymentTypes = await db.query<Row>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
+
+    return layout(ctx, { title: 'Due List' }, html`
+<div class="container-fluid py-3">
+  <h4 class="fw-bold mb-3"><i class="fa-solid fa-indian-rupee-sign me-2"></i>Due List<span class="badge bg-danger ms-2">${raw(money(totalDue))}</span></h4>
+
+  ${rows.length === 0 ? html`
+  <div class="card"><div class="card-body text-center text-muted py-5"><i class="fa-solid fa-circle-check fa-2x mb-2"></i><p class="mb-0">No pending dues right now.</p></div></div>` : html`
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Order</th><th>Customer</th><th>Status</th><th>Total</th><th>Paid</th><th>Due</th><th>Due Date</th><th style="width:110px;"></th></tr></thead>
+        <tbody>
+        ${rows.map((r) => html`
+          <tr>
+            <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
+            <td>${r.customer_name}<div class="small text-muted">${r.mobile}</div></td>
+            <td><span class="badge bg-secondary">${r.status_label}</span></td>
+            <td>${raw(money(flt(r.total_amount)))}</td>
+            <td>${raw(money(flt(r.paid_amount)))}</td>
+            <td class="fw-bold text-danger">${raw(money(flt(r.due_amount)))}</td>
+            <td>${raw(ctx.date(r.due_date, 'd M'))}</td>
+            <td><button type="button" class="btn btn-sm btn-outline-primary btn-pay" data-order-id="${r.order_id}" data-due="${String(r.due_amount)}">Add Payment</button></td>
+          </tr>`)}
+        </tbody>
+      </table>
+    </div>
+  </div>`}
+</div>
+
+<div class="modal fade" id="dueListPayModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Add Payment</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Payment</label>
+          <select class="form-select" id="dlPaymentType">
+            ${paymentTypes.map((pt) => html`<option value="${pt.id}">${pt.type_name}</option>`)}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Amount</label>
+          <input type="number" step="0.01" min="0" class="form-control" id="dlAmount">
+        </div>
+        <div class="alert alert-danger d-none" id="dlError"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="dlConfirmBtn">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+${raw(`<script>
+let dlOrderId = null;
+let dueListModal = null;
+function getDueListModal() {
+  if (!dueListModal) dueListModal = new bootstrap.Modal(document.getElementById('dueListPayModal'));
+  return dueListModal;
+}
+document.querySelectorAll('.btn-pay').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    dlOrderId = this.dataset.orderId;
+    document.getElementById('dlAmount').value = this.dataset.due;
+    document.getElementById('dlError').classList.add('d-none');
+    getDueListModal().show();
+  });
+});
+document.getElementById('dlConfirmBtn').addEventListener('click', function () {
+  const btn = this;
+  const paymentTypeId = document.getElementById('dlPaymentType').value;
+  const amount = document.getElementById('dlAmount').value;
+  const errBox = document.getElementById('dlError');
+  errBox.classList.add('d-none');
+  if (!amount || parseFloat(amount) <= 0) {
+    errBox.textContent = 'Enter an amount greater than zero.';
+    errBox.classList.remove('d-none');
+    return;
+  }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving...';
+  const formData = new FormData();
+  formData.append('order_id', dlOrderId);
+  formData.append('payment_type_id', paymentTypeId);
+  formData.append('amount', amount);
+  formData.append('csrf_token', ${jsonEncode(ctx.csrfToken())});
+  fetch(${jsonEncode(u('api/orders_record_payment.php'))}, { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(function (result) {
+      btn.disabled = false; btn.textContent = original;
+      if (result.success) {
+        location.reload();
+      } else {
+        errBox.textContent = result.error || 'Something went wrong.';
+        errBox.classList.remove('d-none');
+      }
+    })
+    .catch(function () {
+      btn.disabled = false; btn.textContent = original;
+      errBox.textContent = 'Could not reach the server. Please try again.';
+      errBox.classList.remove('d-none');
+    });
+});
+</script>`)}
+`);
+  });
+
   // ---- view -----------------------------------------------------------------------------------
   webPage(app, '/modules/orders/view', { auth: 'orders.view' }, async (ctx, req) => {
     const id = int((req.query as Record<string, unknown>).id);
@@ -186,7 +311,10 @@ ${raw(orderListStyle(u, jsonEncode, e))}
         GROUP_CONCAT(CONCAT(pt.type_name, ': ', ptx.amount, CASE WHEN ptx.reference_no IS NOT NULL THEN CONCAT(' (', ptx.reference_no, ')') ELSE '' END) SEPARATOR ', ') AS breakdown
        FROM payments p JOIN payment_transactions ptx ON ptx.payment_id = p.id JOIN payment_types pt ON pt.id = ptx.payment_type_id LEFT JOIN users u ON u.id = p.created_by
        WHERE p.order_id = ? GROUP BY p.id ORDER BY p.id DESC`, [id]);
-    const receivableStatus = (await db.query<Row>('SELECT status FROM accounts_receivable WHERE order_id = ?', [id]))[0]?.status || null;
+    const receivableRow = (await db.query<Row>('SELECT status, due_amount FROM accounts_receivable WHERE order_id = ?', [id]))[0];
+    const receivableStatus = receivableRow?.status || null;
+    const dueAmount = flt(receivableRow?.due_amount ?? 0);
+    const paymentTypesForModal = await db.query<Row>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
     const history = await db.query<Row>("SELECT al.*, u.full_name AS user_name FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id WHERE al.module = 'orders' AND al.record_id = ? ORDER BY al.created_at DESC LIMIT 50", [String(id)]);
     const isEditable = await orders.isEditable(order as { status_id: number });
     const u = (p: string) => ctx.baseUrl(p);
@@ -223,8 +351,48 @@ ${raw(orderListStyle(u, jsonEncode, e))}
         <a href="${u('modules/orders/invoice.php?id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-file-invoice"></i>Invoice</a>
         ${!phpEmpty(order.customer_mobile) ? html`
         <button type="button" class="ov-btn" id="btnSendInvoiceWhatsapp" style="background:#25D366;color:#fff;border-color:#25D366;"><i class="fa-brands fa-whatsapp"></i>Send Invoice</button>` : ''}
+        <!-- Mark as Delivered / Add Payment (+ their shared modal) are nested inside THIS permission
+             check in the real app -- garment_tags.print/reprint has nothing to do with delivery or
+             payment, but that is genuinely how it gates there, so it's kept bug-compatible here too. -->
         ${ctx.can('garment_tags.print') || ctx.can('garment_tags.reprint') ? html`
-        <a href="${u('modules/barcode/tags_print.php?order_id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-tag"></i>Tags</a>` : ''}` : ''}
+        <a href="${u('modules/barcode/tags_print.php?order_id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-tag"></i>Tags</a>
+        ${order.status_key !== 'delivered' ? html`
+        <button type="button" class="ov-btn" id="btnMarkDelivered" style="background:#198754;color:#fff;border-color:#198754;"><i class="fa-solid fa-circle-check"></i>Mark as Delivered</button>` : ''}
+        ${dueAmount > 0.009 ? html`
+        <button type="button" class="ov-btn" id="btnAddPayment" style="background:#fd7e14;color:#fff;border-color:#fd7e14;"><i class="fa-solid fa-indian-rupee-sign"></i>Add Payment (Due: ${raw(money(dueAmount))})</button>` : ''}
+
+        <!-- one shared modal for both Mark Delivered (with optional payment) and the standalone Add
+             Payment button -- title/note text and which API endpoint gets called are swapped by JS
+             depending on which button opened it. -->
+        <div class="modal fade" id="paymentModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="paymentModalTitle">Mark as Delivered</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <p class="text-muted small" id="paymentModalNote">Record a payment now, or leave it as Due to collect later.</p>
+                <div class="mb-3">
+                  <label class="form-label">Payment</label>
+                  <select class="form-select" id="pmPaymentType">
+                    <option value="0">Due (no payment now)</option>
+                    ${paymentTypesForModal.map((pt) => html`<option value="${pt.id}">${pt.type_name}</option>`)}
+                  </select>
+                </div>
+                <div class="mb-3" id="pmAmountRow">
+                  <label class="form-label">Amount</label>
+                  <input type="number" step="0.01" min="0" class="form-control" id="pmAmount" value="${String(dueAmount)}">
+                </div>
+                <div class="alert alert-danger d-none" id="pmError"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="pmConfirmBtn">Confirm</button>
+              </div>
+            </div>
+          </div>
+        </div>` : ''}` : ''}
       ${ctx.can('payments.refund') && flt(order.total_paid) > 0 ? html`
         <a href="${u('modules/orders/refund.php?id=' + id)}" class="ov-btn ov-btn--danger"><i class="fa-solid fa-rotate-left"></i>${cancelled ? 'Process Refund' : 'Refund'}</a>` : ''}
       ${isEditable && ctx.can('orders.cancel') ? html`
@@ -420,7 +588,7 @@ ${isEditable && (ctx.can('orders.edit') || ctx.can('orders.cancel')) ? html`
   </div>
 </div>
 
-${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken() }))}` : ''}
+${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaymentTypeId: String(paymentTypesForModal[0]?.id ?? '0') }))}` : ''}
 `);
   });
 

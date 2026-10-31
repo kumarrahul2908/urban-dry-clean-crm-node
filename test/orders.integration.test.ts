@@ -145,6 +145,28 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
     expect((await post('orders_record_payment', { order_id: orderId, client_request_id: 'late', payment_lines: [{ payment_type_id: 1, amount: 1 }] })).json().error.field_errors[0]).toMatch(/cancelled/);
   });
 
+  it('mark delivered: status change + optional payment, Due stays due, failed payment does not roll back delivery', async () => {
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('billing.view', 'x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT 1, id FROM permissions WHERE permission_key = 'billing.view'");
+    const created = await post('pos_orders_create', { client_request_id: 'md-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] });
+    const id = created.json().data.order_id;
+
+    const due = await post('orders_mark_delivered', { order_id: id });
+    expect(due.json().data).toMatchObject({ order_id: id, status: 'Delivered' });
+    expect((await db.query<any>("SELECT os.status_key FROM orders o JOIN order_statuses os ON os.id = o.status_id WHERE o.id = ?", [id]))[0].status_key).toBe('delivered');
+    expect(Number((await db.query<any>('SELECT due_amount FROM accounts_receivable WHERE order_id = ?', [id]))[0].due_amount)).toBeGreaterThan(0); // Due chosen -- nothing recorded, balance untouched
+
+    // a store a fixed-store identity doesn't belong to is refused; an unknown order 404s
+    expect((await post('orders_mark_delivered', { order_id: 999999 })).json().error.code).toBe('not_found');
+    expect((await post('orders_mark_delivered', {})).json().error.code).toBe('invalid_request');
+
+    // standalone Add Payment (independent of delivery status -- "payment can be marked even after delivery too")
+    const bal = Number((await db.query<any>('SELECT due_amount FROM accounts_receivable WHERE order_id = ?', [id]))[0].due_amount);
+    const pay = await post('orders_record_payment', { order_id: id, client_request_id: 'md-pay-1', payment_lines: [{ payment_type_id: 1, amount: bal }] });
+    expect(pay.json().data.idempotent_replay).toBe(false);
+    expect(Number((await db.query<any>('SELECT due_amount FROM accounts_receivable WHERE order_id = ?', [id]))[0].due_amount)).toBe(0);
+  });
+
   it('laundry order over HTTP', async () => {
     const r = await post('laundry_orders_create', { client_request_id: 'l-1', customer_id: 1, batches: [{ service_id: 3, weight: 2, rate: 60, garment_count: 2, garments: [{ garment_id: 1, quantity: 2 }] }] });
     expect(r.statusCode).toBe(200);

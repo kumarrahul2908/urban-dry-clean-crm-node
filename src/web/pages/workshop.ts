@@ -4,7 +4,7 @@ import { phpEmpty } from '../../lib/php.js';
 import { wiStates, wiTerms } from '../../services/workshopInvoice.js';
 import { wsBillingScope, wsItemBelongs, wsScheduleData, wsScope } from '../../services/workshopScope.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
-import { flt, int, numberFormat } from '../format.js';
+import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
 import { e, html, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
 import { wsDashboardStyle } from './workshop.static.js';
@@ -38,7 +38,7 @@ export const validEmail = (s: string) => {
 };
 
 export function registerWorkshopPages(app: FastifyInstance) {
-  const { db, workshop, whatsapp } = app.services;
+  const { db, workshop, whatsapp, laundry } = app.services;
   const myWs = async (ctx: WebCtx) => (await wsScope(db, ctx.data.user_id ?? 0, ctx.data.user?.role_name ?? ''))[1];
   const allowedStores = (ctx: WebCtx): number[] | null => { const f = ctx.fixedStoreId(); return f !== null ? [f] : null; };
   const actor = (ctx: WebCtx) => ({ userId: ctx.data.user_id!, ip: ctx.req.ip });
@@ -50,7 +50,7 @@ export function registerWorkshopPages(app: FastifyInstance) {
     const rows = await db.query<Row>(
       `SELECT wi.id, wi.status AS raw_status, wi.remarks AS store_instruction, wi.sent_at,
        oi1.quantity AS piece_quantity, oi1.pieces_per_unit AS piece_pieces_per_unit,
-       COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.id, o2.id) AS order_id,
+       COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(o1.id, o2.id) AS order_id,
        COALESCE(o1.store_id, o2.store_id) AS store_id, COALESCE(s1.store_name, s2.store_name) AS store_name, COALESCE(o1.due_date, o2.due_date) AS due_date,
        COALESCE(o1.urgent_level_id, o2.urgent_level_id) IS NOT NULL AS is_urgent, COALESCE(c1.full_name, c2.full_name) AS customer_name
        FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
@@ -106,7 +106,7 @@ export function registerWorkshopPages(app: FastifyInstance) {
           <tbody>
           ${list.map((r) => html`
             <tr class="${!phpEmpty(r.due_date) && String(r.due_date) < today ? 'table-danger' : ''}">
-              <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+              <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
               <td>${r.customer_name}</td>
               <td>${r.garment_name}</td>
               <td>${String(r.store_name ?? '')}</td>
@@ -184,19 +184,19 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
       if (r.success) {
         try {
           const row = (await db.query<Row>(
-            `SELECT o.id AS order_id, o.order_number, c.id AS customer_id, c.full_name, c.mobile FROM workshop_items wi
+            `SELECT o.id AS order_id, o.order_number, o.short_order_code, c.id AS customer_id, c.full_name, c.mobile FROM workshop_items wi
              LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id
              JOIN orders o ON o.id = COALESCE(oi1.order_id, oi2.order_id) JOIN customers c ON c.id = o.customer_id WHERE wi.id = ?`, [wiId]))[0];
           if (row && !phpEmpty(row.mobile)) {
             await whatsapp.enqueue(Number(row.customer_id), Number(row.order_id), String(row.mobile), 'store_received',
-              { customer_name: row.full_name, order_number: row.order_number, business_name: (await ctx.setting('business_name', ctx.svc.env.APP_NAME)) ?? ctx.svc.env.APP_NAME }, `store_received:${row.order_id}`);
+              { customer_name: row.full_name, order_number: row.short_order_code ?? row.order_number, business_name: (await ctx.setting('business_name', ctx.svc.env.APP_NAME)) ?? ctx.svc.env.APP_NAME }, `store_received:${row.order_id}`);
           }
         } catch (ex) { console.error('WhatsApp store_received enqueue failed:', (ex as Error).message); }
       }
       return new WebRedirect('modules/workshop/receiving.php');
     }
     const allowed = allowedStores(ctx);
-    const cols = `COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.store_id, o2.store_id) AS store_id, COALESCE(c1.full_name, c2.full_name) AS customer_name`;
+    const cols = `COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(o1.order_number, o2.order_number) AS order_number, COALESCE(o1.short_order_code, o2.short_order_code) AS short_order_code, COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.store_id, o2.store_id) AS store_id, COALESCE(c1.full_name, c2.full_name) AS customer_name`;
     const joins = `FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
        LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
        LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id LEFT JOIN orders o2 ON o2.id = oi2.order_id LEFT JOIN customers c2 ON c2.id = o2.customer_id`;
@@ -231,7 +231,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         <tbody>
         ${queue.map((r) => html`
           <tr>
-            <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+            <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
             <td>${r.customer_name}</td>
             <td>${r.garment_name}</td>
             <td>
@@ -259,7 +259,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         <tbody>
         ${view.map((r) => html`
           <tr>
-            <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.order_number}</a></td>
+            <td><a href="${u('modules/orders/view.php?id=' + r.order_id)}">${r.short_order_code ?? r.order_number}</a></td>
             <td>${r.customer_name}</td>
             <td>${r.garment_name}</td>
             <td><span class="badge bg-secondary">${r.current_status}</span></td>
@@ -272,6 +272,473 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
 `);
   });
 
+  // ---- Send to Workshop (dedicated store-side page, separate from the combined workshop/index.php,
+  // which stays as-is for Workshop Staff's own Accept/Process/Unprocessed queues) -- picking which
+  // Pending garments to send out, order by order, creating the challan. On success, redirects to
+  // send_report, the printable/WhatsApp-able/downloadable "what went out" report. -------------------
+  webPage(app, '/modules/workshop/send', { auth: 'workshop.manage' }, async (ctx, req) => {
+    const errors: string[] = [];
+    if (req.method === 'POST') {
+      const p = body(ctx);
+      if (!ctx.csrfValid()) return csrfFail();
+      const workshopId = int(p.workshop_id);
+      const itemIds = formArray(p, 'item_ids').map((x) => int(x));
+      const laundryIds = formArray(p, 'laundry_garment_ids').map((x) => int(x));
+      const remarks = clean(p.remarks);
+      if (!itemIds.length && !laundryIds.length) errors.push('Select at least one garment to send.');
+      else if (!workshopId) errors.push('Select a workshop.');
+      else {
+        const challanIds: number[] = [];
+        if (itemIds.length) {
+          const r = await workshop.createChallan(workshopId, itemIds, remarks, actor(ctx)) as Row;
+          if (r.success) challanIds.push(Number(r.challan_id)); else errors.push(...r.errors);
+        }
+        if (laundryIds.length) {
+          const r2 = await workshop.createLaundryChallan(workshopId, laundryIds, remarks, actor(ctx)) as Row;
+          if (r2.success) challanIds.push(Number(r2.challan_id)); else errors.push(...r2.errors);
+        }
+        // Rahul's report covers everything sent in this one action, whether it took one challan or
+        // two (piece + Laundry) -- send_report takes a comma list.
+        if (!errors.length && challanIds.length) return new WebRedirect('modules/workshop/send_report.php?challan_ids=' + challanIds.join(','));
+      }
+    }
+
+    const pendingRows = await db.query<Row>(
+      `SELECT oi.id, oi.order_id, oi.quantity, oi.weight, oi.unit, o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
+       FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
+       WHERE oi.item_status = 'Pending' AND os.status_key != 'cancelled' ORDER BY (o.urgent_level_id IS NULL), o.due_date, o.id, oi.id`);
+
+    const defectsByItem = new Map<number, string[]>();
+    if (pendingRows.length) {
+      const ids = pendingRows.map((r) => Number(r.id));
+      for (const r of await db.query<Row>(`SELECT oid.order_item_id, d.defect_name FROM order_item_defects oid JOIN defects d ON d.id = oid.defect_id WHERE oid.order_item_id IN (${ids.map(() => '?').join(',')})`, ids)) {
+        const k = Number(r.order_item_id);
+        (defectsByItem.get(k) ?? defectsByItem.set(k, []).get(k)!).push(r.defect_name);
+      }
+    }
+
+    const ordersGrouped = new Map<number, Row>();
+    for (const r of pendingRows) {
+      const oid = Number(r.order_id);
+      if (!ordersGrouped.has(oid)) ordersGrouped.set(oid, { order_id: oid, short_order_code: r.short_order_code ?? r.order_number, customer_name: r.customer_name, due_date: r.due_date, items: [] as Row[] });
+      ordersGrouped.get(oid)!.items.push(r);
+    }
+
+    const laundryPending = await laundry.listByStatus(['Pending']);
+    const workshops = await db.query<Row>('SELECT id, workshop_name FROM workshops WHERE is_active=1 ORDER BY workshop_name');
+
+    return layout(ctx, { title: 'Send to Workshop' }, html`
+<div class="container-fluid py-3">
+  <h4 class="fw-bold mb-3"><i class="fa-solid fa-paper-plane me-2"></i>Send to Workshop</h4>
+
+  ${errors.length ? html`<div class="alert alert-danger"><ul class="mb-0">${errors.map((er) => html`<li>${er}</li>`)}</ul></div>` : ''}
+
+  ${ordersGrouped.size === 0 && laundryPending.length === 0 ? html`
+  <div class="card"><div class="card-body text-center text-muted py-5"><i class="fa-solid fa-circle-check fa-2x mb-2"></i><p class="mb-0">Nothing waiting to be sent right now.</p></div></div>` : html`
+  <form method="POST" id="sendForm">
+    ${ctx.csrfField()}
+    <div class="card mb-3">
+      <div class="card-body d-flex flex-wrap align-items-center gap-2">
+        <label class="form-label mb-0 fw-bold">Send to</label>
+        <select name="workshop_id" class="form-select" style="max-width:260px;" required>
+          <option value="">Choose workshop...</option>
+          ${workshops.map((w) => html`<option value="${w.id}">${w.workshop_name}</option>`)}
+        </select>
+        <input type="text" name="remarks" class="form-control" style="max-width:280px;" placeholder="Remarks for this challan (optional)">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="selectAllBtn">Select All</button>
+        <button type="submit" class="btn btn-primary ms-auto"><i class="fa-solid fa-paper-plane me-1"></i>Send Selected</button>
+      </div>
+    </div>
+
+    ${[...ordersGrouped.values()].map((ord) => html`
+    <div class="card mb-2">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div><strong>${ord.short_order_code}</strong> — ${ord.customer_name}</div>
+        <div class="small text-muted">Due: ${raw(ctx.date(ord.due_date, 'd M'))}</div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mb-0 align-middle">
+          <tbody>
+          ${ord.items.map((it: Row) => html`
+            <tr>
+              <td style="width:36px;"><input type="checkbox" class="item-check" name="item_ids[]" value="${it.id}"></td>
+              <td>${it.garment_name}</td>
+              <td class="text-muted">${it.service_name}</td>
+              <td class="text-muted small">${defectsByItem.get(Number(it.id))?.join(', ') ?? ''}</td>
+            </tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </div>`)}
+
+    ${laundryPending.length ? html`
+    <div class="card mb-2">
+      <div class="card-header fw-bold">Laundry Garments (by weight)</div>
+      <div class="table-responsive">
+        <table class="table table-sm mb-0 align-middle">
+          <tbody>
+          ${laundryPending.map((lg) => html`
+            <tr>
+              <td style="width:36px;"><input type="checkbox" class="item-check" name="laundry_garment_ids[]" value="${lg.id}"></td>
+              <td>${lg.garment_name}</td>
+              <td class="text-muted">${lg.order_number ?? ''} — ${lg.customer_name ?? ''}</td>
+            </tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
+  </form>`}
+</div>
+${raw(`<script>
+document.getElementById('selectAllBtn')?.addEventListener('click', function () {
+  const boxes = document.querySelectorAll('.item-check');
+  const allChecked = Array.from(boxes).every(b => b.checked);
+  boxes.forEach(b => b.checked = !allChecked);
+});
+document.getElementById('sendForm')?.addEventListener('submit', function (e) {
+  if (document.querySelectorAll('.item-check:checked').length === 0) {
+    e.preventDefault();
+    alert('Select at least one garment to send.');
+  }
+});
+</script>`)}
+`);
+  });
+
+  // ---- Send to Workshop report (printable/WhatsApp-able/downloadable "what went out") -----------
+  webPage(app, '/modules/workshop/send_report', { auth: 'workshop.manage' }, async (ctx, req) => {
+    const q = req.query as Record<string, unknown>;
+    const challanIds = [...new Set(clean(q.challan_ids).split(',').map((x) => int(x)).filter((x) => x !== 0))];
+    if (!challanIds.length) return new WebText('No challan specified.', 400);
+    const ph = challanIds.map(() => '?').join(',');
+
+    const pieceItems = await db.query<Row>(
+      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, oi.weight, oi.unit, o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+       g.garment_name, s.service_name, s.billing_unit, w.workshop_name, wc.challan_number, wc.challan_date
+       FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id JOIN workshops w ON w.id = wc.workshop_id JOIN order_items oi ON oi.id = wi.order_item_id JOIN orders o ON o.id = oi.order_id
+       JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id WHERE wi.challan_id IN (${ph}) ORDER BY o.id, oi.id`, challanIds);
+    const laundryItems = await db.query<Row>(
+      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+       g.garment_name, s.service_name, w.workshop_name, wc.challan_number, wc.challan_date
+       FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id JOIN workshops w ON w.id = wc.workshop_id JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id
+       JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id WHERE wi.challan_id IN (${ph}) ORDER BY o.id, lg.id`, challanIds);
+    if (!pieceItems.length && !laundryItems.length) return new WebText('Challan not found.', 404);
+
+    const allItems = [...pieceItems, ...laundryItems];
+    const allOrderItemIds = [...new Set(allItems.map((r) => Number(r.order_item_id)))];
+    const defectsByItem = new Map<number, string[]>();
+    if (allOrderItemIds.length) {
+      for (const r of await db.query<Row>(`SELECT oid.order_item_id, d.defect_name FROM order_item_defects oid JOIN defects d ON d.id = oid.defect_id WHERE oid.order_item_id IN (${allOrderItemIds.map(() => '?').join(',')})`, allOrderItemIds)) {
+        const k = Number(r.order_item_id);
+        (defectsByItem.get(k) ?? defectsByItem.set(k, []).get(k)!).push(r.defect_name);
+      }
+    }
+
+    const workshopName = allItems[0]!.workshop_name;
+    const challanNumbers = [...new Set(allItems.map((r) => r.challan_number))];
+    const sentAt = allItems[0]!.challan_date;
+
+    const ordersGrouped = new Map<string, Row>();
+    for (const r of allItems) {
+      const code = r.short_order_code ?? r.order_number;
+      if (!ordersGrouped.has(code)) ordersGrouped.set(code, { code, customer: r.customer_name, due_date: r.due_date, due_time: r.due_time, items: [] as Row[] });
+      ordersGrouped.get(code)!.items.push(r);
+    }
+
+    const waLines: string[] = [`*Sent to Workshop: ${workshopName}*`, 'Challan: ' + challanNumbers.join(', '), ''];
+    for (const ord of ordersGrouped.values()) {
+      waLines.push(`*${ord.code}* — ${ord.customer} (Due: ${ctx.date(ord.due_date, 'd M')})`);
+      for (const it of ord.items) {
+        const defects = defectsByItem.get(Number(it.order_item_id))?.length ? ` [${defectsByItem.get(Number(it.order_item_id))!.join(', ')}]` : '';
+        waLines.push(`- ${it.garment_name} (${it.service_name})${defects}`);
+      }
+      waLines.push('');
+    }
+    const waText = waLines.join('\n');
+
+    return html`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Workshop Send Report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: Arial, sans-serif; font-size: 13px; color: #1a1a1a; max-width: 800px; margin: 20px auto; padding: 0 16px; }
+  .actions { text-align: center; margin-bottom: 20px; }
+  .actions button, .actions a { border:0; background:#0b3d91; color:#fff; padding:9px 18px; border-radius:6px; text-decoration:none; font-size:13px; margin:0 4px; cursor:pointer; display:inline-block; }
+  .actions .wa-btn { background:#25D366; }
+  h1 { font-size: 18px; text-align: center; margin-bottom: 4px; }
+  .sub { text-align: center; color: #666; margin-bottom: 20px; font-size: 12px; }
+  .order-block { margin-bottom: 18px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .order-head { background: #f3f4f6; padding: 8px 12px; font-weight: bold; display: flex; justify-content: space-between; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 6px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 12px; }
+  th { color: #888; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .defects { color: #b45309; }
+  @media print { .actions { display: none; } }
+  @media (prefers-color-scheme: dark) {
+    body { background:#111; color:#eee; }
+    .order-block { border-color:#333; }
+    .order-head { background:#1c1c1c; }
+    th, td { border-color:#2a2a2a; }
+  }
+</style>
+</head>
+<body>
+<div class="actions">
+  <button onclick="window.print()">Print</button>
+  <a class="wa-btn" href="https://wa.me/?text=${raw(urlencode(waText))}" target="_blank">Send via WhatsApp</a>
+  <button id="downloadBtn">Download PDF</button>
+</div>
+
+<div id="reportSheet">
+  <h1>Sent to Workshop: ${workshopName}</h1>
+  <div class="sub">Challan: ${challanNumbers.join(', ')} &middot; ${raw(ctx.date(sentAt, 'd M Y, h:i A'))}</div>
+
+  ${[...ordersGrouped.values()].map((ord) => html`
+  <div class="order-block">
+    <div class="order-head"><span>${ord.code} — ${ord.customer}</span><span>Due: ${raw(ctx.date(ord.due_date, 'd M Y'))}${!phpEmpty(ord.due_time) ? raw(', ' + ctx.date(ord.due_time, 'h:i A')) : ''}</span></div>
+    <table>
+      <thead><tr><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Hanger/Fold/Remarks</th></tr></thead>
+      <tbody>
+        ${ord.items.map((it: Row) => html`
+        <tr>
+          <td>${it.garment_name}</td>
+          <td>${it.service_name}</td>
+          <td>${it.weight !== undefined && it.weight !== null ? String(it.weight) + ' KG' : String(it.quantity) + ' Pcs'}</td>
+          <td class="defects">${defectsByItem.get(Number(it.order_item_id))?.join(', ') ?? '—'}</td>
+        </tr>`)}
+      </tbody>
+    </table>
+  </div>`)}
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+${raw(`<script>
+document.getElementById('downloadBtn').addEventListener('click', function () {
+  const btn = this; const original = btn.textContent;
+  btn.textContent = 'Preparing...'; btn.disabled = true;
+  html2pdf().set({
+    margin: 10,
+    filename: 'Workshop-Send-${ctx.date(sentAt, 'Y-m-d')}.pdf',
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2 },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+  }).from(document.getElementById('reportSheet')).save().finally(function () {
+    btn.textContent = original; btn.disabled = false;
+  });
+});
+</script>`)}
+</body>
+</html>`;
+  });
+
+  // ---- Receive from Workshop (dedicated store-side page; see workshop/send.php's sibling) -------
+  // The original combined page only offered one "Receive Selected" action (silently doing
+  // Return-to-Store + Store-Receive together). Three EXPLICIT per-item actions instead: Return
+  // (Completed -> Returned), Receive (confirms Store Receive for a Returned item, or force-receives
+  // one that never finished digital tracking), Mark Unprocessed -- available at every stage shown here.
+  webPage(app, '/modules/workshop/receive', { auth: 'workshop.manage' }, async (ctx, req) => {
+    const u = (p: string) => ctx.baseUrl(p);
+    if (req.method === 'POST') {
+      const p = body(ctx);
+      if (!ctx.csrfValid()) return csrfFail();
+      const action = clean(p.action);
+      const wiId = int(p.workshop_item_id);
+      const redirectReceive = () => new WebRedirect('modules/workshop/receive.php');
+      if (action === 'return') {
+        flash(ctx, await workshop.returnToStore(wiId, actor(ctx), ''), 'Marked as returned from workshop.');
+        return redirectReceive();
+      } else if (action === 'receive') {
+        const current = await workshop.getCurrentStatus(wiId);
+        let r: { success: boolean; errors?: string[] };
+        if (current === 'Completed' || current === 'Returned') {
+          if (current === 'Completed') {
+            const r1 = await workshop.returnToStore(wiId, actor(ctx), '');
+            if (!r1.success) { ctx.flashSet('danger', (r1.errors ?? []).join(' ')); return redirectReceive(); }
+          }
+          r = await workshop.storeReceive(wiId, actor(ctx), '');
+        } else {
+          r = await workshop.forceStoreReceive(wiId, actor(ctx), '');
+        }
+        flash(ctx, r, 'Garment received.');
+        return redirectReceive();
+      } else if (action === 'mark_unprocessed') {
+        const reason = clean(p.reason);
+        if (reason === '') ctx.flashSet('danger', 'A reason is required to mark a garment Unprocessed.');
+        else flash(ctx, await workshop.markUnprocessed(wiId, actor(ctx), reason), 'Garment marked Unprocessed. It will not be billed until resolved.');
+        return redirectReceive();
+      } else if (action === 'receive_bulk') {
+        const wiIds = formArray(p, 'workshop_item_ids').map((x) => int(x));
+        const errors: string[] = [];
+        let receivedCount = 0;
+        for (const id of wiIds) {
+          const current = await workshop.getCurrentStatus(id);
+          let r2: { success: boolean; errors?: string[] };
+          if (current === 'Completed' || current === 'Returned') {
+            if (current === 'Completed') {
+              const r1 = await workshop.returnToStore(id, actor(ctx), '');
+              if (!r1.success) { errors.push(...(r1.errors ?? [])); continue; }
+            }
+            r2 = await workshop.storeReceive(id, actor(ctx), '');
+          } else {
+            r2 = await workshop.forceStoreReceive(id, actor(ctx), '');
+          }
+          if (r2.success) receivedCount++; else errors.push(...(r2.errors ?? []));
+        }
+        // Previously, if even ONE item out of a bulk selection hit any error, nothing redirected at
+        // all -- no success message shown even when most items WERE correctly received. Now always
+        // reports what actually happened (full success, partial, or full failure).
+        const uniqueErrors = [...new Set(errors)];
+        if (receivedCount > 0 && !uniqueErrors.length) ctx.flashSet('success', `${receivedCount} garment(s) marked as received.`);
+        else if (receivedCount > 0 && uniqueErrors.length) ctx.flashSet('danger', `${receivedCount} garment(s) received, but ${uniqueErrors.length} failed: ${uniqueErrors.join(' ')}`);
+        else if (uniqueErrors.length) ctx.flashSet('danger', uniqueErrors.join(' '));
+        else ctx.flashSet('danger', 'No garments were selected.');
+        return redirectReceive();
+      }
+    }
+
+    // Candidates: workshop_items at raw status != 'Rejected' -- derive-then-filter, same pattern used
+    // throughout this module.
+    const cols = `COALESCE(g1.garment_name, g2.garment_name) AS garment_name, COALESCE(s1.service_name, s2.service_name) AS service_name,
+       COALESCE(o1.id, o2.id) AS order_id, COALESCE(o1.short_order_code, o1.order_number, o2.short_order_code, o2.order_number) AS order_code,
+       COALESCE(o1.due_date, o2.due_date) AS due_date, COALESCE(c1.full_name, c2.full_name) AS customer_name, wi.order_item_id AS piece_order_item_id`;
+    const joins = `FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
+       LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN garments g1 ON g1.id = oi1.garment_id LEFT JOIN services s1 ON s1.id = oi1.service_id LEFT JOIN orders o1 ON o1.id = oi1.order_id LEFT JOIN customers c1 ON c1.id = o1.customer_id
+       LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id LEFT JOIN garments g2 ON g2.id = lg.garment_id LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id LEFT JOIN services s2 ON s2.id = oi2.service_id LEFT JOIN orders o2 ON o2.id = oi2.order_id LEFT JOIN customers c2 ON c2.id = o2.customer_id`;
+    const candidates = await db.query<Row>(`SELECT wi.id, wi.order_item_id, wi.laundry_garment_id, ${cols} ${joins} WHERE wi.status != 'Rejected' ORDER BY wi.id DESC LIMIT 300`);
+
+    const defectsByItem = new Map<number, string[]>();
+    const pieceIds = [...new Set(candidates.map((r) => r.piece_order_item_id).filter((x) => !phpEmpty(x)).map((x) => Number(x)))];
+    if (pieceIds.length) {
+      for (const r of await db.query<Row>(`SELECT oid.order_item_id, d.defect_name FROM order_item_defects oid JOIN defects d ON d.id = oid.defect_id WHERE oid.order_item_id IN (${pieceIds.map(() => '?').join(',')})`, pieceIds)) {
+        const k = Number(r.order_item_id);
+        (defectsByItem.get(k) ?? defectsByItem.set(k, []).get(k)!).push(r.defect_name);
+      }
+    }
+
+    const readyRows: Row[] = [];
+    for (const row of candidates) {
+      const current = await workshop.getCurrentStatus(Number(row.id));
+      if (!['Store Received', 'Unprocessed', 'Rejected'].includes(current)) { row.current_status = current; readyRows.push(row); }
+    }
+
+    const ordersGrouped = new Map<number, Row>();
+    for (const r of readyRows) {
+      const oid = Number(r.order_id);
+      if (!ordersGrouped.has(oid)) ordersGrouped.set(oid, { order_id: oid, order_code: r.order_code, customer_name: r.customer_name, due_date: r.due_date, items: [] as Row[] });
+      ordersGrouped.get(oid)!.items.push(r);
+    }
+
+    return layout(ctx, { title: 'Receive from Workshop' }, html`
+<div class="container-fluid py-3">
+  <h4 class="fw-bold mb-3"><i class="fa-solid fa-truck-ramp-box me-2"></i>Receive from Workshop</h4>
+
+  ${ordersGrouped.size === 0 ? html`
+  <div class="card"><div class="card-body text-center text-muted py-5"><i class="fa-solid fa-circle-check fa-2x mb-2"></i><p class="mb-0">Nothing ready to receive right now.</p></div></div>` : html`
+  <form method="POST" id="bulkReceiveForm">
+    ${ctx.csrfField()}
+    <input type="hidden" name="action" value="receive_bulk">
+    <div class="card mb-3">
+      <div class="card-body d-flex align-items-center gap-2">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="selectAllBtn2">Select All</button>
+        <button type="submit" class="btn btn-primary ms-auto"><i class="fa-solid fa-check me-1"></i>Receive Selected</button>
+      </div>
+    </div>
+
+    ${[...ordersGrouped.values()].map((ord) => html`
+    <div class="card mb-2">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div><strong>${ord.order_code}</strong> — ${ord.customer_name}</div>
+        <div class="small text-muted">Due: ${ord.due_date ? raw(ctx.date(ord.due_date, 'd M')) : ''}</div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mb-0 align-middle">
+          <tbody>
+          ${ord.items.map((it: Row) => html`
+            <tr>
+              <td style="width:36px;"><input type="checkbox" class="item-check2" name="workshop_item_ids[]" value="${it.id}" form="bulkReceiveForm"></td>
+              <td>${it.garment_name}</td>
+              <td class="text-muted">${it.service_name}</td>
+              <td class="text-muted small">${defectsByItem.get(Number(it.piece_order_item_id))?.join(', ') ?? ''}</td>
+              <td><span class="badge ${it.current_status === 'Returned' ? 'bg-warning text-dark' : 'bg-secondary'}">${it.current_status}</span></td>
+              <td class="text-end" style="white-space:nowrap;">
+                ${it.current_status === 'Completed' ? html`
+                <form method="POST" class="d-inline">
+                  ${ctx.csrfField()}
+                  <input type="hidden" name="action" value="return">
+                  <input type="hidden" name="workshop_item_id" value="${it.id}">
+                  <button type="submit" class="btn btn-sm btn-outline-warning">Return</button>
+                </form>` : ''}
+                <form method="POST" class="d-inline">
+                  ${ctx.csrfField()}
+                  <input type="hidden" name="action" value="receive">
+                  <input type="hidden" name="workshop_item_id" value="${it.id}">
+                  <button type="submit" class="btn btn-sm btn-outline-success">Receive</button>
+                </form>
+                <button type="button" class="btn btn-sm btn-outline-danger btn-unprocessed" data-wi-id="${it.id}">Unprocessed</button>
+              </td>
+            </tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </div>`)}
+  </form>`}
+</div>
+
+<div class="modal fade" id="unprocessedModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Mark Unprocessed</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" id="unprocessedForm">
+        ${ctx.csrfField()}
+        <input type="hidden" name="action" value="mark_unprocessed">
+        <input type="hidden" name="workshop_item_id" id="upWorkshopItemId">
+        <div class="modal-body">
+          <label class="form-label">Reason (required)</label>
+          <textarea name="reason" class="form-control" rows="3" required></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-danger">Mark Unprocessed</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+${raw(`<script>
+document.getElementById('selectAllBtn2')?.addEventListener('click', function () {
+  const boxes = document.querySelectorAll('.item-check2');
+  const allChecked = Array.from(boxes).every(b => b.checked);
+  boxes.forEach(b => b.checked = !allChecked);
+});
+document.getElementById('bulkReceiveForm')?.addEventListener('submit', function (e) {
+  if (document.querySelectorAll('.item-check2:checked').length === 0) {
+    e.preventDefault();
+    alert('Select at least one garment to receive.');
+  }
+});
+// Rahul: bootstrap.bundle.js loads from footer.php, AFTER this inline script -- lazy-init the
+// modal on first use rather than at parse time (same pattern as the Order Detail payment modal).
+let unprocessedModal = null;
+function getUnprocessedModal() {
+  if (!unprocessedModal) unprocessedModal = new bootstrap.Modal(document.getElementById('unprocessedModal'));
+  return unprocessedModal;
+}
+document.querySelectorAll('.btn-unprocessed').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.getElementById('upWorkshopItemId').value = this.dataset.wiId;
+    getUnprocessedModal().show();
+  });
+});
+</script>`)}
+`);
+  });
+
   // ---- Challan view / print --------------------------------------------------------------------
   const challanData = async (challanId: number, extraSelect: string, laundryOnlyTotals = true) => {
     void laundryOnlyTotals; void extraSelect;
@@ -280,11 +747,11 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
     for (const r of anchors) (r.is_piece ? pieceIds : laundryIds).push(Number(r.id));
     const byId = new Map<number, Row>();
     if (pieceIds.length) for (const r of await db.query<Row>(
-      `SELECT wi.*, oi.quantity, oi.weight, oi.unit, oi.item_status, oi.pieces_per_unit, oi.total AS line_total, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
+      `SELECT wi.*, oi.quantity, oi.weight, oi.unit, oi.item_status, oi.pieces_per_unit, oi.total AS line_total, o.order_number, o.short_order_code, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
        FROM workshop_items wi JOIN order_items oi ON oi.id = wi.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
        WHERE wi.id IN (${pieceIds.map(() => '?').join(',')})`, pieceIds)) byId.set(Number(r.id), r);
     if (laundryIds.length) for (const r of await db.query<Row>(
-      `SELECT wi.*, lg.sequence, oi.quantity AS total_garments, oi.total AS line_total, oi.quantity AS batch_qty, o.order_number, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
+      `SELECT wi.*, lg.sequence, oi.quantity AS total_garments, oi.total AS line_total, oi.quantity AS batch_qty, o.order_number, o.short_order_code, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit
        FROM workshop_items wi JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id
        WHERE wi.id IN (${laundryIds.map(() => '?').join(',')})`, laundryIds)) byId.set(Number(r.id), r);
@@ -322,7 +789,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         ${items.map((it, i) => html`
           <tr>
             <td>${i + 1}</td>
-            <td>${it.order_number}</td>
+            <td>${it.short_order_code ?? it.order_number}</td>
             <td>${it.customer_name}</td>
             <td>${int(it.sequence)} / ${int(it.total_garments)}</td>
             <td>${it.garment_name}</td>
@@ -337,7 +804,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
           return html`
           <tr>
             <td>${i + 1}</td>
-            <td>${it.order_number}</td>
+            <td>${it.short_order_code ?? it.order_number}</td>
             <td>${it.customer_name}</td>
             <td>${it.garment_name}</td>
             <td>${it.service_name}</td>
@@ -423,7 +890,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         return html`
       <tr>
         <td>${i + 1}</td>
-        <td>${it.order_number}</td>
+        <td>${it.short_order_code ?? it.order_number}</td>
         <td>${it.customer_name}</td>
         <td>${int(it.sequence)} / ${int(it.total_garments)}</td>
         <td>${it.garment_name}</td>
@@ -445,7 +912,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
         return html`
       <tr>
         <td>${i + 1}</td>
-        <td>${it.order_number}</td>
+        <td>${it.short_order_code ?? it.order_number}</td>
         <td>${it.customer_name}</td>
         <td>${it.garment_name}</td>
         <td>${it.service_name}</td>

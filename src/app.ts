@@ -48,6 +48,7 @@ import { whatsappOrderHooks } from './services/whatsappHooks.js';
 import { PrintConfigService } from './services/printConfig.js';
 import { WebSessionStore } from './web/session.js';
 import { PackingService } from './services/packingService.js';
+import { DatabaseBackupService } from './services/databaseBackupService.js';
 import { InvoicePdfService } from './services/invoicePdf.js';
 
 export interface Services {
@@ -76,6 +77,7 @@ export interface Services {
   passwordReset: PasswordResetService;
   printConfig: PrintConfigService;
   packing: PackingService;
+  backup: DatabaseBackupService;
   web: { sessions: WebSessionStore; /** nav entries whose page exists in this app (is_file() in header.php) */ pages: Set<string>; navShowAll: boolean };
 }
 
@@ -141,6 +143,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     packing: new PackingService(db, audit),
     passwordReset: new PasswordResetService(db, whatsapp, audit, env.APP_URL),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
+    backup: new DatabaseBackupService(env),
   };
 }
 

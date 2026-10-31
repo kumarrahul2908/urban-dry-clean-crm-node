@@ -73,6 +73,11 @@ describe.skipIf(!webEnabled)('admin pages: PHP ↔ Node parity', () => {
     await write('save bad digits', php, node, post({ ...all, short_order_code_digits: '11' }), o);
     await write('save partial', php, node, post({ save_settings: '1', phone: '777' }), o);
     await write('save csrf', php, node, post(all, false), o);
+    // per-store Order Code prefix (changelog 2026-10-23..30, section 8): optional override of the shared prefix
+    const stores = await h.db.query<any>('SELECT id FROM stores WHERE is_active=1 ORDER BY id');
+    await write('save store prefixes', php, node, post({ ...all, [`store_prefix_${stores[0].id}`]: 'e', [`store_prefix_${stores[1]?.id ?? stores[0].id}`]: '' }), o);
+    await write('save bad store prefix', php, node, post({ ...all, [`store_prefix_${stores[0].id}`]: 'EE' }), o);
+    await both(php, node, '/modules/admin/settings.php', 'page with a store prefix set');
     const up = (name: string, content: Buffer | string) => (c: Client) => c.upload('/modules/admin/settings.php', { logo_action: 'upload' }, { field: 'logo', filename: name, content, type: 'image/png' });
     await write('logo upload', php, node, up('l.png', PNG), o);
     await write('logo bad ext', php, node, up('l.gif', PNG), o);

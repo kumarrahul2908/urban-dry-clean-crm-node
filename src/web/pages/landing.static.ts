@@ -172,7 +172,7 @@ export const landingScript = (u: (p: string) => string, j: (v: unknown) => strin
       detailUrlBase: ${j(u('modules/orders/view.php?id='))},
       help: 'Search by Order Number or Invoice Number',
       placeholder: 'Search order number, invoice number...',
-      render: function (r) { return '<strong>' + esc(r.order_number) + '</strong>' + (r.invoice_number ? ' / ' + esc(r.invoice_number) : '') + ' — ' + esc(r.customer_name); }
+      render: function (r) { return '<strong>' + esc(r.short_order_code || r.order_number) + '</strong>' + (r.invoice_number ? ' / ' + esc(r.invoice_number) : '') + ' — ' + esc(r.customer_name); }
     }
   };
 
