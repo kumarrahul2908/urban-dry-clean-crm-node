@@ -62,3 +62,8 @@ passed through (e.g. `discount_percent` in `customers_list`) stay strings like `
 ## Known intentional differences
 - Barcode / code generation is byte-compatible with PHP (`prefix + padded counter` under a row lock).
 - `similar_text` (duplicate-name check) is ported char-wise; PHP's is byte-wise, so results can differ only for non-ASCII names.
+
+## Windows desktop app
+`desktop/` wraps this same backend in Electron for a native, installable Windows app (own window,
+taskbar icon, offline-capable shell) - same business logic, same MySQL database, just launched
+locally on a shop PC instead of on a server. See `desktop/README.md`.

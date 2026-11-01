@@ -1,0 +1,31 @@
+name: Build desktop app (Windows)
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'src/**'
+      - 'public/**'
+      - 'db/**'
+      - 'package.json'
+      - '.github/workflows/build-desktop.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: desktop/package-lock.json }
+      - name: Install desktop app dependencies
+        working-directory: desktop
+        run: npm install
+      - name: Build Windows installer
+        working-directory: desktop
+        run: npm run build:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: urban-dry-clean-crm-windows-installer
+          path: desktop/dist/*.exe
+          if-no-files-found: error

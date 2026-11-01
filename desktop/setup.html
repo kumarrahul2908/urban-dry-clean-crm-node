@@ -1,0 +1,219 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Urban Dry Clean CRM - Setup</title>
+<style>
+  :root {
+    --primary: #0b3d91; --primary-light: #1857c9; --accent: #00b4d8; --bg: #f1f5f9;
+    --border: #e2e6ee; --text: #1b2430; --muted: #6b7688;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100%;
+  }
+  header {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    color: #fff; padding: 18px 28px; display: flex; align-items: center; gap: 12px;
+    -webkit-app-region: drag;
+  }
+  header .badge {
+    width: 34px; height: 34px; border-radius: 9px; background: rgba(255,255,255,.15);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header p { margin: 2px 0 0; font-size: 12px; opacity: .85; }
+  main { flex: 1; overflow: auto; padding: 22px 28px 90px; max-width: 640px; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 0 0 18px; background: #fff; }
+  legend { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 0 6px; }
+  .row { display: flex; gap: 14px; margin-bottom: 12px; }
+  .field { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  .field.narrow { flex: 0 0 140px; }
+  label { font-size: 12.5px; font-weight: 600; color: #3a4252; }
+  label .opt { font-weight: 400; color: var(--muted); }
+  input {
+    border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px; font-size: 13.5px;
+    outline: none; background: #fff;
+  }
+  input:focus { border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(24,87,201,.12); }
+  .hint { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .status { font-size: 13px; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; display: none; }
+  .status.ok { display: block; background: #e7f6ec; color: #15803d; border: 1px solid #bbe8cb; }
+  .status.err { display: block; background: #fdeaea; color: #b42318; border: 1px solid #f6c6c6; white-space: pre-wrap; }
+  .status.busy { display: block; background: #eef2f9; color: var(--primary); border: 1px solid #d7e2f5; }
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid var(--border);
+    padding: 14px 28px; display: flex; justify-content: flex-end; gap: 10px;
+  }
+  button {
+    border: none; border-radius: 7px; padding: 10px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  }
+  .btn-secondary { background: #eef1f6; color: var(--text); }
+  .btn-secondary:hover { background: #e3e8f0; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-light); }
+  button:disabled { opacity: .55; cursor: default; }
+  details { margin-top: 2px; }
+  summary { cursor: pointer; font-size: 12.5px; color: var(--primary); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div class="badge">UDC</div>
+  <div>
+    <h1>Urban Dry Clean CRM - Setup</h1>
+    <p>Connect this PC to your shop's database</p>
+  </div>
+</header>
+<main>
+  <div id="status" class="status"></div>
+
+  <form id="form" autocomplete="off">
+    <fieldset>
+      <legend>Database</legend>
+      <div class="hint" style="margin-bottom:12px;">
+        Same MySQL/MariaDB server the web app and Android app already use, so every PC and
+        device shows the same live orders, payments and workshop status.
+      </div>
+      <div class="row">
+        <div class="field" style="flex:2;">
+          <label>Host</label>
+          <input id="dbHost" placeholder="127.0.0.1" />
+        </div>
+        <div class="field narrow">
+          <label>Port</label>
+          <input id="dbPort" placeholder="3306" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>Database name</label>
+          <input id="dbName" required />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>User</label>
+          <input id="dbUser" required />
+        </div>
+        <div class="field">
+          <label>Password <span class="opt">(optional)</span></label>
+          <input id="dbPass" type="password" />
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Business</legend>
+      <div class="row">
+        <div class="field">
+          <label>Business name</label>
+          <input id="appName" placeholder="URBAN DRY CLEAN" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>App secret key</label>
+          <input id="appSecretKey" placeholder="leave blank to generate a new one" />
+          <div class="hint">
+            If this PC talks to the <b>same database as your existing web app</b>, paste the
+            <b>exact same</b> secret key so WhatsApp tokens and other encrypted settings stay
+            readable. Setting up brand new? Leave blank - a random key is generated for you.
+          </div>
+        </div>
+      </div>
+      <details>
+        <summary>Advanced</summary>
+        <div class="row" style="margin-top:10px;">
+          <div class="field narrow">
+            <label>Local port</label>
+            <input id="port" placeholder="3100" />
+            <div class="hint">Port this PC's backend listens on (localhost only).</div>
+          </div>
+        </div>
+      </details>
+    </fieldset>
+  </form>
+</main>
+<footer>
+  <button type="button" class="btn-secondary" id="testBtn">Test connection</button>
+  <button type="button" class="btn-primary" id="saveBtn">Save &amp; Continue</button>
+</footer>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status');
+
+  function setStatus(kind, text) {
+    statusEl.className = 'status ' + (kind || '');
+    statusEl.textContent = text || '';
+    statusEl.style.display = text ? 'block' : 'none';
+  }
+
+  function readForm() {
+    return {
+      dbHost: $('dbHost').value.trim() || '127.0.0.1',
+      dbPort: $('dbPort').value.trim() || '3306',
+      dbName: $('dbName').value.trim(),
+      dbUser: $('dbUser').value.trim(),
+      dbPass: $('dbPass').value,
+      appName: $('appName').value.trim() || 'URBAN DRY CLEAN',
+      appSecretKey: $('appSecretKey').value.trim(),
+      port: $('port').value.trim() || '3100',
+    };
+  }
+
+  function fillForm(cfg) {
+    if (!cfg) return;
+    $('dbHost').value = cfg.dbHost || '';
+    $('dbPort').value = cfg.dbPort || '';
+    $('dbName').value = cfg.dbName || '';
+    $('dbUser').value = cfg.dbUser || '';
+    $('dbPass').value = cfg.dbPass || '';
+    $('appName').value = cfg.appName || '';
+    $('appSecretKey').value = cfg.appSecretKey || '';
+    $('port').value = cfg.port || '';
+  }
+
+  async function init() {
+    if (window.udcSetup) {
+      const cfg = await window.udcSetup.getConfig();
+      fillForm(cfg);
+    }
+  }
+
+  async function withBusyButtons(fn) {
+    $('testBtn').disabled = true;
+    $('saveBtn').disabled = true;
+    try { await fn(); } finally {
+      $('testBtn').disabled = false;
+      $('saveBtn').disabled = false;
+    }
+  }
+
+  $('testBtn').addEventListener('click', () => withBusyButtons(async () => {
+    const cfg = readForm();
+    if (!cfg.dbName || !cfg.dbUser) { setStatus('err', 'Database name and user are required.'); return; }
+    setStatus('busy', 'Connecting...');
+    const result = await window.udcSetup.testConnection(cfg);
+    if (result.ok) setStatus('ok', 'Connected successfully.');
+    else setStatus('err', 'Could not connect:\n' + result.error);
+  }));
+
+  $('saveBtn').addEventListener('click', () => withBusyButtons(async () => {
+    const cfg = readForm();
+    if (!cfg.dbName || !cfg.dbUser) { setStatus('err', 'Database name and user are required.'); return; }
+    setStatus('busy', 'Checking connection...');
+    const test = await window.udcSetup.testConnection(cfg);
+    if (!test.ok) { setStatus('err', 'Could not connect, so nothing was saved:\n' + test.error); return; }
+    setStatus('busy', 'Saving...');
+    const saved = await window.udcSetup.saveAndContinue(cfg);
+    if (!saved.ok) setStatus('err', saved.error || 'Could not save settings.');
+    // on success the main process closes this window and starts the app
+  }));
+
+  init();
+</script>
+</body>
+</html>
