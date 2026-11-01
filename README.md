@@ -64,6 +64,7 @@ passed through (e.g. `discount_percent` in `customers_list`) stay strings like `
 - `similar_text` (duplicate-name check) is ported char-wise; PHP's is byte-wise, so results can differ only for non-ASCII names.
 
 ## Windows desktop app
-`desktop/` wraps this same backend in Electron for a native, installable Windows app (own window,
-taskbar icon, offline-capable shell) - same business logic, same MySQL database, just launched
-locally on a shop PC instead of on a server. See `desktop/README.md`.
+`native/` is a true native Windows app (WPF, .NET 8/C#) - its own window, no browser/Chromium
+involved. It talks to this same backend over the existing `/api/mobile/*` REST API (the same API
+the Android app uses), with the backend launched locally on each shop PC. See `native/README.md`
+for the phase plan and architecture.

@@ -1,0 +1,48 @@
+<Window x:Class="Udc.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Urban Dry Clean CRM"
+        Height="860" Width="1320" MinHeight="640" MinWidth="980"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BgBrush}">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Settings..." Click="SettingsMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="Open _logs folder" Click="OpenLogsMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="_Log out" Click="LogoutMenuItem_Click" />
+                <MenuItem Header="E_xit" Click="ExitMenuItem_Click" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="_Refresh dashboard" Click="RefreshMenuItem_Click" />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="_About" Click="AboutMenuItem_Click" />
+            </MenuItem>
+        </Menu>
+
+        <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="18,8">
+            <TextBlock x:Name="StatusBarText" FontSize="11.5" Foreground="{StaticResource MutedBrush}" />
+        </Border>
+
+        <Border DockPanel.Dock="Left" Width="210" Background="#0B1E3D">
+            <StackPanel Margin="0,16">
+                <TextBlock Text="MENU" Foreground="#7C8DB5" FontSize="11" FontWeight="Bold" Margin="20,8,0,8" />
+                <Border Background="#12325E" Margin="8,0" CornerRadius="6">
+                    <TextBlock Text="Dashboard" Foreground="White" FontWeight="SemiBold" Padding="12,10" />
+                </Border>
+                <TextBlock Text="Customers" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="Orders / POS" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="Workshop" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="Payments" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="Reports" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="Admin" Foreground="#5E6E93" Padding="20,10,0,10" />
+                <TextBlock Text="(coming in later phases)" Foreground="#44547A" FontStyle="Italic" FontSize="11" Padding="20,10,0,0" TextWrapping="Wrap" Width="170" HorizontalAlignment="Left" />
+            </StackPanel>
+        </Border>
+
+        <ContentControl x:Name="ContentArea" />
+    </DockPanel>
+</Window>
