@@ -64,7 +64,8 @@ passed through (e.g. `discount_percent` in `customers_list`) stay strings like `
 - `similar_text` (duplicate-name check) is ported char-wise; PHP's is byte-wise, so results can differ only for non-ASCII names.
 
 ## Windows desktop app
-`native/` is a true native Windows app (WPF, .NET 8/C#) - its own window, no browser/Chromium
-involved. It talks to this same backend over the existing `/api/mobile/*` REST API (the same API
-the Android app uses), with the backend launched locally on each shop PC. See `native/README.md`
-for the phase plan and architecture.
+A true native Windows app (WPF, .NET 8/C#) lives in its own repo,
+[kumarrahul2908/CRM_urban_windows](https://github.com/kumarrahul2908/CRM_urban_windows) - its own
+window, no browser/Chromium involved. It talks to this backend over the existing
+`/api/mobile/*` REST API (the same API the Android app uses); its build clones and builds this
+repo to produce the backend it bundles, so no business logic is duplicated there.
