@@ -62,3 +62,10 @@ passed through (e.g. `discount_percent` in `customers_list`) stay strings like `
 ## Known intentional differences
 - Barcode / code generation is byte-compatible with PHP (`prefix + padded counter` under a row lock).
 - `similar_text` (duplicate-name check) is ported char-wise; PHP's is byte-wise, so results can differ only for non-ASCII names.
+
+## Windows desktop app
+A true native Windows app (WPF, .NET 8/C#) lives in its own repo,
+[kumarrahul2908/CRM_urban_windows](https://github.com/kumarrahul2908/CRM_urban_windows) - its own
+window, no browser/Chromium involved. It talks to this backend over the existing
+`/api/mobile/*` REST API (the same API the Android app uses); its build clones and builds this
+repo to produce the backend it bundles, so no business logic is duplicated there.
