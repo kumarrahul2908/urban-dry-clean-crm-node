@@ -10,9 +10,14 @@ import { buildDataset } from './web/dataset.js';
 
 vi.setConfig({ testTimeout: 180_000 });
 const T = process.env.TEST_DB2_NAME, C = process.env.TEST_CONTROL_DB_NAME;
+const on = !!(T && C);
 
-describe.skipIf(!(T && C))('operator console', () => {
-  const base = { DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
+describe.skipIf(!on)('operator console', () => {
+  // loadEnv/createPool below run eagerly (not inside a hook) - guard them so a skipped run never
+  // touches an unset DB_NAME/CONTROL_DB_NAME. skipIf still collects this factory to report the
+  // suite as skipped, so without this it would throw before the skip ever takes effect.
+  if (!on) { it.skip('requires TEST_DB2_NAME / TEST_CONTROL_DB_NAME', () => {}); return; }
+  const base ={ DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
   const env = loadEnv({ NODE_ENV: 'test', ...base, DB_NAME: T!, CONTROL_DB_NAME: C!, CONTROL_MASTER_KEY: 'master-key-for-tests', APP_SECRET_KEY: 'unused', UPLOAD_DIR: '/tmp/udc-mt-uploads', CONTROL_ROOT_HOST: 'root.test', CONTROL_ADMIN_HOST: 'admin.test', TENANT_BASE_DOMAIN: 'apps.test' } as NodeJS.ProcessEnv);
   const dbs = createPool({ ...env, DB_NAME: T! }), ctl = createPool({ ...env, DB_NAME: C! });
   let mt: MultiTenant; let app: Awaited<ReturnType<typeof buildApp>>;

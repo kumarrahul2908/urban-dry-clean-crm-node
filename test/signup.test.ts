@@ -14,7 +14,11 @@ const on = !!(T && C && AU);
 const KEY = 'master-key-for-tests';
 
 describe.skipIf(!on)('public signup (root host → request → provisioning → login)', () => {
-  const base = { DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
+  // loadEnv/createPool below run eagerly (not inside a hook) - guard them so a skipped run never
+  // touches an unset DB_NAME/CONTROL_DB_NAME. skipIf still collects this factory to report the
+  // suite as skipped, so without this it would throw before the skip ever takes effect.
+  if (!on) { it.skip('requires TEST_DB2_NAME / TEST_CONTROL_DB_NAME / TEST_PROVISION_ADMIN_USER', () => {}); return; }
+  const base ={ DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
   const mk = (auto: boolean) => loadEnv({ NODE_ENV: 'test', ...base, DB_NAME: T!, CONTROL_DB_NAME: C!, CONTROL_MASTER_KEY: KEY, APP_SECRET_KEY: 'unused', UPLOAD_DIR: '/tmp/udc-mt-uploads', TENANT_UPLOAD_ROOT: '/tmp/udc-mt-uploads',
     PROVISION_DB_USER: AU, PROVISION_DB_PASS: process.env.TEST_PROVISION_ADMIN_PASS ?? '', CONTROL_ROOT_HOST: 'root.test', TENANT_BASE_DOMAIN: 'apps.test', SIGNUP_TEMPLATE_DB: T!, SIGNUP_AUTO_APPROVE: auto ? 'true' : 'false', SIGNUP_TRIAL_DAYS: '14' } as NodeJS.ProcessEnv);
   const env = mk(false);
