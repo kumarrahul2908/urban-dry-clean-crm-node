@@ -112,8 +112,9 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (existing) return existing;
 
     const canOverrideDiscount = ctx.permissions.includes('pos.override_discount');
-    const store = await resolveAuthorizedStoreId(db, ctx);
-    if (!store.success) throw new ApiError('store_required', store.error!, 422);
+    const requested = p.store_id !== undefined && p.store_id !== null ? toInt(p.store_id) : null;
+    const store = await resolveAuthorizedStoreId(db, ctx, requested);
+    if (!store.success) throw new ApiError('store_required', store.error!, 422, { needs_selection: store.needs_selection });
     const result = await orderSvc.createLaundryOrder(p, { userId: ctx.id, ip: req.ip }, canOverrideDiscount, store.store_id!, clientRequestId);
     if (!result.success) {
       if (result.error_code === 'duplicate_client_request') {

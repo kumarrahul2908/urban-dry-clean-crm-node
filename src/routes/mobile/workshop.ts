@@ -83,6 +83,11 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
       laundry_garment_id: num(r.id), sequence: num(r.sequence), garment_name: r.garment_name, total_garments: num(r.total_garments), order_id: num(r.order_id), order_number: r.order_number,
       due_date: r.due_date, customer_name: r.customer_name, service_name: r.service_name, status: r.status, current_status: r.current_status ?? null,
       workshop_item_id: r.workshop_item && r.workshop_item.id !== undefined && r.workshop_item.id !== null ? num(r.workshop_item.id) : null,
+      // the raw workshop_items.status column - already fetched into r.workshop_item above for the
+      // in-progress list, just never exposed before; mirrors the piece queue's own workshop_status
+      // field (see pieceItems below), which mobile clients need to gate from-state actions like
+      // start_processing/complete_processing the same way they already can for piece items.
+      workshop_status: r.workshop_item && r.workshop_item.status !== undefined ? r.workshop_item.status : null,
     });
     const laundryPending = myWs !== null ? [] : await laundry.listByStatus(['Pending']); // unsent garments are a store-side list
     let laundryInProgress = await laundry.listByStatus(['Workshop', 'Processing']);

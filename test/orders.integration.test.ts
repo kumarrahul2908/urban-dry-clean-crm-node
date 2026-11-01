@@ -167,13 +167,69 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
     expect(Number((await db.query<any>('SELECT due_amount FROM accounts_receivable WHERE order_id = ?', [id]))[0].due_amount)).toBe(0);
   });
 
-  it('laundry order over HTTP', async () => {
+  it('rate_override only ever takes effect together with manual_override - sending it alone is not honoured, even for a user with no override permission at all', async () => {
+    const hash = await hashPassword('pw12345');
+    await db.execute("INSERT INTO roles (id, role_name) VALUES (3, 'Counter Only')");
+    await db.execute("INSERT INTO role_permissions (role_id, permission_id) SELECT 3, id FROM permissions WHERE permission_key = 'pos.create'");
+    await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (4, 3, 'Counter Only', 'counteronly', ?, 1, 1)", [hash]);
+    const counterOnly = { authorization: `Bearer ${(await app.inject({ method: 'POST', url: '/api/mobile/login', payload: { username: 'counteronly', password: 'pw12345' } })).json().data.token}` };
+
+    // garment 1 / service 1's configured piece_rate is 99.99 (seed.sql) - rate_override: 1 with no
+    // manual_override flag must be silently ignored, not charged, regardless of permission.
+    const r = await post('pos_orders_create', { client_request_id: 'ro-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1, rate_override: 1 }] }, counterOnly);
+    expect(r.statusCode).toBe(200);
+    const saved = (await db.query<any>('SELECT unit_price, is_manual_override FROM order_items WHERE order_id = ?', [r.json().data.order_id]))[0];
+    expect(Number(saved.unit_price)).toBe(99.99);
+    expect(Number(saved.is_manual_override)).toBe(0);
+
+    // the same user explicitly claiming manual_override is still refused - the permission check
+    // itself is unchanged, only the "sneak it in without claiming it" path above is closed.
+    const denied = await post('pos_orders_create', { client_request_id: 'ro-2', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1, manual_override: true, rate_override: 1 }] }, counterOnly);
+    expect(denied.statusCode).toBe(422);
+    expect(denied.json().error.field_errors[0]).toMatch(/not authorized to use Manual Rate Override/);
+
+    // rahul (pos.manual_rate_override) claiming it correctly still works end to end.
+    const allowed = await post('pos_orders_create', { client_request_id: 'ro-3', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1, manual_override: true, rate_override: 1 }] });
+    expect(allowed.statusCode).toBe(200);
+    const overridden = (await db.query<any>('SELECT unit_price, is_manual_override FROM order_items WHERE order_id = ?', [allowed.json().data.order_id]))[0];
+    expect(Number(overridden.unit_price)).toBe(1);
+    expect(Number(overridden.is_manual_override)).toBe(1);
+  });
+
+  it('laundry order over HTTP: rate is resolved server-side, never trusted from the client', async () => {
+    // customer 1 -> price list 2 (VIP), which has no rate of its own for service 3 -> falls back
+    // to the Default list's 61.37/kg (seed.sql). A deliberately wrong client-supplied rate (60,
+    // which would total 120) must be ignored, not honoured.
     const r = await post('laundry_orders_create', { client_request_id: 'l-1', customer_id: 1, batches: [{ service_id: 3, weight: 2, rate: 60, garment_count: 2, garments: [{ garment_id: 1, quantity: 2 }] }] });
     expect(r.statusCode).toBe(200);
-    expect(r.json().data).toMatchObject({ grand_total: 120, idempotent_replay: false });
+    expect(r.json().data).toMatchObject({ grand_total: 122.74, idempotent_replay: false });
     const d = (await get(`orders_detail?id=${r.json().data.order_id}`)).json().data;
     expect(d.order.order_mode).toBe('weight');
     expect(d.laundry_garments).toHaveLength(2);
     expect(d.order_actions.can_add_item).toBe(false);
+  });
+
+  it('laundry order: rejects a service with no universal (per-weight) rate configured', async () => {
+    // service 4 (Carpet Wash) is billing_unit=weight but pricing_scope=garment - its rate lives in
+    // price_list_items, not price_list_service_rates, so getUniversalRate() correctly finds none.
+    const r = await post('laundry_orders_create', { client_request_id: 'l-2', customer_id: 1, batches: [{ service_id: 4, weight: 2, rate: 999, garment_count: 1, garments: [{ garment_id: 1, quantity: 1 }] }] });
+    expect(r.statusCode).toBe(422);
+    expect(r.json().error.field_errors[0]).toMatch(/no price configured/i);
+  });
+
+  it('laundry order: accepts an explicit store_id for a floating-store (no fixed store) account', async () => {
+    const floating = await (async () => {
+      const hash = await hashPassword('pw12345');
+      await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (3, 1, 'Floating', 'floating', ?, NULL, 1)", [hash]);
+      return { authorization: `Bearer ${(await app.inject({ method: 'POST', url: '/api/mobile/login', payload: { username: 'floating', password: 'pw12345' } })).json().data.token}` };
+    })();
+
+    const noStore = await post('laundry_orders_create', { client_request_id: 'l-3', customer_id: 1, batches: [{ service_id: 3, weight: 1, rate: 61.37, garment_count: 1, garments: [{ garment_id: 1, quantity: 1 }] }] }, floating);
+    expect(noStore.statusCode).toBe(422);
+    expect(noStore.json().error).toMatchObject({ code: 'store_required', needs_selection: true });
+
+    const withStore = await post('laundry_orders_create', { client_request_id: 'l-4', customer_id: 1, store_id: 1, batches: [{ service_id: 3, weight: 1, rate: 61.37, garment_count: 1, garments: [{ garment_id: 1, quantity: 1 }] }] }, floating);
+    expect(withStore.statusCode).toBe(200);
+    expect(withStore.json().data.idempotent_replay).toBe(false);
   });
 });
