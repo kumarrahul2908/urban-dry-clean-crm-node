@@ -26,6 +26,14 @@ jobs:
       - name: Load schema
         run: mysql -h127.0.0.1 -uroot -proot udc_test < db/schema/schema.sql
       - run: npm ci
+      - name: Apply migrations
+        run: npx tsx src/jobs/migrate.ts
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: udc_test
+          DB_USER: root
+          DB_PASS: root
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
