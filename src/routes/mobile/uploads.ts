@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { canEditOrderOfStore } from '../../auth/stores.js';
 import { ApiError, num, ok } from '../../lib/http.js';
 import { phpEmpty, toInt } from '../../lib/php.js';
 import { qInt } from '../../lib/query.js';
@@ -66,7 +67,9 @@ export async function registerMobileUploadRoutes(app: FastifyInstance) {
       const caption = String(fields.caption ?? '').trim();
       if ([...caption].length > 255) throw new ApiError('invalid_request', 'Caption is too long.', 422);
       if (!orderId) throw new ApiError('invalid_request', 'A valid order_id is required.', 422);
-      if (!(await db.query('SELECT id FROM orders WHERE id = ?', [orderId])).length) throw new ApiError('not_found', 'Order not found.', 404);
+      const [order] = await db.query<Raw>('SELECT id, store_id FROM orders WHERE id = ?', [orderId]);
+      if (!order) throw new ApiError('not_found', 'Order not found.', 404);
+      if (!canEditOrderOfStore(ctx, Number(order.store_id))) throw new ApiError('forbidden', 'You can only upload photos for orders of your own store.', 403);
       if (orderItemId && !(await db.query('SELECT id FROM order_items WHERE id = ? AND order_id = ?', [orderItemId, orderId])).length) {
         throw new ApiError('invalid_request', 'That garment does not belong to this order.', 422);
       }
@@ -94,9 +97,12 @@ export async function registerMobileUploadRoutes(app: FastifyInstance) {
   });
 
   route('GET', 'order_photo_list', async (req) => {
-    await auth(req, 'orders.edit');
+    const ctx = await auth(req, 'orders.edit');
     const orderId = qInt((req.query as Raw).order_id);
     if (!orderId) throw new ApiError('invalid_request', 'A valid order_id is required.', 422);
+    const [order] = await db.query<Raw>('SELECT id, store_id FROM orders WHERE id = ?', [orderId]);
+    if (!order) throw new ApiError('not_found', 'Order not found.', 404);
+    if (!canEditOrderOfStore(ctx, Number(order.store_id))) throw new ApiError('forbidden', 'You can only view photos for orders of your own store.', 403);
     const rows = await db.query<Raw>('SELECT id, order_item_id, file_path, caption, created_at FROM order_photos WHERE order_id = ? ORDER BY created_at DESC', [orderId]);
     return ok({ photos: rows.map((r) => ({ id: num(r.id), order_item_id: r.order_item_id !== null ? num(r.order_item_id) : null, url: storage.url(ORDER_PHOTOS, r.file_path), caption: r.caption, created_at: r.created_at })) });
   });
@@ -106,8 +112,9 @@ export async function registerMobileUploadRoutes(app: FastifyInstance) {
     const payload = (req.body && typeof req.body === 'object' ? req.body : {}) as Raw;
     const photoId = toInt(payload.photo_id);
     if (!photoId) throw new ApiError('invalid_request', 'A valid photo_id is required.', 422);
-    const [row] = await db.query<Raw>('SELECT order_id, file_path FROM order_photos WHERE id = ?', [photoId]);
+    const [row] = await db.query<Raw>('SELECT op.order_id, op.file_path, o.store_id FROM order_photos op JOIN orders o ON o.id = op.order_id WHERE op.id = ?', [photoId]);
     if (!row) throw new ApiError('not_found', 'Photo not found.', 404);
+    if (!canEditOrderOfStore(ctx, Number(row.store_id))) throw new ApiError('forbidden', 'You can only delete photos for orders of your own store.', 403);
     await db.execute('DELETE FROM order_photos WHERE id = ?', [photoId]);
     await storage.remove(ORDER_PHOTOS, row.file_path);
     await audit.record({ action: 'delete', module: 'order_photos', recordId: String(photoId), oldValue: { order_id: row.order_id }, userId: ctx.id, ip: req.ip });
