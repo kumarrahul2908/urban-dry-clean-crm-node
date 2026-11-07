@@ -13,7 +13,11 @@ const on = !!(T && C && AU);
 
 /** `tenant create`: new database + DB user cloned from a template DB, then a real login on the new business's host. */
 describe.skipIf(!on)('tenant provisioning', () => {
-  const base = { DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
+  // loadEnv/createPool below run eagerly (not inside a hook) - guard them so a skipped run never
+  // touches an unset DB_NAME/CONTROL_DB_NAME. skipIf still collects this factory to report the
+  // suite as skipped, so without this it would throw before the skip ever takes effect.
+  if (!on) { it.skip('requires TEST_DB2_NAME / TEST_CONTROL_DB_NAME / TEST_PROVISION_ADMIN_USER', () => {}); return; }
+  const base ={ DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', DB_PORT: process.env.TEST_DB_PORT ?? '3306', DB_USER: process.env.TEST_DB_USER ?? '', DB_PASS: process.env.TEST_DB_PASS ?? '' };
   const env = loadEnv({ NODE_ENV: 'test', ...base, DB_NAME: T!, CONTROL_DB_NAME: C!, CONTROL_MASTER_KEY: 'master-key-for-tests', APP_SECRET_KEY: 'unused', UPLOAD_DIR: '/tmp/udc-mt-uploads', TENANT_UPLOAD_ROOT: '/tmp/udc-mt-uploads',
     PROVISION_DB_USER: AU, PROVISION_DB_PASS: process.env.TEST_PROVISION_ADMIN_PASS ?? '' } as NodeJS.ProcessEnv);
   const tmpl = createPool({ ...env, DB_NAME: T! }), ctl = createPool({ ...env, DB_NAME: C! }), adm = createPool({ ...env, DB_NAME: 'information_schema', DB_USER: AU!, DB_PASS: process.env.TEST_PROVISION_ADMIN_PASS ?? '' });

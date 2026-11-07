@@ -132,14 +132,18 @@ export class OrderService {
           : `${garmentName} / ${serviceName} is not configured for weight-based pricing. Use Manual Rate Override if authorized.`,
       };
     } else {
+      // rate_override is deliberately NOT consulted here: it only ever takes effect together
+      // with manual_override (the branch above), which is the only path that checks
+      // pos.manual_rate_override and writes the audit trail. Reading it here too - even with a
+      // configured price already in place - would let a rate override through with neither.
       const rt = rate as RateRow;
       if (mode === 'weight') {
-        const r = hasRateOverride ? toFloat(rateOverrideRaw) : toFloat(rt.weight_rate);
+        const r = toFloat(rt.weight_rate);
         lineSubtotal = round2(weight * r);
         if (rt.min_weight_charge !== null && lineSubtotal < toFloat(rt.min_weight_charge)) lineSubtotal = round2(toFloat(rt.min_weight_charge));
         unitPrice = 0; weightSnap = weight; weightRateSnap = r; quantity = 1;
       } else {
-        const r = hasRateOverride ? toFloat(rateOverrideRaw) : toFloat(rt.piece_rate);
+        const r = toFloat(rt.piece_rate);
         lineSubtotal = round2(quantity * r); unitPrice = r; weightSnap = null; weightRateSnap = null;
       }
       taxPercent = toFloat(rt.tax_percent ?? 0);
@@ -154,7 +158,9 @@ export class OrderService {
         brand_id: !phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null,
         color_id: !phpEmpty(raw.color_id) ? toInt(raw.color_id) : null,
         defect_ids: (Array.isArray(raw.defect_ids) ? raw.defect_ids : []).map(toInt).filter((n: number) => n !== 0),
-        remarks: clean(raw.remarks), rate_overridden: hasRateOverride, is_manual_override: isManual,
+        // rate_overridden now always matches is_manual_override: the fix above means a
+        // rate_override value only ever affects the price when manual_override also applied.
+        remarks: clean(raw.remarks), rate_overridden: isManual, is_manual_override: isManual,
         original_configured_rate: isManual ? (rate !== null ? (mode === 'weight' ? rate.weight_rate : (rate.piece_rate ?? null)) : null) : null,
       },
     };
@@ -625,14 +631,21 @@ export class OrderService {
       const batch = batches[bi]!;
       const serviceId = toInt(batch.service_id);
       const weight = toFloat(batch.weight);
-      const rate = toFloat(batch.rate);
       const garmentLines = Array.isArray(batch.garments) ? asList(batch.garments) : [];
       const [service] = await this.db.query<{ service_name: string; billing_unit: string }>('SELECT service_name, billing_unit FROM services WHERE id = ? AND is_active = 1', [serviceId]);
       const b = `Batch ${bi + 1}`;
       if (!service) { errors.push(`${b}: service is invalid or inactive.`); continue; }
       if (service.billing_unit !== 'weight') { errors.push(`${b}: ${service.service_name} is not a weight-based service and cannot be used in a Per-Weight order.`); continue; }
       if (weight <= 0) { errors.push(`${b}: weight must be greater than zero.`); continue; }
-      if (rate <= 0) { errors.push(`${b}: rate per KG must be greater than zero.`); continue; }
+      // The rate always comes from the price list, resolved server-side - a client-supplied
+      // batch.rate is never trusted (mirrors priceLine()'s non-override weight-mode branch,
+      // which does the same for piece orders).
+      const rateRow = await this.pricing.getUniversalRate(priceListId, serviceId);
+      if (rateRow === null || rateRow.weight_rate === null) {
+        errors.push(`${b}: no price configured for ${service.service_name}. Please configure a rate before selling this service.`);
+        continue;
+      }
+      const rate = toFloat(rateRow.weight_rate);
       if (garmentLines.length === 0) { errors.push(`${b}: at least one garment must be identified for tagging.`); continue; }
 
       const expanded: { garment_id: number; garment_name: string }[] = [];

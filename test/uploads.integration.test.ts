@@ -124,6 +124,30 @@ describe.skipIf(!enabled)('uploads: order photos, garment images, retention (rea
     expect((await app.inject({ method: 'POST', url: '/api/mobile/order_photo_delete', headers: h, payload: { photo_id: victim.id } })).statusCode).toBe(404);
   });
 
+  it("cross-store: orders.edit does not let a fixed-store user touch another store's order photos", async () => {
+    const hash = await hashPassword('pw12345');
+    await db.execute("INSERT INTO stores (id, organization_id, store_name, store_type, is_active) VALUES (2, 1, 'Branch', 'branch', 1)");
+    await db.execute("INSERT INTO roles (id, role_name) VALUES (2, 'Branch Staff')");
+    await db.execute("INSERT INTO role_permissions (role_id, permission_id) SELECT 2, id FROM permissions WHERE permission_key = 'orders.edit'");
+    await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (2, 2, 'Branch Staff', 'branchstaff', ?, 2, 1)", [hash]);
+    const other = { authorization: `Bearer ${(await app.inject({ method: 'POST', url: '/api/mobile/login', payload: { username: 'branchstaff', password: 'pw12345' } })).json().data.token}` };
+
+    // orderId (from beforeAll) belongs to store 1; branchstaff is fixed to store 2 - orders.edit alone must not be enough.
+    const before = photoFiles().length;
+    const m = multipart({ order_id: String(orderId) }, { name: 'x.jpg', type: 'image/jpeg', data: fakeImage(JPEG_HEAD, 100) });
+    const up = await app.inject({ method: 'POST', url: '/api/mobile/order_photo_upload', headers: { ...other, ...m.headers }, payload: m.payload });
+    expect(up.statusCode).toBe(403);
+    expect(up.json().error.message).toMatch(/your own store/);
+    expect(photoFiles().length).toBe(before); // nothing was written
+
+    expect((await app.inject({ method: 'GET', url: `/api/mobile/order_photo_list?order_id=${orderId}`, headers: other })).statusCode).toBe(403);
+
+    const victim = (await db.query<any>('SELECT id FROM order_photos WHERE order_id = ? LIMIT 1', [orderId]))[0];
+    const del = await app.inject({ method: 'POST', url: '/api/mobile/order_photo_delete', headers: other, payload: { photo_id: victim.id } });
+    expect(del.statusCode).toBe(403);
+    expect((await db.query<any>('SELECT id FROM order_photos WHERE id = ?', [victim.id])).length).toBe(1); // not deleted
+  });
+
   it('retention: stats, dry-run by default, confirm required, deletes only old photos', async () => {
     // make 2 of the remaining 2... create 3 more so we have old and new
     for (let i = 0; i < 3; i++) await upload({ order_id: String(orderId) }, { name: 'n.jpg', type: 'image/jpeg', data: fakeImage(JPEG_HEAD, 2048) });

@@ -137,3 +137,19 @@ Not ported (PHP itself hasn't done them, so Node stays bug-for-bug consistent wi
 * `modules/workshop/index.php`'s own counts — explicitly flagged in the changelog as "not yet audited" even in PHP.
 * Customer bulk import (one-off `phpMyAdmin` SQL run against the live DB, not a feature — nothing to port). The self-correcting `customer_code` pattern it uses was already adopted in Node for the first changelog's counter-drift fix.
 * Android-only items (camera permission fix, backup-script commit message) — not applicable to the web/Node port.
+
+## Backend fixes 2026-11-01 (mobile API gaps found while auditing the WPF client, not ported from a PHP changelog)
+These close 4 gaps the WPF client's own "Known Gaps" notes had flagged as unfixable from the client side; the PHP backup
+repo was not consulted (see note below), so this is a Node-side correctness pass rather than a parity port.
+
+| Item | Node | Test |
+|---|---|---|
+| `laundry_orders_create` never read `store_id` from its payload, so a floating-store account (`users.store_id IS NULL`) could never create a Per-Weight order — `pos_orders_create` already accepted it the same way `createOrder` does | `routes/mobile/orders.ts` (`resolveAuthorizedStoreId(db, ctx, requested)` + `store_required`/`needs_selection` on the same shape `pos_orders_create` uses) | `orders.integration.test.ts` ("accepts an explicit store_id for a floating-store…") |
+| `createLaundryOrder`'s batch loop trusted the client-supplied `batch.rate` instead of resolving it from the price list, the way `priceLine()` already does for piece orders | `OrderService.createLaundryOrder` (`PricingEngine.getUniversalRate`) | `orders.integration.test.ts` ("rate is resolved server-side, never trusted from the client", "rejects a service with no universal (per-weight) rate configured") |
+| `priceLine()`'s non-override branch still read `rate_override` when a price was already configured, so sending `rate_override` **without** `manual_override: true` silently applied it with neither the `pos.manual_rate_override` permission check nor the audit trail (`is_manual_override`) that the override path requires | `OrderService.priceLine` (`rate_override` now only ever takes effect together with `manual_override`; `rate_overridden` in the response now always equals `is_manual_override`) | `orders.integration.test.ts` ("rate_override only ever takes effect together with manual_override…") |
+| `workshop_queue`'s `laundry_in_progress` rows never exposed the raw `workshop_items.status` column, unlike piece items' `workshop_status` — mobile clients had no state-aware way to gate Laundry workshop actions | `routes/mobile/workshop.ts` (`mapLaundry` adds `workshop_status`) | `test/mobile-workshop.test.ts` (new file) |
+
+Not verified against PHP: whether `laundry_orders_create.php` ever accepted a store override for floating-store accounts
+could not be checked (`add_repo` for the backup repo was denied this session). The fix is additive-only and carries no
+regression risk for the common case — `resolveAuthorizedStoreId` ignores the new parameter entirely once a user has a
+fixed `store_id`, which is unchanged by this fix either way.
