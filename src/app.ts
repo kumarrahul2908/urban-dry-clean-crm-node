@@ -50,6 +50,7 @@ import { WebSessionStore } from './web/session.js';
 import { PackingService } from './services/packingService.js';
 import { DatabaseBackupService } from './services/databaseBackupService.js';
 import { InvoicePdfService } from './services/invoicePdf.js';
+import { ChallanPdfService } from './services/challanPdf.js';
 
 export interface Services {
   env: Env;
@@ -78,6 +79,7 @@ export interface Services {
   printConfig: PrintConfigService;
   packing: PackingService;
   backup: DatabaseBackupService;
+  challanPdf: ChallanPdfService;
   web: { sessions: WebSessionStore; /** nav entries whose page exists in this app (is_file() in header.php) */ pages: Set<string>; navShowAll: boolean };
 }
 
@@ -144,6 +146,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     passwordReset: new PasswordResetService(db, whatsapp, audit, env.APP_URL),
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
     backup: new DatabaseBackupService(env),
+    challanPdf: new ChallanPdfService(db, env.APP_NAME),
   };
 }
 
