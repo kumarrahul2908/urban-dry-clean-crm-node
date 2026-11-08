@@ -16,6 +16,11 @@ export interface InvoicePdfGenerator {
   generate(orderId: number): Promise<{ success: boolean; file_path?: string; error?: string }>;
 }
 
+/** Produces the challan PDF (ChallanPdfService::generate). Injected the same way as InvoicePdfGenerator. */
+export interface ChallanPdfGenerator {
+  generate(challanId: number): Promise<{ success: boolean; file_path?: string; error?: string }>;
+}
+
 const phpStr = (v: unknown): string => (v === null || v === undefined || v === false ? '' : v === true ? '1' : String(v));
 const mbSubstr255 = (s: string) => Array.from(s).slice(0, 255).join('');
 const isDup = (e: any) => e?.sqlState === '23000';
@@ -27,7 +32,7 @@ export class WhatsAppService {
     private readonly db: Db,
     private readonly crypto: Crypto,
     private readonly provider: WhatsAppProvider,
-    private readonly opts: { appName: string; timezone: string; invoicePdf?: InvoicePdfGenerator; log?: (m: string) => void; now?: () => number },
+    private readonly opts: { appName: string; timezone: string; invoicePdf?: InvoicePdfGenerator; challanPdf?: ChallanPdfGenerator; log?: (m: string) => void; now?: () => number },
   ) {}
 
   private log(m: string) { (this.opts.log ?? console.error)(m); }
@@ -368,6 +373,71 @@ export class WhatsAppService {
       "INSERT INTO notification_logs (customer_id, order_id, user_id, template_key, channel, recipient, message, status, provider, provider_message_id, error_message) VALUES (?, ?, ?, 'invoice', 'WhatsApp', ?, ?, ?, 'meta', ?, ?)",
       [order.customer_id, orderId, userId, toNumber, `[document] Invoice ${number}${mode ? ` (${mode})` : ''}`, result.success ? 'Sent' : 'Failed', result.provider_message_id ?? null, result.success ? null : mbSubstr255(phpStr(result.error))],
       'sendInvoice');
+    return { success: result.success, mode, error: result.success ? null : result.error, code: result.success ? null : 'send_failed' };
+  }
+
+  /**
+   * Same shape as sendInvoice, swapped for a challan's PDF and the 'challan_document' template key.
+   * Unlike sendInvoice, the recipient is whatever `toNumber` the caller passes directly -- a challan
+   * is a delivery/packing-note document, typically sent to a driver/courier number saved for this
+   * purpose (see challan_whatsapp_numbers in settings), not necessarily the customer's own number,
+   * and a combined challan covers more than one customer anyway so there is no single "the" number
+   * to default to.
+   */
+  async sendChallan(challanId: number, toNumber: string, userId: number | null): Promise<{ success: boolean; mode: string | null; error: string | null; code: string | null }> {
+    const fail = (error: string, code: string) => ({ success: false, mode: null, error, code });
+    const normalizedTo = WhatsAppService.normalizePhoneNumber(phpStr(toNumber));
+    if (normalizedTo === '') return fail('A valid WhatsApp number is required.', 'no_mobile');
+    const [challan] = await this.db.query<Row>('SELECT * FROM challans WHERE id = ?', [challanId]);
+    if (!challan) return fail('Challan not found.', 'not_found');
+    const orders = await this.db.query<Row>(
+      `SELECT o.id, o.store_id, o.customer_id, COALESCE(o.short_order_code, o.order_number) AS order_number
+       FROM challan_orders co JOIN orders o ON o.id = co.order_id WHERE co.challan_id = ? ORDER BY o.id`, [challanId]);
+    if (!orders.length) return fail('This challan has no orders on it.', 'not_found');
+    const account = await this.resolveAccountForStore(orders[0]!.store_id ? Number(orders[0]!.store_id) : null);
+    if (!account) return fail('No WhatsApp account is configured.', 'not_configured');
+    let config: WaConfig;
+    try { config = this.decryptAccountConfig(account); } catch { return fail('Could not read the stored credentials for this account.', 'not_configured'); }
+    if (!this.opts.challanPdf) return fail('Could not generate the challan PDF.', 'pdf_failed');
+    const pdf = await this.opts.challanPdf.generate(challanId);
+    if (!pdf.success || !pdf.file_path) return fail(pdf.error ?? 'Could not generate the challan PDF.', 'pdf_failed');
+
+    const number = phpStr(challan.challan_number);
+    const filename = `Challan-${number.replace(/[^A-Za-z0-9_-]+/g, '-')}.pdf`;
+    const upload = await this.provider.uploadMedia(config, pdf.file_path, 'application/pdf');
+    await unlink(pdf.file_path).catch(() => {});
+    let mode: string | null = null;
+    let result: SendResult;
+    if (!upload.success) {
+      result = { success: false, provider_message_id: null, error: `Media upload failed: ${upload.error}` };
+    } else {
+      const template = (await this.db.query<Row>("SELECT * FROM notification_templates WHERE template_key = 'challan_document' AND channel = 'WhatsApp' AND is_active = 1 LIMIT 1"))[0];
+      const values: Record<string, string> = {
+        challan_number: number,
+        order_numbers: orders.map((o) => phpStr(o.order_number)).join(', '),
+        order_count: String(orders.length),
+        with_amount: Number(challan.with_amount) ? 'With Amount' : 'Without Amount',
+      };
+      let paramOrder: unknown[] = [];
+      if (template) { try { const p = JSON.parse(phpStr(template.template_param_order)); if (Array.isArray(p)) paramOrder = p; } catch { /* [] */ } }
+      if (template && !phpEmpty(template.provider_template_name) && paramOrder.length > 0) {
+        mode = 'template';
+        const params = paramOrder.map((k) => {
+          const v = (values[String(k)] ?? '').replace(/\s+/g, ' ');
+          return v === '' || v === '0' ? '-' : v;
+        });
+        result = await this.provider.sendTemplate(config, normalizedTo, template.provider_template_name, phpEmpty(template.language) ? 'en' : template.language, params, { id: upload.media_id ?? '', filename });
+      } else {
+        mode = 'free_form';
+        result = await this.provider.sendMedia(config, normalizedTo, upload.media_id ?? '', 'document', `Challan ${number}`);
+      }
+    }
+    // single-order challan: attribute the log to that order/customer; combined: no one order represents it
+    const single = orders.length === 1 ? orders[0]! : null;
+    await this.logNotification(
+      "INSERT INTO notification_logs (customer_id, order_id, user_id, template_key, channel, recipient, message, status, provider, provider_message_id, error_message) VALUES (?, ?, ?, 'challan_document', 'WhatsApp', ?, ?, ?, 'meta', ?, ?)",
+      [single?.customer_id ?? null, single?.id ?? null, userId, normalizedTo, `[document] Challan ${number}${mode ? ` (${mode})` : ''}`, result.success ? 'Sent' : 'Failed', result.provider_message_id ?? null, result.success ? null : mbSubstr255(phpStr(result.error))],
+      'sendChallan');
     return { success: result.success, mode, error: result.success ? null : result.error, code: result.success ? null : 'send_failed' };
   }
 }

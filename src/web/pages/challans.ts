@@ -5,12 +5,14 @@ import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
 import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
 import { e, html, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
-import { challanPickerScript, challanStyle } from './challans.static.js';
+import { getSetting } from '../../services/settings.js';
+import { challanPickerScript, challanStyle, challanWhatsAppScript } from './challans.static.js';
 
 type Row = Record<string, any>;
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 const clean = (v: unknown) => str(v).trim();
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_SAVED_WHATSAPP_NUMBERS = 5;
 
 /**
  * Challan (delivery/packing-note) web pages: list, generate, edit, view, print (the PDF), delete and
@@ -20,10 +22,21 @@ const ISO = /^\d{4}-\d{2}-\d{2}$/;
  * endpoint is already gated behind, alongside challans.manage.
  */
 export function registerChallanPages(app: FastifyInstance) {
-  const { db, challans, challanPdf } = app.services;
+  const { db, challans, challanPdf, whatsapp } = app.services;
   const actor = (ctx: WebCtx) => ({ userId: ctx.data.user_id!, ip: ctx.req.ip });
   const u = (ctx: WebCtx) => (p: string) => ctx.baseUrl(p);
   const notFound = (ctx: WebCtx) => { ctx.flashSet('danger', 'Challan not found.'); return new WebRedirect('modules/challans/list.php'); };
+  const getSavedWhatsAppNumbers = async (): Promise<string[]> => {
+    try {
+      const parsed = JSON.parse((await getSetting(db, 'challan_whatsapp_numbers', '[]')) ?? '[]');
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch { return []; }
+  };
+  const saveWhatsAppNumber = async (numberToSave: string) => {
+    const current = await getSavedWhatsAppNumbers();
+    const next = [numberToSave, ...current.filter((n) => n !== numberToSave)].slice(0, MAX_SAVED_WHATSAPP_NUMBERS);
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_whatsapp_numbers', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [JSON.stringify(next)]);
+  };
 
   // ---- list --------------------------------------------------------------------------------------
   webPage(app, '/modules/challans/list', { auth: 'challans.manage' }, async (ctx, req) => {
@@ -185,6 +198,8 @@ ${raw(challanPickerScript(u(ctx)('api/orders_search.php'), preselected))}
     for (const it of items) { const k = Number(it.order_id); (itemsByOrder.get(k) ?? itemsByOrder.set(k, []).get(k)!).push(it); }
     const money = await ctx.loadMoney();
     const totalValue = items.reduce((s, it) => s + flt(it.total), 0);
+    const savedNumbers = await getSavedWhatsAppNumbers();
+    const defaultNumber = orders.length === 1 ? str(orders[0]!.mobile) : '';
 
     return layout(ctx, { title: `Challan ${challan.challan_number}` }, html`
 <div class="col-12">
@@ -195,6 +210,7 @@ ${raw(challanPickerScript(u(ctx)('api/orders_search.php'), preselected))}
     </div>
     <div class="d-flex gap-2">
       <a href="${u(ctx)('modules/challans/print.php?id=' + id)}" target="_blank" class="btn btn-outline-secondary"><i class="fa-solid fa-print me-1"></i>Print / PDF</a>
+      <button type="button" class="btn btn-success" id="btnSendWhatsapp" style="background:#25D366;border-color:#25D366;"><i class="fa-brands fa-whatsapp me-1"></i>Send via WhatsApp</button>
       <a href="${u(ctx)('modules/challans/edit.php?id=' + id)}" class="btn btn-outline-secondary"><i class="fa-solid fa-pen me-1"></i>Edit</a>
       <form method="POST" action="${u(ctx)('modules/challans/delete.php')}" onsubmit="return confirm('Delete this challan? This cannot be undone.');">
         ${ctx.csrfField()}
@@ -231,6 +247,37 @@ ${raw(challanPickerScript(u(ctx)('api/orders_search.php'), preselected))}
     <strong>Total Value</strong><strong>${raw(money(totalValue))}</strong>
   </div></div>` : ''}
 </div>
+
+<div class="modal fade" id="sendWhatsappModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title"><i class="fa-brands fa-whatsapp me-2"></i>Send via WhatsApp</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <form method="POST" action="${u(ctx)('modules/challans/send_whatsapp.php')}">
+        ${ctx.csrfField()}
+        <input type="hidden" name="challan_id" value="${id}">
+        <div class="modal-body">
+          <div id="waError" class="alert alert-danger d-none"></div>
+          ${savedNumbers.length > 0 ? html`
+          <label class="form-label small">Saved numbers</label>
+          <div class="d-flex flex-wrap gap-2 mb-2">
+            ${savedNumbers.map((n) => html`<button type="button" class="btn btn-sm btn-outline-secondary wa-saved-number" data-number="${n}">${n}</button>`)}
+          </div>` : ''}
+          <label class="form-label small">WhatsApp number</label>
+          <input type="text" name="to_number" id="waToNumber" class="form-control" placeholder="10-digit mobile number" value="${defaultNumber}" required>
+          <div class="form-check mt-2">
+            <input type="checkbox" class="form-check-input" name="save_number" value="1" id="waSaveNumber">
+            <label class="form-check-label small" for="waSaveNumber">Save this number for next time</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success" style="background:#25D366;border-color:#25D366;">Send</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+${raw(challanWhatsAppScript())}
 `);
   });
 
@@ -257,6 +304,19 @@ ${raw(challanPickerScript(u(ctx)('api/orders_search.php'), preselected))}
     const result = await challans.delete(challanId, actor(ctx));
     ctx.flashSet(result.success ? 'success' : 'danger', result.success ? 'Challan deleted.' : (result.errors ?? ['Could not delete the challan.']).join(' '));
     return new WebRedirect('modules/challans/list.php');
+  });
+
+  // ---- send via WhatsApp --------------------------------------------------------------------------
+  webPage(app, '/modules/challans/send_whatsapp', { auth: 'challans.manage', methods: ['POST'] }, async (ctx, req) => {
+    if (!ctx.csrfValid()) return new WebText('Invalid or expired security token (CSRF). Please refresh the page and try again.', 419);
+    const p = req.body as Record<string, unknown>;
+    const challanId = int(p.challan_id);
+    const toNumber = clean(p.to_number);
+    if (toNumber === '') { ctx.flashSet('danger', 'A WhatsApp number is required.'); return new WebRedirect(`modules/challans/view.php?id=${challanId}`); }
+    const result = await whatsapp.sendChallan(challanId, toNumber, ctx.data.user_id ?? null);
+    if (result.success && !!clean(p.save_number)) await saveWhatsAppNumber(toNumber);
+    ctx.flashSet(result.success ? 'success' : 'danger', result.success ? 'Challan sent via WhatsApp.' : (result.error ?? 'Could not send the challan.'));
+    return new WebRedirect(`modules/challans/view.php?id=${challanId}`);
   });
 
   // ---- report (date-wise / garments-wise) -----------------------------------------------------------

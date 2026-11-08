@@ -108,6 +108,7 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
   const svc = buildServices(env, db, {
     provider,
     invoicePdf: { async generate() { pdfPath = join(pdfDir, `inv-${Date.now()}.pdf`); writeFileSync(pdfPath, '%PDF'); return { success: true, file_path: pdfPath }; } },
+    challanPdf: { async generate() { pdfPath = join(pdfDir, `ch-${Date.now()}.pdf`); writeFileSync(pdfPath, '%PDF'); return { success: true, file_path: pdfPath }; } },
   });
   const wa = svc.whatsapp;
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -128,7 +129,8 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
       `INSERT INTO notification_templates (template_key, channel, body, provider_template_name, language, template_param_order, is_active) VALUES
        ('order_ready', 'WhatsApp', 'Hi {customer_name}, {order_number} ready', NULL, NULL, NULL, 1),
        ('order_confirmation', 'WhatsApp', 'Hi {customer_name} {order_number}', 'conf_v1', 'en', '["customer_name","order_number"]', 1),
-       ('invoice', 'WhatsApp', 'inv', 'invoice_v1', 'en', '["customer_name","invoice_number","grand_total","current_due","due_date"]', 1)`);
+       ('invoice', 'WhatsApp', 'inv', 'invoice_v1', 'en', '["customer_name","invoice_number","grand_total","current_due","due_date"]', 1),
+       ('challan_document', 'WhatsApp', 'challan', 'challan_v1', 'en', '["challan_number","order_numbers","order_count","with_amount"]', 1)`);
   });
 
   const queue = () => db.query<any>('SELECT * FROM whatsapp_outbound_queue ORDER BY id');
@@ -282,6 +284,54 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
     expect((await wa.sendInvoice(o.order_id as number, null)).code).toBe('not_configured');
   });
 
+  it('sendChallan: template mode, deletes the temp PDF, logs it against the single order', async () => {
+    const o = await svc.orders.createOrder({ customer_id: 1, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }, { userId: 1 }, true, 1, true);
+    const ch = await svc.challans.generate([o.order_id as number], true, { userId: 1 });
+    expect(ch.success).toBe(true);
+    sent.length = 0;
+    const r = await wa.sendChallan(ch.challan_id as number, '9876543210', 1);
+    expect(r).toEqual({ success: true, mode: 'template', error: null, code: null });
+    expect(sent.map((s) => s.kind)).toEqual(['upload', 'template']);
+    expect(sent[0]!.args).toEqual([true, 'application/pdf']);
+    expect(existsSync(pdfPath)).toBe(false);
+    const tpl = sent[1]!.args as any[];
+    expect(tpl[0]).toBe('919876543210');
+    expect(tpl[1]).toBe('challan_v1');
+    expect(tpl[4]).toEqual({ id: 'media-1', filename: expect.stringMatching(/^Challan-.+\.pdf$/) });
+    expect(tpl[3]).toHaveLength(4);
+    const log = (await db.query<any>("SELECT template_key, status, message, user_id, order_id, customer_id FROM notification_logs WHERE template_key = 'challan_document'"))[0];
+    expect(log).toMatchObject({ status: 'Sent', user_id: 1, order_id: o.order_id, customer_id: 1 });
+    expect(log.message).toMatch(/^\[document\] Challan .+ \(template\)$/);
+  });
+
+  it('sendChallan: combined challan has no single order to attribute the log to', async () => {
+    const o1 = await svc.orders.createOrder({ customer_id: 1, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }, { userId: 1 }, true, 1, true);
+    const o2 = await svc.orders.createOrder({ customer_id: 1, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }, { userId: 1 }, true, 1, true);
+    const ch = await svc.challans.generate([o1.order_id as number, o2.order_id as number], true, { userId: 1 });
+    sent.length = 0;
+    const r = await wa.sendChallan(ch.challan_id as number, '9876543210', 1);
+    expect(r).toMatchObject({ success: true, mode: 'template' });
+    const log = (await db.query<any>("SELECT order_id, customer_id FROM notification_logs WHERE template_key = 'challan_document'"))[0];
+    expect(log).toMatchObject({ order_id: null, customer_id: null });
+  });
+
+  it('sendChallan: free-form fallback, error codes', async () => {
+    await db.execute("DELETE FROM notification_templates WHERE template_key = 'challan_document'");
+    const o = await svc.orders.createOrder({ customer_id: 1, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }, { userId: 1 }, true, 1, true);
+    const ch = await svc.challans.generate([o.order_id as number], true, { userId: 1 });
+    sent.length = 0;
+    expect(await wa.sendChallan(ch.challan_id as number, '9876543210', null)).toMatchObject({ success: true, mode: 'free_form' });
+    expect(sent.map((s) => s.kind)).toEqual(['upload', 'media']);
+    expect(await wa.sendChallan(9999, '9876543210', null)).toEqual({ success: false, mode: null, error: 'Challan not found.', code: 'not_found' });
+    expect((await wa.sendChallan(ch.challan_id as number, '', null)).code).toBe('no_mobile');
+    outcome = { success: false, provider_message_id: null, error: 'x'.repeat(300) };
+    const bad = await wa.sendChallan(ch.challan_id as number, '9876543210', null);
+    expect(bad).toMatchObject({ success: false, code: 'send_failed' });
+    expect((await db.query<any>("SELECT error_message FROM notification_logs WHERE status = 'Failed' AND template_key = 'challan_document'"))[0].error_message).toHaveLength(255);
+    await db.execute('UPDATE whatsapp_accounts SET is_active = 0');
+    expect((await wa.sendChallan(ch.challan_id as number, '9876543210', null)).code).toBe('not_configured');
+  });
+
   it('mobile send-invoice route: auth, validation, error mapping', async () => {
     await db.execute('INSERT INTO permissions (id, permission_key, module) VALUES (1, \'billing.view\', \'x\')');
     await db.execute('INSERT INTO role_permissions (role_id, permission_id) VALUES (1, 1)');
@@ -297,6 +347,31 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
     expect((await post({ order_id: o.order_id })).json()).toEqual({ success: true, data: { sent: true, mode: 'template' } });
     outcome = { success: false, provider_message_id: null, error: 'Meta says no' };
     const f = await post({ order_id: o.order_id });
+    expect(f.statusCode).toBe(502);
+    expect(f.json().error).toEqual({ code: 'send_failed', message: 'Meta says no' });
+  });
+
+  it('mobile send-challan route: auth, validation, error mapping, saves a number on request', async () => {
+    await db.execute("INSERT INTO permissions (id, permission_key, module) VALUES (2, 'challans.manage', 'x')");
+    await db.execute('INSERT INTO role_permissions (role_id, permission_id) VALUES (1, 2)');
+    await db.execute('UPDATE users SET password_hash = ? WHERE id = 1', [await hashPassword('pw12345')]);
+    const token = 'b'.repeat(64);
+    await db.execute("INSERT INTO api_tokens (user_id, token_hash, expires_at) VALUES (1, ?, NOW() + INTERVAL 1 DAY)", [createHash('sha256').update(token).digest('hex')]);
+    const h = { authorization: `Bearer ${token}` };
+    const o = await svc.orders.createOrder({ customer_id: 1, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] }, { userId: 1 }, true, 1, true);
+    const ch = await svc.challans.generate([o.order_id as number], true, { userId: 1 });
+    const post = (payload: unknown, headers: any = h) => app.inject({ method: 'POST', url: '/api/mobile/challan_send_whatsapp', headers, payload: payload as object });
+
+    expect((await post({ challan_id: ch.challan_id }, {})).statusCode).toBe(401);
+    expect((await post({ challan_id: ch.challan_id })).json().error).toMatchObject({ code: 'invalid_request', message: 'A WhatsApp number is required.' });
+    expect((await post({ challan_id: 999999, to_number: '9876543210' })).statusCode).toBe(404);
+
+    expect((await post({ challan_id: ch.challan_id, to_number: '9876543210', save_number: true })).json()).toEqual({ success: true, data: { sent: true, mode: 'template' } });
+    const detail = await app.inject({ method: 'GET', url: `/api/mobile/challan_detail?id=${ch.challan_id}`, headers: h });
+    expect(detail.json().data.saved_whatsapp_numbers).toContain('9876543210');
+
+    outcome = { success: false, provider_message_id: null, error: 'Meta says no' };
+    const f = await post({ challan_id: ch.challan_id, to_number: '9876543210' });
     expect(f.statusCode).toBe(502);
     expect(f.json().error).toEqual({ code: 'send_failed', message: 'Meta says no' });
   });

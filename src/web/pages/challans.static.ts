@@ -8,6 +8,17 @@ export const challanStyle = (): string => `<style>
 .ch-chip button { border: none; background: none; color: #4338ca; font-weight: bold; cursor: pointer; line-height: 1; padding: 0; }
 </style>`;
 
+/** The Send-via-WhatsApp modal on /modules/challans/view: opens the modal, and clicking a saved
+ * number fills the input (a plain form POST does the actual sending -- no AJAX needed here). */
+export const challanWhatsAppScript = (): string => `<script>
+document.getElementById('btnSendWhatsapp')?.addEventListener('click', function () {
+  new bootstrap.Modal(document.getElementById('sendWhatsappModal')).show();
+});
+document.querySelectorAll('.wa-saved-number').forEach(function (btn) {
+  btn.addEventListener('click', function () { document.getElementById('waToNumber').value = btn.dataset.number; });
+});
+</script>`;
+
 /** Shared order-picker widget for /modules/challans/generate and /modules/challans/edit. `preselected` is
  * [{order_id, label}] already on the challan (edit mode) or [] (generate mode). */
 export const challanPickerScript = (searchUrl: string, preselected: { order_id: number; label: string }[]): string => `<script>

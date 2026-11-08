@@ -4,15 +4,17 @@ import { addDays, todayIn } from '../../lib/dates.js';
 import { ApiError, num, ok } from '../../lib/http.js';
 import { toInt } from '../../lib/php.js';
 import { qInt, qStr } from '../../lib/query.js';
+import { getSetting } from '../../services/settings.js';
 
 type Raw = Record<string, any>;
 type Q = Record<string, unknown>;
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_SAVED_WHATSAPP_NUMBERS = 5;
 
 /**
  * Ports of the challan_* endpoints: generate/edit/delete (the state machine in ChallanService),
- * list/detail (for the Android list + review screens), pdf (view/print), and the two reports
- * (date-wise, garments-wise). WhatsApp sending is its own endpoint (challans_whatsapp.ts).
+ * list/detail (for the Android list + review screens), pdf (view/print), send-via-WhatsApp, and the
+ * two reports (date-wise, garments-wise).
  *
  * challans_list's join chain is exactly the shape the live PHP app's rewrite once got wrong: a
  * LEFT JOIN users (for created_by_name) was accidentally dropped, and it only broke once real
@@ -21,8 +23,24 @@ const ISO = /^\d{4}-\d{2}-\d{2}$/;
  * asserting on the list, not just an empty-state call.
  */
 export async function registerMobileChallanRoutes(app: FastifyInstance) {
-  const { db, challans, challanPdf, env } = app.services;
+  const { db, challans, challanPdf, whatsapp, env } = app.services;
   const tz = env.APP_TIMEZONE;
+
+  /** Up to MAX_SAVED_WHATSAPP_NUMBERS numbers (most-recently-used first) a challan is commonly sent
+   * to -- a driver/courier, not necessarily any customer's own number. The first JSON-array-valued
+   * setting in this app; no existing settings helper covers writing one, so it's read/written here
+   * directly, the same ad hoc way every other settings write in this codebase already works. */
+  const getSavedWhatsAppNumbers = async (): Promise<string[]> => {
+    try {
+      const parsed = JSON.parse((await getSetting(db, 'challan_whatsapp_numbers', '[]')) ?? '[]');
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch { return []; }
+  };
+  const saveWhatsAppNumber = async (numberToSave: string) => {
+    const current = await getSavedWhatsAppNumbers();
+    const next = [numberToSave, ...current.filter((n) => n !== numberToSave)].slice(0, MAX_SAVED_WHATSAPP_NUMBERS);
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_whatsapp_numbers', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [JSON.stringify(next)]);
+  };
 
   const route = (method: 'GET' | 'POST', name: string, handler: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>) => {
     app.route({ method, url: `/${name}`, handler });
@@ -139,7 +157,31 @@ export async function registerMobileChallanRoutes(app: FastifyInstance) {
       combined: orders.length > 1,
       orders: orders.map((o) => ({ order_id: num(o.order_id), order_number: o.order_number, customer_name: o.customer_name, mobile: o.mobile, order_date: o.order_date })),
       items: items.map((i) => ({ order_id: num(i.order_id), garment_name: i.garment_name, service_name: i.service_name, quantity: num(i.quantity), unit_price: num(i.unit_price), total: num(i.total) })),
+      // populates the Send-via-WhatsApp number picker -- a challan commonly goes to a saved
+      // driver/courier number, not necessarily any one order's own customer
+      saved_whatsapp_numbers: await getSavedWhatsAppNumbers(),
     });
+  });
+
+  // ---- WhatsApp send -----------------------------------------------------------------------------
+  route('POST', 'challan_send_whatsapp', async (req) => {
+    const ctx = await auth(req);
+    const b = req.body;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) throw new ApiError('invalid_request', 'Invalid request payload.', 400);
+    const p = b as Raw;
+    const challan = await loadChallan(ctx, toInt(p.challan_id));
+    const toNumber = qStr(p.to_number);
+    if (toNumber === '') throw new ApiError('invalid_request', 'A WhatsApp number is required.', 422);
+    const result = await whatsapp.sendChallan(Number(challan.id), toNumber, ctx.id);
+    if (!result.success) {
+      // same code/status split as whatsapp_send_invoice: a PDF-generation failure is this server's
+      // own fault (500), anything else (no account configured, Meta rejected the send, ...) is
+      // reported the same way as any other upstream-send failure (502).
+      const pdfFailed = result.code === 'pdf_failed';
+      throw new ApiError(pdfFailed ? 'server_error' : 'send_failed', result.error ?? 'Could not send the challan.', pdfFailed ? 500 : 502);
+    }
+    if (p.save_number) await saveWhatsAppNumber(toNumber);
+    return ok({ sent: true, mode: result.mode });
   });
 
   // ---- PDF (view/print) ----------------------------------------------------------------------------
