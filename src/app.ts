@@ -51,6 +51,7 @@ import { PackingService } from './services/packingService.js';
 import { DatabaseBackupService } from './services/databaseBackupService.js';
 import { InvoicePdfService } from './services/invoicePdf.js';
 import { ChallanPdfService } from './services/challanPdf.js';
+import { ChallanService } from './services/challanService.js';
 
 export interface Services {
   env: Env;
@@ -80,6 +81,7 @@ export interface Services {
   packing: PackingService;
   backup: DatabaseBackupService;
   challanPdf: ChallanPdfService;
+  challans: ChallanService;
   web: { sessions: WebSessionStore; /** nav entries whose page exists in this app (is_file() in header.php) */ pages: Set<string>; navShowAll: boolean };
 }
 
@@ -147,6 +149,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     orders: new OrderService(db, audit, wallet, pricing, finance, notifications, hooks, env.APP_TIMEZONE),
     backup: new DatabaseBackupService(env),
     challanPdf: new ChallanPdfService(db, env.APP_NAME),
+    challans: new ChallanService(db, audit),
   };
 }
 
