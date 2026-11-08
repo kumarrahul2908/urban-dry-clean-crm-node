@@ -524,6 +524,8 @@ function openGarmentModal(g) {
   dom.agColor.value = '';
   dom.agRemarks.value = '';
   document.querySelectorAll('.ag-defect').forEach(cb => cb.checked = false);
+  var pkgNone = document.querySelector('input[name="agPackaging"][value=""]');
+  if (pkgNone) pkgNone.checked = true;
   dom.agError.classList.add('d-none');
   // Manual Rate Override must never leak from one garment to the next.
   resetManualOverrideUI();
@@ -688,11 +690,13 @@ function addToCart() {
   if (manualOverrideActive && rateOverride <= 0) { alert('Manual Rate Override requires a rate greater than zero.'); return; }
 
   const defectIds = Array.from(document.querySelectorAll('.ag-defect:checked')).map(cb => parseInt(cb.value, 10));
+  const pkgChecked = document.querySelector('input[name="agPackaging"]:checked');
   cart.push({
     garment_id: pendingGarment.id, garment_name: pendingGarment.name, service_id: activeServiceId,
     billing_unit: isWeight ? 'weight' : 'piece', quantity: isWeight ? null : qty, weight: isWeight ? weight : null,
     rate_override: rateOverride, manual_override: manualOverrideActive,
     brand_id: dom.agBrand.value || null, color_id: dom.agColor.value || null,
+    packaging_style: (pkgChecked && pkgChecked.value) || null,
     defect_ids: defectIds, remarks: dom.agRemarks.value,
   });
   agModal.hide();
@@ -746,7 +750,7 @@ function saveItems() {
     udcPost(API.addItem, {
       order_id: ORDER_ID, garment_id: item.garment_id, service_id: item.service_id,
       quantity: item.quantity, weight: item.weight, rate_override: item.rate_override, manual_override: !!item.manual_override,
-      brand_id: item.brand_id, color_id: item.color_id, defect_ids: item.defect_ids, remarks: item.remarks,
+      brand_id: item.brand_id, color_id: item.color_id, packaging_style: item.packaging_style, defect_ids: item.defect_ids, remarks: item.remarks,
     }).then(function (res) {
       if (!res.success) errors.push(item.garment_name + ': ' + (res.errors || ['Could not add.']).join(' '));
       next();

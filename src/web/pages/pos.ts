@@ -272,6 +272,16 @@ ${raw(posStyle(u, jsonEncode, h))}
             <input type="text" id="agLineTotalDisplay" class="form-control form-control-sm fw-bold" readonly>
           </div>
           <div class="col-12">
+            <label class="form-label small">Packaging</label>
+            <div class="d-flex flex-wrap gap-2">
+              ${[['', 'None'], ['FOLD', 'Fold'], ['HANGER', 'Hanger'], ['HALF_FOLD', 'Half Fold'], ['HANGER_AND_FOLD', 'Hanger and Fold']].map(([val, label], i) => html`
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="agPackaging" value="${val}" id="agPackaging${i}" ${i === 0 ? 'checked' : ''}>
+                  <label class="form-check-label small" for="agPackaging${i}">${label}</label>
+                </div>`)}
+            </div>
+          </div>
+          <div class="col-12">
             <label class="form-label small">Defects (select any that apply)</label>
             <div class="d-flex flex-wrap gap-2">
               ${defects.map((d) => html`

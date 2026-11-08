@@ -499,6 +499,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
       manual_override: !phpEmpty(p.manual_override),
       brand_id: !phpEmpty(p.brand_id) ? toInt(p.brand_id) : null,
       color_id: !phpEmpty(p.color_id) ? toInt(p.color_id) : null,
+      packaging_style: p.packaging_style,
       remarks: scalar(p.remarks) ? String(p.remarks) : '',
       defect_ids: Array.isArray(p.defect_ids) ? p.defect_ids.map(toInt).filter((n: number) => n !== 0) : [],
     };
@@ -526,6 +527,7 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (has('manual_override')) raw.manual_override = !phpEmpty(p.manual_override);
     if (has('brand_id')) raw.brand_id = !phpEmpty(p.brand_id) ? toInt(p.brand_id) : null;
     if (has('color_id')) raw.color_id = !phpEmpty(p.color_id) ? toInt(p.color_id) : null;
+    if (has('packaging_style')) raw.packaging_style = p.packaging_style;
     if (has('remarks')) raw.remarks = scalar(p.remarks) ? String(p.remarks) : '';
     if (has('defect_ids')) raw.defect_ids = Array.isArray(p.defect_ids) ? p.defect_ids.map(toInt).filter((n: number) => n !== 0) : [];
 

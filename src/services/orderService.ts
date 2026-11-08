@@ -28,6 +28,11 @@ const clean = (v: unknown): string => String(v ?? '').trim();
 export function phpDiscountType(v: unknown): string | null {
   return ['Percent', 'Flat'].includes((v ?? 'Percent') as string) ? ((v ?? null) as string | null) : 'Percent';
 }
+
+/** order_items.packaging_style: single-choice, separate from the multi-select Defects list and
+ * from the order-level packaging_preference (delivery wrapping, a different concept entirely). */
+const PACKAGING_STYLES = ['FOLD', 'HANGER', 'HALF_FOLD', 'HANGER_AND_FOLD'];
+export const packagingStyle = (v: unknown): string | null => (typeof v === 'string' && PACKAGING_STYLES.includes(v) ? v : null);
 const asObj = (v: unknown): Raw => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Raw) : {});
 const asList = (v: unknown): Raw[] => (Array.isArray(v) ? v.map(asObj) : []);
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
@@ -36,7 +41,7 @@ const fail = (...errors: string[]): Result => ({ success: false, errors });
 interface PricedLine {
   garment_id: number; service_id: number; garment_name: string; service_name: string;
   quantity: number; unit: string; unit_price: number; weight: number | null; weight_rate: number | null;
-  subtotal: number; tax_percent: number; brand_id: number | null; color_id: number | null;
+  subtotal: number; tax_percent: number; brand_id: number | null; color_id: number | null; packaging_style: string | null;
   defect_ids: number[]; remarks: string; rate_overridden: boolean; is_manual_override: boolean;
   original_configured_rate: string | null; pieces_per_unit: number; piece_names: string | null;
   discount?: number; tax?: number; total?: number;
@@ -157,6 +162,7 @@ export class OrderService {
         weight: weightSnap, weight_rate: weightRateSnap, subtotal: lineSubtotal, tax_percent: taxPercent,
         brand_id: !phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null,
         color_id: !phpEmpty(raw.color_id) ? toInt(raw.color_id) : null,
+        packaging_style: packagingStyle(raw.packaging_style),
         defect_ids: (Array.isArray(raw.defect_ids) ? raw.defect_ids : []).map(toInt).filter((n: number) => n !== 0),
         // rate_overridden now always matches is_manual_override: the fix above means a
         // rate_override value only ever affects the price when manual_override also applied.
@@ -305,10 +311,10 @@ export class OrderService {
           const p = priced[seq]!;
           const it = await t.execute(
             `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
-               weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+               weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, packaging_style, remarks)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
-              p.subtotal, p.discount, p.tax_percent, p.tax, p.total, p.brand_id, p.color_id, p.remarks],
+              p.subtotal, p.discount, p.tax_percent, p.tax, p.total, p.brand_id, p.color_id, p.packaging_style, p.remarks],
           );
           const itemId = it.insertId;
           if (p.is_manual_override) {
@@ -764,10 +770,10 @@ export class OrderService {
         }
         const ins = await t.execute(
           `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
-             weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks, client_request_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
+             weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, packaging_style, remarks, client_request_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?,?)`,
           [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
-            p.subtotal, p.tax_percent, p.subtotal, p.brand_id, p.color_id, p.remarks, clientRequestId],
+            p.subtotal, p.tax_percent, p.subtotal, p.brand_id, p.color_id, p.packaging_style, p.remarks, clientRequestId],
         );
         const id = ins.insertId;
         for (const defectId of p.defect_ids) await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [id, defectId, actor.userId]);
@@ -872,10 +878,11 @@ export class OrderService {
         if (!locked || !(await this.isEditable(locked as { status_id: number }, t))) throw new BusinessError('This order can no longer be edited — its status changed a moment ago.');
         await t.execute(
           `UPDATE order_items SET quantity=?, unit_price=?, weight=?, weight_rate=?, is_manual_override=?,
-             subtotal=?, tax_percent=?, tax=?, total=?, brand_id=?, color_id=?, remarks=? WHERE id=?`,
+             subtotal=?, tax_percent=?, tax=?, total=?, brand_id=?, color_id=?, packaging_style=?, remarks=? WHERE id=?`,
           [quantity, unitPrice, weightSnap, weightRateSnap, isManual ? 1 : 0, lineSubtotal, taxPercent, lineSubtotal, lineSubtotal,
             Object.prototype.hasOwnProperty.call(raw, 'brand_id') ? (!phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null) : existing.brand_id,
             Object.prototype.hasOwnProperty.call(raw, 'color_id') ? (!phpEmpty(raw.color_id) ? toInt(raw.color_id) : null) : existing.color_id,
+            Object.prototype.hasOwnProperty.call(raw, 'packaging_style') ? packagingStyle(raw.packaging_style) : existing.packaging_style,
             Object.prototype.hasOwnProperty.call(raw, 'remarks') ? clean(raw.remarks) : existing.remarks, itemId],
         );
         if (Object.prototype.hasOwnProperty.call(raw, 'defect_ids')) {

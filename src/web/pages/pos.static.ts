@@ -460,6 +460,8 @@ function openGarmentModal(g, editIndex) {
     document.querySelectorAll('.ag-defect').forEach(function (cb) {
       cb.checked = item.defect_ids.indexOf(parseInt(cb.value, 10)) !== -1;
     });
+    const pkgRadio = document.querySelector('input[name="agPackaging"][value="' + (item.packaging_style || '') + '"]');
+    if (pkgRadio) pkgRadio.checked = true;
   } else {
     // The service tab the staff member is actively browsing under is a far stronger signal of
     // intent than the garment's own static default_service_id — clicking "Waist Coat" while on
@@ -474,6 +476,8 @@ function openGarmentModal(g, editIndex) {
     dom.agColor.value = '';
     dom.agRemarks.value = '';
     document.querySelectorAll('.ag-defect').forEach(cb => cb.checked = false);
+    const pkgNone = document.querySelector('input[name="agPackaging"][value=""]');
+    if (pkgNone) pkgNone.checked = true;
   }
 
   dom.agError.classList.add('d-none');
@@ -756,6 +760,7 @@ function onAddOrUpdateCartItem() {
   }
 
   const defectIds = Array.from(document.querySelectorAll('.ag-defect:checked')).map(cb => parseInt(cb.value, 10));
+  const pkgChecked = document.querySelector('input[name="agPackaging"]:checked');
   const lineItem = {
     garment_id: pendingGarment.id, garment_name: pendingGarment.name,
     service_id: parseInt(dom.agService.value, 10),
@@ -770,6 +775,7 @@ function onAddOrUpdateCartItem() {
     manual_override: manualOverrideActive,
     brand_id: dom.agBrand.value || null,
     color_id: dom.agColor.value || null,
+    packaging_style: (pkgChecked && pkgChecked.value) || null,
     defect_ids: defectIds,
     remarks: dom.agRemarks.value,
     tax_percent: agCurrentRate ? agCurrentRate.tax_percent : 0,
@@ -1039,7 +1045,7 @@ function submitOrder() {
       return {
         garment_id: i.garment_id, service_id: i.service_id, quantity: i.quantity, weight: i.weight,
         unit: i.unit, rate_override: i.rate_override, manual_override: !!i.manual_override, brand_id: i.brand_id, color_id: i.color_id,
-        defect_ids: i.defect_ids, remarks: i.remarks,
+        packaging_style: i.packaging_style, defect_ids: i.defect_ids, remarks: i.remarks,
       };
     }),
     urgent_level_id: dom.urgentLevel.value || null,

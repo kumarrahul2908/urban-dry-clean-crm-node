@@ -19,6 +19,7 @@ const orDash = (v: unknown) => { const s = String(v ?? ''); return s === '' || s
 const mm = (n: number) => numberFormat(n, 2).replace(/,/g, '');
 
 const addslashes = (v: string) => v.replace(/[\\'"]/g, '\\$&').replace(/\0/g, '\\0');
+const PACKAGING_LABEL: Record<string, string> = { FOLD: 'Fold', HANGER: 'Hanger', HALF_FOLD: 'Half Fold', HANGER_AND_FOLD: 'Hanger and Fold' };
 
 export function registerBarcodeTagPages(app: FastifyInstance) {
   const { db, printConfig, audit, workshop, laundry } = app.services;
@@ -48,7 +49,7 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     const byId = new Map<number, Row>();
     if (pieceIds.length) {
       for (const r of await db.query<Row>(
-        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names,
+        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names, oi.packaging_style,
          o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
          COALESCE(gt.printed_count, 0) AS printed_count, (SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) FROM order_items WHERE order_id = o.id) AS total_items
          FROM barcodes bc JOIN order_items oi ON oi.id = bc.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id
@@ -119,6 +120,7 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
       if (!phpEmpty(t.brand_name)) extras.push(e(t.brand_name));
       const defects = t.order_item_id !== null ? defectsByItem.get(Number(t.order_item_id)) : undefined;
       if (defects && defects.length) extras.push(e(defects.join(', ')));
+      if (!phpEmpty(t.packaging_style) && PACKAGING_LABEL[t.packaging_style]) extras.push(e(PACKAGING_LABEL[t.packaging_style]!));
       // a Set garment prints ONE tag per physical piece: show the garment name AND (when Piece Names are set) this piece's own name.
       // With quantity > 1 of the same Set garment, piece_index keeps counting past pieces_per_unit (e.g. 1..9 for 3 outfits of 3), so the
       // within-set name must cycle: ((piece_index - 1) % pieces_per_unit) + 1, not piece_index itself.
@@ -391,6 +393,7 @@ ${raw(scanScript(u, jsonEncode, e, {}, [prefillLookup]))}
         <tr><th>Quantity</th><td>${item.weight !== null ? String(item.weight) + ' kg' : String(item.quantity) + ' ' + String(item.unit ?? '')}</td></tr>
         <tr><th>Color</th><td>${orDash(item.color_name)}</td></tr>
         <tr><th>Brand</th><td>${orDash(item.brand_name)}</td></tr>
+        <tr><th>Packaging</th><td>${item.packaging_style && PACKAGING_LABEL[item.packaging_style] ? PACKAGING_LABEL[item.packaging_style] : '—'}</td></tr>
         <tr><th>Defects</th><td>${defects.length ? defects.join(', ') : '—'}</td></tr>
         <tr><th>Remarks</th><td>${orDash(item.remarks)}</td></tr>
         <tr><th>Due Date</th><td>${raw(ctx.date(item.due_date))}${!phpEmpty(item.due_time) ? raw(' at ' + ctx.date(item.due_time, 'h:i A')) : ''}</td></tr>

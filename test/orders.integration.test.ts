@@ -137,6 +137,28 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
     expect(Number(g)).toBe(234.98);
   });
 
+  it('packaging_style: set on create, changed via order_item_update, cleared, rejects an unknown value', async () => {
+    const created = await post('pos_orders_create', { client_request_id: 'pkg-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1, packaging_style: 'HANGER' }] });
+    expect(created.statusCode).toBe(200);
+    const pkgOrderId = created.json().data.order_id;
+    const itemId = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ?', [pkgOrderId]))[0].id;
+    expect((await db.query<any>('SELECT packaging_style FROM order_items WHERE id = ?', [itemId]))[0].packaging_style).toBe('HANGER');
+    expect((await get(`orders_detail?id=${pkgOrderId}`)).json().data.items[0]).toMatchObject({ packaging_style: 'HANGER' });
+
+    // an unrecognized value is silently dropped (same as any other validated enum-ish field here), not an error
+    const badUpdate = await post('order_item_update', { order_id: pkgOrderId, item_id: itemId, packaging_style: 'NOT_A_REAL_STYLE' });
+    expect(badUpdate.statusCode).toBe(200);
+    expect((await db.query<any>('SELECT packaging_style FROM order_items WHERE id = ?', [itemId]))[0].packaging_style).toBeNull();
+
+    const changed = await post('order_item_update', { order_id: pkgOrderId, item_id: itemId, packaging_style: 'HANGER_AND_FOLD' });
+    expect(changed.statusCode).toBe(200);
+    expect((await db.query<any>('SELECT packaging_style FROM order_items WHERE id = ?', [itemId]))[0].packaging_style).toBe('HANGER_AND_FOLD');
+
+    // omitting the key on a later update leaves the existing value alone (same has()-style fallback as brand_id/color_id)
+    await post('order_item_update', { order_id: pkgOrderId, item_id: itemId, remarks: 'unrelated change' });
+    expect((await db.query<any>('SELECT packaging_style FROM order_items WHERE id = ?', [itemId]))[0].packaging_style).toBe('HANGER_AND_FOLD');
+  });
+
   it('cancel marks the receivable Refund Due and blocks further changes', async () => {
     const c = await post('order_cancel', { order_id: orderId, reason: 'customer left' });
     expect(c.json().data).toMatchObject({ cancelled: true, receivable_status: 'Refund Due', warning: expect.stringContaining('net effective payment') });
