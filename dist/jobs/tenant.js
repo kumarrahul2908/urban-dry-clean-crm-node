@@ -1,0 +1,149 @@
+import { loadEnv } from '../config/env.js';
+import { createPool } from '../db/pool.js';
+import { applyMigrations } from '../db/migrations.js';
+import { provisionTenant } from '../tenancy/provision.js';
+import { addSuperAdmin } from '../tenancy/console.js';
+import { approveSignup } from '../tenancy/signup.js';
+import { TenantRegistry, controlEnv, initControlSchema } from '../tenancy/registry.js';
+/**
+ * `npm run tenant -- <command>` — manage businesses in SaaS mode (needs CONTROL_DB_NAME + CONTROL_MASTER_KEY).
+ *   init                                  create the control tables
+ *   add --slug s --name "N" --host h --db-name d --db-user u --db-pass p --secret K [--db-host --db-port --app-url --upload-dir --timezone --status]
+ *   create --slug s --name "N" --host h --template-db DB --admin-user u --admin-pass p [--plan code] [--admin-name --admin-mobile --admin-email --no-catalog --trial-days 14 --timezone]
+ *          (new database + DB user, schema + reference data cloned from the template DB, default store, first Super Admin; needs PROVISION_DB_* admin account)
+ *   requests | approve <id> | reject <id> [note]   signup requests (public /signup page; see SIGNUP_* env)
+ *   admin-add <username> <password>       create / reset an operator-console login (CONTROL_ADMIN_HOST; password >= 12 chars)
+ *   plans | plan <slug> <code> [--until YYYY-MM-DD] | extend <slug> <days> | usage   plans, paid-through dates, usage vs limits
+ *   migrate-all [--dry]                   apply db/migrations to the control-plane-listed businesses (stops at the first failing business)
+ *   list | suspend <slug> | resume <slug> | cancel <slug> | host-add <slug> <hostname>
+ */
+const env = loadEnv();
+if (!env.CONTROL_DB_NAME) {
+    console.error('Set CONTROL_DB_NAME (and CONTROL_MASTER_KEY) first.');
+    process.exit(1);
+}
+const control = createPool(controlEnv(env));
+const [cmd, ...rest] = process.argv.slice(2);
+const flag = (n) => { const i = rest.indexOf('--' + n); return i >= 0 ? rest[i + 1] : undefined; };
+const need = (n) => flag(n) ?? (() => { throw new Error(`--${n} is required`); })();
+try {
+    if (cmd === 'init') {
+        await initControlSchema(control.db);
+        console.log('control schema ready');
+    }
+    else {
+        const reg = new TenantRegistry(env, control.db);
+        if (cmd === 'add') {
+            const host = need('host').toLowerCase();
+            const r = await control.db.execute('INSERT INTO tenants (slug, name, status, db_host, db_port, db_name, db_user, db_pass_enc, app_url, app_secret_enc, upload_dir, timezone) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', [need('slug'), need('name'), flag('status') ?? 'active', flag('db-host') ?? '127.0.0.1', Number(flag('db-port') ?? 3306), need('db-name'), need('db-user'), reg.encrypt(need('db-pass')),
+                flag('app-url') ?? `https://${host}`, reg.encrypt(need('secret')), flag('upload-dir') ?? `/var/www/udc/uploads/${need('slug')}`, flag('timezone') ?? 'Asia/Kolkata']);
+            await control.db.execute('INSERT INTO tenant_domains (hostname, tenant_id, is_primary) VALUES (?,?,1)', [host, r.insertId]);
+            await control.db.execute('INSERT INTO tenant_events (tenant_id, event, detail) VALUES (?,?,?)', [r.insertId, 'created', host]);
+            console.log(`tenant #${r.insertId} added → ${host}`);
+        }
+        else if (cmd === 'create') {
+            const trial = flag('trial-days');
+            const r = await provisionTenant(env, reg, {
+                slug: need('slug'), name: need('name'), host: need('host'), templateDb: need('template-db'),
+                admin: { username: need('admin-user'), password: need('admin-pass'), fullName: flag('admin-name') ?? 'Owner', mobile: flag('admin-mobile'), email: flag('admin-email') },
+                planCode: flag('plan'), catalog: !rest.includes('--no-catalog'), timezone: flag('timezone'), status: trial ? 'trial' : 'active', trialDays: trial ? Number(trial) : undefined,
+            });
+            console.log(`business #${r.tenantId} ready → https://${r.host}  (database ${r.dbName})`);
+        }
+        else if (cmd === 'requests') {
+            for (const r of await control.db.query("SELECT id, status, slug, business_name, owner_name, mobile, email, created_at, note FROM signup_requests ORDER BY id DESC LIMIT 50"))
+                console.log(`#${r.id} ${r.status.padEnd(8)} ${r.slug.padEnd(20)} ${r.business_name} · ${r.owner_name} · ${r.mobile} · ${r.email} · ${r.created_at}${r.note ? ' · ' + r.note : ''}`);
+        }
+        else if (cmd === 'approve') {
+            const out = await approveSignup(env, reg, Number(rest[0]));
+            console.log(`approved → https://${out.host} (owner login: username "owner" + the password chosen at signup)`);
+        }
+        else if (cmd === 'reject') {
+            const r = await control.db.execute("UPDATE signup_requests SET status = 'rejected', note = ? WHERE id = ? AND status IN ('pending','failed')", [rest.slice(1).join(' ') || null, Number(rest[0])]);
+            console.log(r.affectedRows ? 'rejected' : 'no such pending request');
+        }
+        else if (cmd === 'admin-add') {
+            await addSuperAdmin(reg, rest[0] ?? '', rest[1] ?? '');
+            console.log('operator login saved');
+        }
+        else if (cmd === 'plans') {
+            for (const p of await control.db.query('SELECT * FROM plans ORDER BY id'))
+                console.log(`${p.code.padEnd(8)} ${p.name.padEnd(8)} stores=${p.max_stores || '∞'} users=${p.max_users || '∞'} orders/mo=${p.max_orders_month || '∞'} price=${p.price_monthly ?? 'unset'}/mo ${p.price_yearly ?? 'unset'}/yr${p.is_active ? '' : ' (inactive)'}`);
+        }
+        else if (cmd === 'plan') {
+            const pl = (await control.db.query('SELECT id FROM plans WHERE code = ?', [rest[1]]))[0];
+            if (!pl)
+                throw new Error('unknown plan code (see `plans`)');
+            const until = flag('until') ?? null;
+            const r = await control.db.execute("UPDATE tenants SET plan_id = ?, plan_ends_at = ?, status = IF(status IN ('trial','suspended'), 'active', status) WHERE slug = ?", [pl.id, until, rest[0]]);
+            await control.db.execute('INSERT INTO tenant_events (tenant_id, event, detail) SELECT id, ?, ? FROM tenants WHERE slug = ?', ['plan_set', `${rest[1]} until ${until ?? '-'}`, rest[0]]);
+            console.log(r.affectedRows ? `${rest[0]} → plan ${rest[1]}${until ? ' paid through ' + until : ' (no end date)'}` : 'no such tenant');
+        }
+        else if (cmd === 'extend') {
+            const d = Number(rest[1]);
+            const r = await control.db.execute("UPDATE tenants SET trial_ends_at = IF(status = 'trial', DATE_ADD(GREATEST(COALESCE(trial_ends_at, NOW()), NOW()), INTERVAL ? DAY), trial_ends_at), plan_ends_at = IF(status = 'active', DATE_ADD(GREATEST(COALESCE(plan_ends_at, CURDATE()), CURDATE()), INTERVAL ? DAY), plan_ends_at) WHERE slug = ?", [d, d, rest[0]]);
+            console.log(r.affectedRows ? `${rest[0]} extended by ${d} days` : 'no such tenant');
+            reg.invalidate();
+        }
+        else if (cmd === 'usage') {
+            for (const t of await reg.list()) {
+                const info = reg.infoFor({ ...t, ...((await control.db.query('SELECT code AS plan_code, max_stores, max_users, max_orders_month FROM plans WHERE id = ?', [t.plan_id]))[0] ?? {}) });
+                const { db, close } = createPool(reg.tenantEnv(t));
+                try {
+                    const n = async (sql) => Number((await db.query(sql))[0].n);
+                    const lim = (v) => (v ? `/${v}` : '');
+                    console.log(`${t.slug.padEnd(16)} ${t.status.padEnd(9)} ${info.access.padEnd(8)} plan=${info.planCode ?? '-'}  stores=${await n('SELECT COUNT(*) AS n FROM stores WHERE is_active=1')}${lim(info.limits.stores)} users=${await n('SELECT COUNT(*) AS n FROM users WHERE is_active=1')}${lim(info.limits.users)} orders(month)=${await n("SELECT COUNT(*) AS n FROM orders WHERE order_date >= DATE_FORMAT(NOW(), '%Y-%m-01')")}${lim(info.limits.ordersPerMonth)}  ${t.plan_ends_at ? 'paid→' + String(t.plan_ends_at).slice(0, 10) : t.trial_ends_at ? 'trial→' + t.trial_ends_at.slice(0, 10) : ''}`);
+                }
+                catch (e) {
+                    console.log(`${t.slug}: ${e.message}`);
+                }
+                finally {
+                    await close();
+                }
+            }
+        }
+        else if (cmd === 'migrate-all') {
+            for (const t of await reg.list()) {
+                if (t.status === 'cancelled')
+                    continue;
+                const { db, close } = createPool(reg.tenantEnv(t));
+                try {
+                    const m = await applyMigrations(db, { dry: rest.includes('--dry'), log: (x) => console.log(`[${t.slug}] ${x}`) });
+                    console.log(`[${t.slug}] ok (${m.applied} applied)`);
+                }
+                catch (e) {
+                    console.error(`[${t.slug}] FAILED: ${e.message}`);
+                    process.exitCode = 1;
+                    await close();
+                    break;
+                }
+                await close();
+            }
+        }
+        else if (cmd === 'list') {
+            for (const t of await reg.list())
+                console.log(`#${t.id} ${t.slug.padEnd(16)} ${t.status.padEnd(10)} ${t.db_name}  ${t.app_url}`);
+        }
+        else if (cmd === 'suspend' || cmd === 'resume' || cmd === 'cancel') {
+            const status = cmd === 'suspend' ? 'suspended' : cmd === 'cancel' ? 'cancelled' : 'active';
+            const r = await control.db.execute('UPDATE tenants SET status = ? WHERE slug = ?', [status, rest[0]]);
+            console.log(r.affectedRows ? `${rest[0]} → ${status} (takes effect within a minute)` : 'no such tenant');
+        }
+        else if (cmd === 'host-add') {
+            const t = (await control.db.query('SELECT id FROM tenants WHERE slug = ?', [rest[0]]))[0];
+            if (!t)
+                throw new Error('no such tenant');
+            await control.db.execute('INSERT INTO tenant_domains (hostname, tenant_id) VALUES (?,?)', [String(rest[1]).toLowerCase(), t.id]);
+            console.log('host added');
+        }
+        else
+            console.log('commands: init | add | create | migrate-all | list | suspend | resume | cancel | host-add');
+    }
+}
+catch (e) {
+    console.error(e.message);
+    process.exitCode = 1;
+}
+finally {
+    await control.close();
+}

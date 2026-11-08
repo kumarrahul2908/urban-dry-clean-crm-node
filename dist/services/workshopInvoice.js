@@ -1,0 +1,327 @@
+import { addDays, checkDate, fmtJ, fmtJMy, fmtMy, fmtYm, timeIn } from '../lib/dates.js';
+import { numberFormat2, round2 } from '../lib/php.js';
+export const WI_PAID_EPSILON = 0.004;
+export const wiStates = {
+    '01': 'Jammu and Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan',
+    '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura',
+    '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+    '26': 'Dadra and Nagar Haveli and Daman and Diu', '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu',
+    '34': 'Puducherry', '35': 'Andaman and Nicobar Islands', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh',
+};
+export const wiTerms = { 0: 'Due on Receipt', 7: 'Net 7', 15: 'Net 15', 30: 'Net 30', 45: 'Net 45', 60: 'Net 60' };
+export const wiPeriodLabel = (from, to) => from === to ? fmtJMy(from) : fmtYm(from) === fmtYm(to) ? `${fmtJ(from)}-${fmtJMy(to)}` : `${fmtJMy(from)}-${fmtJMy(to)}`;
+export const wiSubject = (from, to) => (fmtYm(from) === fmtYm(to) ? `Charges ${fmtMy(to)}` : `Charges ${fmtMy(from)}-${fmtMy(to)}`);
+export function wiSplit(total, workshopPct) {
+    const workshopShare = round2((total * workshopPct) / 100);
+    return [workshopShare, round2(total - workshopShare)];
+}
+export function wiApplyGst(workshopShare, gstMode, gstRate) {
+    if (gstMode === 'exclusive') {
+        const gst = round2((workshopShare * gstRate) / 100);
+        return [workshopShare, gst, round2(workshopShare + gst)];
+    }
+    if (gstMode === 'inclusive') {
+        const base = round2(workshopShare / (1 + gstRate / 100));
+        return [base, round2(workshopShare - base), workshopShare];
+    }
+    return [workshopShare, 0, workshopShare];
+}
+const wiErr = (code, error) => ({ ok: false, code, error });
+const okDate = (d) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d); return !!m && checkDate(Number(m[1]), Number(m[2]), Number(m[3])); };
+/** Port of includes/WorkshopInvoice.php (the money-handling half: billable items, invoice creation, payments, void). */
+export class WorkshopInvoice {
+    db;
+    audit;
+    workshops;
+    tz;
+    now;
+    log;
+    constructor(db, audit, workshops, tz, now = () => new Date(), log = console.error) {
+        this.db = db;
+        this.audit = audit;
+        this.workshops = workshops;
+        this.tz = tz;
+        this.now = now;
+        this.log = log;
+    }
+    async issuer(workshopId) {
+        const [w] = await this.db.query('SELECT * FROM workshops WHERE id = ?', [workshopId]);
+        if (!w)
+            return null;
+        const code = String(w.state_code ?? '');
+        return {
+            workshop_id: Number(w.id), workshop_name: String(w.workshop_name),
+            company_name: String(w.company_name ?? '').trim() !== '' ? String(w.company_name).trim() : String(w.workshop_name),
+            address: String(w.address ?? ''), phone: String(w.phone ?? ''), email: String(w.email ?? ''), gstin: String(w.gstin ?? ''),
+            state_code: code, state_name: wiStates[code] ?? '', prefix: String(w.invoice_prefix ?? ''), next_number: Number(w.invoice_next_number ?? 1),
+            terms_days: Number(w.payment_terms_days ?? 0),
+            item_description: String(w.item_description ?? '').trim() !== '' ? String(w.item_description) : 'Dry Clean charges',
+            notes: String(w.invoice_notes ?? ''), bank_details: String(w.bank_details ?? ''), commission: Number(w.commission_workshop_percent),
+        };
+    }
+    async billableItems(storeId, workshopId, from, to) {
+        const params = [workshopId, from, to];
+        let storeClause = '';
+        if (storeId !== null) {
+            storeClause = ' AND o.store_id = ?';
+            params.push(storeId);
+        }
+        const rows = await this.db.query(`SELECT DISTINCT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.total AS item_value, o.id AS order_id, o.order_number,
+              o.store_id, COALESCE(s.store_name, 'Unassigned') AS store_name, g.garment_name, c.full_name AS customer_name
+       FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id
+       LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id
+       JOIN order_items oi ON oi.id = COALESCE(oi1.id, lg.order_item_id) JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
+       LEFT JOIN stores s ON s.id = o.store_id LEFT JOIN garments g ON g.id = oi.garment_id
+       WHERE wi.status != 'Rejected' AND wc.workshop_id = ? AND DATE(wi.sent_at) BETWEEN ? AND ?${storeClause}
+         AND oi.id NOT IN (SELECT order_item_id FROM workshop_bill_items)
+       ORDER BY store_name, o.order_number, oi.id`, params); // oi.id: a deterministic order for items tied on (store, order) -- PHP leaves ties unspecified
+        const out = [];
+        for (const r of rows)
+            if ((await this.workshops.getCurrentStatus(Number(r.workshop_item_id))) !== 'Unprocessed')
+                out.push(r);
+        return out;
+    }
+    /**
+     * "Whole Bill" basis: every order_item of the store(s) in the period (by ORDER date), whether or not a challan was ever created for it -
+     * staff shortages mean garments are often processed without a formal "sent to workshop". Still never double-bills and still skips an
+     * item that HAS a workshop_items row currently derived as Unprocessed.
+     */
+    async billableItemsWhole(storeId, from, to) {
+        const params = [from, to];
+        let storeClause = '';
+        if (storeId !== null) {
+            storeClause = ' AND o.store_id = ?';
+            params.push(storeId);
+        }
+        const rows = await this.db.query(`SELECT oi.id AS order_item_id, MIN(oi.total) AS item_value, MIN(o.id) AS order_id, MIN(o.order_number) AS order_number,
+              MIN(o.store_id) AS store_id, MIN(COALESCE(s.store_name, 'Unassigned')) AS store_name,
+              MIN(g.garment_name) AS garment_name, MIN(c.full_name) AS customer_name,
+              MAX(COALESCE(wi1.id, wi2.id)) AS workshop_item_id, MAX(wi1.id IS NOT NULL OR wi2.id IS NOT NULL) AS was_sent
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN order_statuses os ON os.id = o.status_id
+       JOIN customers c ON c.id = o.customer_id
+       LEFT JOIN stores s ON s.id = o.store_id
+       LEFT JOIN garments g ON g.id = oi.garment_id
+       LEFT JOIN workshop_items wi1 ON wi1.order_item_id = oi.id
+       LEFT JOIN laundry_garments lg ON lg.order_item_id = oi.id
+       LEFT JOIN workshop_items wi2 ON wi2.laundry_garment_id = lg.id
+       WHERE os.status_key != 'cancelled'
+         AND DATE(o.order_date) BETWEEN ? AND ?${storeClause}
+         AND oi.id NOT IN (SELECT order_item_id FROM workshop_bill_items)
+       GROUP BY oi.id
+       ORDER BY store_name, order_number, oi.id`, params); // oi.id: a deterministic order for garments of the same order (PHP leaves ties unspecified)
+        if (rows.length === 0)
+            return rows;
+        const ph = rows.map(() => '?').join(',');
+        const wiRows = await this.db.query(`SELECT oi.id AS order_item_id, wi.id AS workshop_item_id
+       FROM order_items oi
+       LEFT JOIN workshop_items wi1 ON wi1.order_item_id = oi.id
+       LEFT JOIN laundry_garments lg ON lg.order_item_id = oi.id
+       LEFT JOIN workshop_items wi2 ON wi2.laundry_garment_id = lg.id
+       LEFT JOIN workshop_items wi ON wi.id = COALESCE(wi1.id, wi2.id)
+       WHERE oi.id IN (${ph}) AND wi.id IS NOT NULL`, rows.map((r) => r.order_item_id));
+        const unprocessed = new Set();
+        for (const r of wiRows)
+            if ((await this.workshops.getCurrentStatus(Number(r.workshop_item_id))) === 'Unprocessed')
+                unprocessed.add(Number(r.order_item_id));
+        return unprocessed.size === 0 ? rows : rows.filter((r) => !unprocessed.has(Number(r.order_item_id)));
+    }
+    async nextInvoiceNumber(workshopId) {
+        return this.db.tx(async (t) => {
+            const [row] = await t.query('SELECT invoice_prefix, invoice_next_number FROM workshops WHERE id = ? FOR UPDATE', [workshopId]);
+            if (!row)
+                throw new Error('Workshop not found');
+            const prefix = String(row.invoice_prefix ?? '').trim() !== '' ? String(row.invoice_prefix).trim() : 'INV';
+            let n = Math.max(1, Number(row.invoice_next_number));
+            let num;
+            for (;;) {
+                num = `${prefix}-${String(n).padStart(5, '0')}`;
+                if (!(await t.query('SELECT 1 FROM workshop_bills WHERE bill_number = ?', [num])).length)
+                    break;
+                n++;
+            }
+            await t.execute('UPDATE workshops SET invoice_next_number = ? WHERE id = ?', [n + 1, workshopId]);
+            return num;
+        });
+    }
+    async createInvoice(storeId, workshopId, from, to, invoiceDate, subjectIn, userId, expectedTotal = null, expectedCount = null, gstModeIn = 'none', gstRate = 18, ip = null, basisIn = 'whole') {
+        const gstMode = ['none', 'inclusive', 'exclusive'].includes(gstModeIn) ? gstModeIn : 'none';
+        const basis = ['whole', 'sent_only'].includes(basisIn) ? basisIn : 'whole';
+        const issuer = await this.issuer(workshopId);
+        if (!issuer)
+            return wiErr('not_found', 'Workshop not found.');
+        if (!okDate(from) || !okDate(to) || from > to)
+            return wiErr('invalid_request', 'Enter a valid date range.');
+        if (!okDate(invoiceDate))
+            return wiErr('invalid_request', 'Enter a valid invoice date.');
+        let billTo;
+        if (storeId !== null) {
+            const [s] = await this.db.query('SELECT store_name FROM stores WHERE id = ?', [storeId]);
+            if (!s)
+                return wiErr('not_found', 'Store not found.');
+            billTo = s.store_name;
+        }
+        else {
+            const [bn] = await this.db.query("SELECT setting_value FROM settings WHERE setting_key = 'business_name'");
+            billTo = String(bn?.setting_value ?? '').trim() !== '' ? `${String(bn.setting_value).trim()} - All Stores` : 'All Stores';
+        }
+        const items = basis === 'whole' ? await this.billableItemsWhole(storeId, from, to) : await this.billableItems(storeId, workshopId, from, to);
+        if (items.length === 0)
+            return wiErr('no_items', 'No unbilled items found for this store, workshop, and period.');
+        const total = round2(items.reduce((s, i) => s + Number(i.item_value), 0));
+        if (expectedTotal !== null && (Math.abs(total - expectedTotal) > 0.005 || items.length !== expectedCount))
+            return wiErr('changed', 'The items changed since you reviewed them.');
+        const [workshopShare, storeShare] = wiSplit(total, issuer.commission);
+        const [, gstAmount, grandTotal] = wiApplyGst(workshopShare, gstMode, gstRate);
+        const days = Math.max(0, issuer.terms_days);
+        const dueDate = addDays(invoiceDate, days);
+        const terms = wiTerms[days] ?? `Net ${days}`;
+        const subject = (subjectIn ?? '').trim() !== '' ? [...subjectIn.trim()].slice(0, 150).join('') : wiSubject(from, to);
+        const snapshot = JSON.stringify({
+            issuer: { company_name: issuer.company_name, address: issuer.address, phone: issuer.phone, email: issuer.email, gstin: issuer.gstin, state_code: issuer.state_code, state_name: issuer.state_name, notes: issuer.notes, bank_details: issuer.bank_details },
+            bill_to: billTo, item_description: issuer.item_description, period_label: wiPeriodLabel(from, to),
+        });
+        const billNumber = await this.nextInvoiceNumber(workshopId);
+        let billId;
+        try {
+            billId = await this.db.tx(async (t) => {
+                const ins = await t.execute(`INSERT INTO workshop_bills (bill_number, store_id, is_combined, workshop_id, billing_basis, period_start, period_end, invoice_date, due_date,
+              terms_label, subject, item_count, total_value, share_percent, gst_mode, gst_rate, gst_amount, workshop_share, store_share, grand_total, snapshot_json, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [billNumber, storeId, storeId === null ? 1 : 0, workshopId, basis, from, to, invoiceDate, dueDate, terms, subject, items.length, total, issuer.commission, gstMode, gstRate, gstAmount, workshopShare, storeShare, grandTotal, snapshot, userId]);
+                for (const it of items)
+                    await t.execute('INSERT INTO workshop_bill_items (bill_id, order_item_id, item_value) VALUES (?, ?, ?)', [ins.insertId, it.order_item_id, it.item_value]);
+                return ins.insertId;
+            });
+        }
+        catch (e) {
+            this.log(`[workshop-invoice] create failed: ${e.stack}`);
+            return wiErr('server_error', 'Could not generate the invoice. Please review and try again.');
+        }
+        await this.audit.record({ action: 'create', module: 'workshop_bills', recordId: String(billId), newValue: { bill_number: billNumber, total_value: total, workshop_share: workshopShare, is_combined: storeId === null }, userId, ip });
+        return { ok: true, bill_id: billId, bill_number: billNumber, workshop_share: workshopShare, grand_total: grandTotal };
+    }
+    async recordPayment(billId, amountIn, paymentTypeId, referenceIn, paidOn, notesIn, userId, scopeWorkshopId, ip = null) {
+        const amount = round2(amountIn);
+        if (amount <= 0)
+            return wiErr('invalid_request', 'Enter an amount greater than zero.');
+        if (!okDate(paidOn))
+            return wiErr('invalid_request', 'Enter a valid payment date.');
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: this.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(this.now());
+        if (paidOn > todayStr)
+            return wiErr('invalid_request', 'The payment date cannot be in the future.');
+        if (!(await this.db.query('SELECT 1 FROM payment_types WHERE id = ? AND is_active = 1', [paymentTypeId])).length)
+            return wiErr('invalid_request', 'Select a payment method.');
+        const reference = (referenceIn ?? '').trim() !== '' ? [...referenceIn.trim()].slice(0, 100).join('') : null;
+        const notes = (notesIn ?? '').trim() !== '' ? [...notesIn.trim()].slice(0, 255).join('') : null;
+        let result;
+        try {
+            result = await this.db.tx(async (t) => {
+                const [b] = await t.query('SELECT id, workshop_id, status, grand_total, amount_paid FROM workshop_bills WHERE id = ? FOR UPDATE', [billId]);
+                if (!b || (scopeWorkshopId !== null && Number(b.workshop_id) !== scopeWorkshopId))
+                    return wiErr('not_found', 'Bill not found.');
+                if (b.status === 'Void')
+                    return wiErr('void', 'This bill is void.');
+                if (b.status === 'Paid')
+                    return wiErr('already_paid', 'This bill is already marked Paid.');
+                const balance = round2(Number(b.grand_total) - Number(b.amount_paid));
+                if (amount > balance + WI_PAID_EPSILON)
+                    return wiErr('too_much', `The amount is more than the balance due (Rs. ${numberFormat2(balance)}).`);
+                await t.execute('INSERT INTO workshop_bill_payments (bill_id, amount, payment_type_id, reference_no, paid_on, notes, received_by) VALUES (?, ?, ?, ?, ?, ?, ?)', [billId, amount, paymentTypeId, reference, paidOn, notes, userId]);
+                const newPaid = round2(Number(b.amount_paid) + amount);
+                const newStatus = newPaid + WI_PAID_EPSILON >= Number(b.grand_total) ? 'Paid' : 'Partially Paid';
+                await t.execute('UPDATE workshop_bills SET amount_paid = ?, status = ?, payment_type_id = ?, reference_no = ?, paid_at = ?, paid_by = ? WHERE id = ?', [newPaid, newStatus, paymentTypeId, reference, `${paidOn} ${timeIn(this.tz, this.now())}`, userId, billId]);
+                return { ok: true, status: newStatus, amount_paid: newPaid, balance: round2(Number(b.grand_total) - newPaid), _old: b };
+            });
+        }
+        catch (e) {
+            this.log(`[workshop-invoice] payment failed: ${e.stack}`);
+            return wiErr('server_error', 'Could not record the payment. Please try again.');
+        }
+        if (!result.ok)
+            return result;
+        await this.audit.record({
+            action: 'update', module: 'workshop_bills', recordId: String(billId), oldValue: { status: result._old.status, amount_paid: Number(result._old.amount_paid) },
+            newValue: { status: result.status, amount_paid: result.amount_paid, payment: amount, payment_type_id: paymentTypeId, reference_no: reference }, userId, ip,
+        });
+        return { ok: true, status: result.status, amount_paid: result.amount_paid, balance: result.balance };
+    }
+    async voidInvoice(billId, reasonIn, userId, scopeWorkshopId, ip = null) {
+        const reason = reasonIn.trim();
+        if ([...reason].length < 3)
+            return wiErr('invalid_request', 'Enter a reason for voiding this bill.');
+        try {
+            const r = await this.db.tx(async (t) => {
+                const [b] = await t.query('SELECT id, workshop_id, status, amount_paid FROM workshop_bills WHERE id = ? FOR UPDATE', [billId]);
+                if (!b || (scopeWorkshopId !== null && Number(b.workshop_id) !== scopeWorkshopId))
+                    return wiErr('not_found', 'Bill not found.');
+                if (b.status !== 'Unpaid' || Number(b.amount_paid) > 0)
+                    return wiErr('cannot_void', 'Only a bill with no payments recorded can be voided.');
+                await t.execute("UPDATE workshop_bills SET status = 'Void', voided_at = NOW(), voided_by = ?, void_reason = ? WHERE id = ?", [userId, [...reason].slice(0, 255).join(''), billId]);
+                await t.execute('DELETE FROM workshop_bill_items WHERE bill_id = ?', [billId]);
+                return { ok: true };
+            });
+            if (!r.ok)
+                return r;
+        }
+        catch (e) {
+            this.log(`[workshop-invoice] void failed: ${e.stack}`);
+            return wiErr('server_error', 'Could not void the bill. Please try again.');
+        }
+        await this.audit.record({ action: 'update', module: 'workshop_bills', recordId: String(billId), oldValue: { status: 'Unpaid' }, newValue: { status: 'Void', reason }, userId, ip });
+        return { ok: true };
+    }
+}
+/** wi_words_int() */
+export function wiWordsInt(nIn) {
+    let n = nIn;
+    if (n === 0)
+        return 'Zero';
+    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    const two = (x) => (x < 20 ? ones[x] : tens[Math.trunc(x / 10)] + (x % 10 ? '-' + ones[x % 10] : ''));
+    const parts = [];
+    const crore = Math.trunc(n / 10000000);
+    n %= 10000000;
+    const lakh = Math.trunc(n / 100000);
+    n %= 100000;
+    const thousand = Math.trunc(n / 1000);
+    n %= 1000;
+    const hundred = Math.trunc(n / 100);
+    const rest = n % 100;
+    if (crore)
+        parts.push(wiWordsInt(crore) + ' Crore');
+    if (lakh)
+        parts.push(two(lakh) + ' Lakh');
+    if (thousand)
+        parts.push(two(thousand) + ' Thousand');
+    if (hundred)
+        parts.push(ones[hundred] + ' Hundred');
+    if (rest)
+        parts.push(two(rest));
+    return parts.join(' ');
+}
+/** wi_inr_in_words() */
+export function wiInrInWords(amountIn) {
+    const amount = round2(amountIn);
+    let rupees = Math.floor(amount);
+    let paise = Math.round((amount - rupees) * 100);
+    if (paise === 100) {
+        rupees++;
+        paise = 0;
+    }
+    let words = 'Indian Rupee ' + wiWordsInt(rupees);
+    if (paise > 0)
+        words += ' and ' + wiWordsInt(paise) + ' Paise';
+    return words + ' Only';
+}
+/** wi_inr_format(): 123456.5 -> "1,23,456.50" */
+export function wiInrFormat(amount) {
+    const neg = amount < 0;
+    const [int, dec] = Math.abs(amount).toFixed(2).split('.');
+    let last3 = int.slice(-3);
+    const rest = int.slice(0, -3);
+    if (rest !== '')
+        last3 = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
+    return (neg ? '-' : '') + last3 + '.' + dec;
+}
