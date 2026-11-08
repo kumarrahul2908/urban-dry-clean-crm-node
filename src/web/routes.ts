@@ -39,6 +39,7 @@ import { registerPaymentPages } from './pages/payments.js';
 import { registerOrderPortPages } from './pages/orderPorts.js';
 import { registerPosApis } from './pages/posApis.js';
 import { registerOrderPages } from './pages/orders.js';
+import { registerChallanPages } from './pages/challans.js';
 import { registerLandingPages } from './pages/landing.js';
 
 const json = (data: unknown, status = 200) => new WebText(jsonEncode(data), status, 'application/json');
@@ -67,6 +68,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerCustomerPages(app);
   registerCustomerPortPages(app);
   registerOrderPages(app);
+  registerChallanPages(app);
   registerOrderPortPages(app);
   registerPaymentPages(app);
   registerPosPages(app);
