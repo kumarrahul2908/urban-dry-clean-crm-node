@@ -21,11 +21,12 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
 
   beforeAll(async () => {
     await resetAndSeed(db);
-    const perms = ['pos.create', 'orders.view', 'orders.edit', 'orders.cancel', 'payments.collect', 'payments.refund', 'payments.view', 'pos.override_discount', 'pos.manual_rate_override', 'packing.manage'];
+    const perms = ['pos.create', 'orders.view', 'orders.edit', 'orders.cancel', 'payments.collect', 'payments.refund', 'payments.view', 'pos.override_discount', 'pos.manual_rate_override', 'packing.manage', 'workshop.manage'];
     await db.execute(`INSERT INTO permissions (id, permission_key, module) VALUES ${perms.map((p, i) => `(${i + 1}, '${p}', 'x')`).join(',')}`);
     await db.execute(`INSERT INTO role_permissions (role_id, permission_id) VALUES ${perms.map((_, i) => `(1, ${i + 1})`).join(',')}`);
     await db.execute("INSERT INTO roles (id, role_name) VALUES (2, 'Viewer')");
     await db.execute('INSERT INTO role_permissions (role_id, permission_id) VALUES (2, 2)');
+    await db.execute("INSERT INTO workshops (id, workshop_name) VALUES (1, 'Test Workshop')");
     const hash = await hashPassword('pw12345');
     await db.execute('UPDATE users SET password_hash = ? WHERE id = 1', [hash]);
     await db.execute("INSERT INTO users (id, role_id, full_name, username, password_hash, store_id, is_active) VALUES (2, 2, 'View Only', 'viewer', ?, 1, 1)", [hash]);
@@ -157,6 +158,49 @@ describe.skipIf(!enabled)('orders + payments HTTP API (real MariaDB schema)', ()
     // omitting the key on a later update leaves the existing value alone (same has()-style fallback as brand_id/color_id)
     await post('order_item_update', { order_id: pkgOrderId, item_id: itemId, remarks: 'unrelated change' });
     expect((await db.query<any>('SELECT packaging_style FROM order_items WHERE id = ?', [itemId]))[0].packaging_style).toBe('HANGER_AND_FOLD');
+  });
+
+  it('order_send_to_workshop / order_receive_from_workshop: scoped to this order, never trusts the client-submitted item list alone', async () => {
+    const created = await post('pos_orders_create', { client_request_id: 'ws-ord-1', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1 }, { garment_id: 2, service_id: 2, quantity: 1 }] });
+    expect(created.statusCode).toBe(200);
+    const wsOrderId = created.json().data.order_id;
+    const itemIds = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ? ORDER BY id', [wsOrderId])).map((r: any) => Number(r.id));
+
+    const otherOrder = await post('pos_orders_create', { client_request_id: 'ws-ord-2', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] });
+    const otherItemId = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ?', [otherOrder.json().data.order_id]))[0].id;
+
+    // an item belonging to a DIFFERENT order is rejected outright, and nothing is sent (all-or-nothing)
+    const rejected = await post('order_send_to_workshop', { order_id: wsOrderId, workshop_id: 1, item_ids: [itemIds[0], otherItemId] });
+    expect(rejected.statusCode).toBe(422);
+    expect(rejected.json().error.message).toMatch(/do not belong to this order/);
+    expect((await db.query<any>('SELECT item_status FROM order_items WHERE id = ?', [itemIds[0]]))[0].item_status).toBe('Pending');
+
+    const sent = await post('order_send_to_workshop', { order_id: wsOrderId, workshop_id: 1, item_ids: itemIds, remarks: 'from order detail' });
+    expect(sent.statusCode).toBe(200);
+    expect(sent.json().data).toMatchObject({ order_id: wsOrderId, item_count: 2 });
+    for (const itemId of itemIds) expect((await db.query<any>('SELECT item_status FROM order_items WHERE id = ?', [itemId]))[0].item_status).toBe('Workshop');
+
+    // receiving an item that belongs to a different order is rejected the same way
+    const receiveRejected = await post('order_receive_from_workshop', { order_id: wsOrderId, item_ids: [otherItemId] });
+    expect(receiveRejected.statusCode).toBe(422);
+    expect(receiveRejected.json().error.message).toMatch(/do not belong to this order/);
+
+    // force-receives it straight back (still at 'Sent' -- no step-by-step workshop processing happened)
+    const received = await post('order_receive_from_workshop', { order_id: wsOrderId, item_ids: [itemIds[0]] });
+    expect(received.statusCode).toBe(200);
+    expect(received.json().data).toMatchObject({ order_id: wsOrderId, received_count: 1 });
+    expect((await db.query<any>('SELECT item_status FROM order_items WHERE id = ?', [itemIds[0]]))[0].item_status).toBe('Packed');
+
+    // already received -- re-running is rejected (nothing left to force-receive from 'Store Received')
+    const alreadyReceived = await post('order_receive_from_workshop', { order_id: wsOrderId, item_ids: [itemIds[0]] });
+    expect(alreadyReceived.statusCode).toBe(422);
+
+    // an item that was never sent to any workshop at all can't be "received" either
+    const freshOrder = await post('pos_orders_create', { client_request_id: 'ws-ord-3', customer_id: 2, items: [{ garment_id: 1, service_id: 1, quantity: 1 }] });
+    const freshItemId = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ?', [freshOrder.json().data.order_id]))[0].id;
+    const failReceive = await post('order_receive_from_workshop', { order_id: freshOrder.json().data.order_id, item_ids: [freshItemId] });
+    expect(failReceive.statusCode).toBe(422);
+    expect(failReceive.json().error.message).toMatch(/never sent to a workshop/);
   });
 
   it('cancel marks the receivable Refund Due and blocks further changes', async () => {

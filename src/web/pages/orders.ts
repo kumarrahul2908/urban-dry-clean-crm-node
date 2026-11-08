@@ -6,7 +6,7 @@ import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
 import { invoicePdfScriptTag, invoiceScriptBase, invoiceScriptEnd, invoiceScriptPdf, invoiceScriptWhatsapp, invoiceStyle } from './invoice.static.js';
-import { orderListStyle, orderPaymentScript, orderRefundScript, orderViewScript, orderViewStyle, receiptStyle } from './orders.static.js';
+import { orderListStyle, orderPaymentScript, orderRefundScript, orderViewScript, orderViewStyle, orderWorkshopActionsScript, receiptStyle } from './orders.static.js';
 
 type Row = Record<string, any>;
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -20,7 +20,7 @@ const notFound = (ctx: WebCtx) => { ctx.flashSet('danger', 'Order not found.'); 
 const orEmpty = (v: unknown, fallback: string) => { const s = e(v === null || v === undefined ? '' : String(v)); return s !== '' && s !== '0' ? s : fallback; };
 
 export function registerOrderPages(app: FastifyInstance) {
-  const { db, orders } = app.services;
+  const { db, orders, workshop } = app.services;
   const storeDenied = (ctx: WebCtx, what: string) => new WebText(`<h2>403 - Access Denied</h2><p>You are not authorized to ${what} for this order's store.</p><p><a href="${ctx.baseUrl('modules/orders/list.php')}">Back to Orders</a></p>`, 403);
   /** Auth::canActAsStoreForOrder() */
   const canActAsStoreForOrder = (ctx: WebCtx, orderStoreId: number) => {
@@ -316,6 +316,29 @@ document.getElementById('dlConfirmBtn').addEventListener('click', function () {
     const dueAmount = flt(receivableRow?.due_amount ?? 0);
     const paymentTypesForModal = await db.query<Row>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
     const history = await db.query<Row>("SELECT al.*, u.full_name AS user_name FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id WHERE al.module = 'orders' AND al.record_id = ? ORDER BY al.created_at DESC LIMIT 50", [String(id)]);
+
+    // Order Detail: Send to Workshop / Receive from Workshop -- same garments this order's own item
+    // list above already shows, just filtered to what's actionable right now. Skipped for weight-mode
+    // (Laundry) orders, which have their own Pending/In-Progress queue on workshop_queue instead.
+    let pendingWorkshopItems: Row[] = [];
+    let receivableWorkshopItems: Row[] = [];
+    let sendWorkshops: Row[] = [];
+    if (!weightMode && ctx.can('workshop.manage')) {
+      pendingWorkshopItems = items.filter((it) => it.item_status === 'Pending');
+      if (pendingWorkshopItems.length) sendWorkshops = await db.query<Row>('SELECT id, workshop_name FROM workshops WHERE is_active=1 ORDER BY workshop_name');
+      const wiRows = await db.query<Row>(
+        `SELECT wi.id, wi.order_item_id FROM workshop_items wi JOIN order_items oi ON oi.id = wi.order_item_id WHERE oi.order_id = ? AND wi.status != 'Rejected' ORDER BY wi.id DESC`, [id]);
+      const latestByItem = new Map<number, number>();
+      for (const w of wiRows) if (!latestByItem.has(Number(w.order_item_id))) latestByItem.set(Number(w.order_item_id), Number(w.id));
+      const itemsById = new Map(items.map((it) => [Number(it.id), it]));
+      for (const [itemId, wiId] of latestByItem) {
+        const current = await workshop.getCurrentStatus(wiId);
+        if (!['Store Received', 'Unprocessed', 'Rejected'].includes(current)) {
+          const it = itemsById.get(itemId);
+          receivableWorkshopItems.push({ item_id: itemId, garment_name: it?.garment_name ?? '', current_status: current });
+        }
+      }
+    }
     const isEditable = await orders.isEditable(order as { status_id: number });
     const u = (p: string) => ctx.baseUrl(p);
     const cancelled = order.status_key === 'cancelled';
@@ -395,6 +418,10 @@ document.getElementById('dlConfirmBtn').addEventListener('click', function () {
         </div>` : ''}` : ''}
       ${ctx.can('payments.refund') && flt(order.total_paid) > 0 ? html`
         <a href="${u('modules/orders/refund.php?id=' + id)}" class="ov-btn ov-btn--danger"><i class="fa-solid fa-rotate-left"></i>${cancelled ? 'Process Refund' : 'Refund'}</a>` : ''}
+      ${pendingWorkshopItems.length > 0 ? html`
+        <button type="button" class="ov-btn" id="btnSendWorkshop"><i class="fa-solid fa-paper-plane"></i>Send to Workshop</button>` : ''}
+      ${receivableWorkshopItems.length > 0 ? html`
+        <button type="button" class="ov-btn" id="btnReceiveWorkshop"><i class="fa-solid fa-truck-ramp-box"></i>Receive from Workshop</button>` : ''}
       ${isEditable && ctx.can('orders.cancel') ? html`
         <button class="ov-btn ov-btn--danger" id="btnCancelOrder"><i class="fa-solid fa-ban"></i>Cancel</button>` : ''}
     </div>
@@ -589,6 +616,60 @@ ${isEditable && (ctx.can('orders.edit') || ctx.can('orders.cancel')) ? html`
 </div>
 
 ${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaymentTypeId: String(paymentTypesForModal[0]?.id ?? '0') }))}` : ''}
+
+${pendingWorkshopItems.length > 0 ? html`
+<div class="modal fade" id="sendWorkshopModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">Send to Workshop</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div id="sendWsError" class="alert alert-danger d-none"></div>
+        <label class="form-label small">Workshop</label>
+        <select id="sendWsWorkshop" class="form-select mb-3">
+          <option value="">Choose workshop...</option>
+          ${sendWorkshops.map((w) => html`<option value="${w.id}">${w.workshop_name}</option>`)}
+        </select>
+        <label class="form-label small">Garments</label>
+        <div class="mb-3" style="max-height:220px;overflow:auto;">
+          ${pendingWorkshopItems.map((it) => html`
+          <div class="form-check"><input class="form-check-input ws-send-check" type="checkbox" value="${it.id}" id="wsSend${it.id}" checked>
+            <label class="form-check-label small" for="wsSend${it.id}">${it.garment_name} — ${it.service_name}</label></div>`)}
+        </div>
+        <label class="form-label small">Remarks (optional)</label>
+        <input type="text" id="sendWsRemarks" class="form-control">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="sendWsConfirmBtn">Send</button>
+      </div>
+    </div>
+  </div>
+</div>` : ''}
+
+${receivableWorkshopItems.length > 0 ? html`
+<div class="modal fade" id="receiveWorkshopModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">Receive from Workshop</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div id="receiveWsError" class="alert alert-danger d-none"></div>
+        <div class="mb-3" style="max-height:260px;overflow:auto;">
+          ${receivableWorkshopItems.map((it) => html`
+          <div class="form-check"><input class="form-check-input ws-receive-check" type="checkbox" value="${it.item_id}" id="wsRecv${it.item_id}" checked>
+            <label class="form-check-label small" for="wsRecv${it.item_id}">${it.garment_name} <span class="text-muted">(${it.current_status})</span></label></div>`)}
+        </div>
+        <label class="form-label small">Remarks (optional)</label>
+        <input type="text" id="receiveWsRemarks" class="form-control">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="receiveWsConfirmBtn">Receive</button>
+      </div>
+    </div>
+  </div>
+</div>` : ''}
+
+${pendingWorkshopItems.length > 0 || receivableWorkshopItems.length > 0 ? raw(orderWorkshopActionsScript(u, e, { id })) : ''}
 `);
   });
 
@@ -1201,4 +1282,56 @@ ${raw(invoiceScriptPdf(String(order.invoice_number ?? '').replace(/[^A-Za-z0-9_-
   jsonAction('add_item', 'orders.edit', (ctx, p) => orders.addItem(int(p.order_id), p, { userId: ctx.data.user_id!, ip: ctx.req.ip }, ctx.can('pos.manual_rate_override')));
   jsonAction('remove_item', 'orders.edit', (ctx, p) => orders.removeItem(int(p.order_id), int(p.item_id), { userId: ctx.data.user_id!, ip: ctx.req.ip }));
   jsonAction('cancel', 'orders.cancel', (ctx, p) => orders.cancelOrder(int(p.order_id), clean(p.reason), { userId: ctx.data.user_id!, ip: ctx.req.ip }));
+
+  // ---- workshop actions scoped to one order (Order Detail: Send to Workshop / Receive from Workshop) --
+  // No new business logic -- these call the SAME WorkshopService methods the dedicated Send/Receive
+  // Workshop pages (modules/workshop/send.php, receive.php) already use. What's new, since this is
+  // reached from a single order's own page rather than a cross-order queue, is the extra check those
+  // pages don't need: every submitted item must actually belong to THIS order.
+  const orderItemIdsForOrder = async (orderId: number, raw: unknown): Promise<{ ids: number[] } | { error: string }> => {
+    const ids = Array.isArray(raw) ? [...new Set(raw.map((x) => int(x)).filter((n) => n > 0))] : [];
+    if (!ids.length) return { error: 'Select at least one item.' };
+    const rows = await db.query<{ id: number }>('SELECT id FROM order_items WHERE id IN (?) AND order_id = ?', [ids, orderId]);
+    if (rows.length !== ids.length) return { error: 'One or more items do not belong to this order.' };
+    return { ids };
+  };
+  jsonAction('send_to_workshop', 'workshop.manage', async (ctx, p) => {
+    const resolved = await orderItemIdsForOrder(int(p.order_id), p.item_ids);
+    if ('error' in resolved) return { success: false, errors: [resolved.error] };
+    const result = await workshop.createChallan(int(p.workshop_id), resolved.ids, clean(p.remarks), { userId: ctx.data.user_id!, ip: ctx.req.ip }) as Row;
+    return result;
+  });
+  jsonAction('receive_from_workshop', 'workshop.manage', async (ctx, p) => {
+    const resolved = await orderItemIdsForOrder(int(p.order_id), p.item_ids);
+    if ('error' in resolved) return { success: false, errors: [resolved.error] };
+    const remarks = clean(p.remarks);
+    const a = { userId: ctx.data.user_id!, ip: ctx.req.ip };
+    // Resolve each order_item's own (most recent, not-Rejected) workshop_items row, then receive it the
+    // same two-path way the dedicated Receive Workshop page's "Receive" button does: storeReceive() (via
+    // returnToStore() first if still at 'Completed') for a properly completed item, forceStoreReceive()
+    // for anything else.
+    const wis = await db.query<{ id: number; order_item_id: number }>(
+      "SELECT id, order_item_id FROM workshop_items WHERE order_item_id IN (?) AND status != 'Rejected' ORDER BY id DESC", [resolved.ids]);
+    const wiByItem = new Map<number, number>();
+    for (const w of wis) if (!wiByItem.has(Number(w.order_item_id))) wiByItem.set(Number(w.order_item_id), Number(w.id));
+    const errors: string[] = [];
+    let received = 0;
+    for (const itemId of resolved.ids) {
+      const wiId = wiByItem.get(itemId);
+      if (!wiId) { errors.push(`Item #${itemId} was never sent to a workshop.`); continue; }
+      const current = await workshop.getCurrentStatus(wiId);
+      let r: { success: boolean; errors?: string[] };
+      if (current === 'Completed' || current === 'Returned') {
+        if (current === 'Completed') {
+          const r1 = await workshop.returnToStore(wiId, a, '');
+          if (!r1.success) { errors.push(...(r1.errors ?? [])); continue; }
+        }
+        r = await workshop.storeReceive(wiId, a, remarks);
+      } else {
+        r = await workshop.forceStoreReceive(wiId, a, remarks);
+      }
+      if (r.success) received++; else errors.push(...(r.errors ?? [`Could not receive item #${itemId}.`]));
+    }
+    return received > 0 ? { success: true, received_count: received, errors } : { success: false, errors: errors.length ? errors : ['Could not receive any items.'] };
+  });
 }

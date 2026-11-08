@@ -357,6 +357,51 @@ document.getElementById('pmConfirmBtn')?.addEventListener('click', function () {
     });
 });
 </script>`;
+export const orderWorkshopActionsScript = (u: (p: string) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}): string => `<script>
+const ORDER_ID_WS = ${a.id};
+const API_SEND_WORKSHOP = '${h(u('modules/orders/send_to_workshop.php'))}';
+const API_RECEIVE_WORKSHOP = '${h(u('modules/orders/receive_from_workshop.php'))}';
+document.getElementById('btnSendWorkshop')?.addEventListener('click', function () {
+  new bootstrap.Modal(document.getElementById('sendWorkshopModal')).show();
+});
+document.getElementById('sendWsConfirmBtn')?.addEventListener('click', function () {
+  const itemIds = Array.from(document.querySelectorAll('.ws-send-check:checked')).map(function (c) { return parseInt(c.value, 10); });
+  const workshopId = document.getElementById('sendWsWorkshop').value;
+  const errBox = document.getElementById('sendWsError');
+  errBox.classList.add('d-none');
+  if (!itemIds.length) { errBox.textContent = 'Select at least one item.'; errBox.classList.remove('d-none'); return; }
+  if (!workshopId) { errBox.textContent = 'Select a workshop.'; errBox.classList.remove('d-none'); return; }
+  const btn = this;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Sending...';
+  udcPost(API_SEND_WORKSHOP, { order_id: ORDER_ID_WS, item_ids: itemIds, workshop_id: workshopId, remarks: document.getElementById('sendWsRemarks').value }).then(function (res) {
+    btn.disabled = false; btn.textContent = original;
+    if (res.success) { location.reload(); } else {
+      errBox.textContent = (res.errors || ['Could not send to workshop.']).join(' ');
+      errBox.classList.remove('d-none');
+    }
+  });
+});
+document.getElementById('btnReceiveWorkshop')?.addEventListener('click', function () {
+  new bootstrap.Modal(document.getElementById('receiveWorkshopModal')).show();
+});
+document.getElementById('receiveWsConfirmBtn')?.addEventListener('click', function () {
+  const itemIds = Array.from(document.querySelectorAll('.ws-receive-check:checked')).map(function (c) { return parseInt(c.value, 10); });
+  const errBox = document.getElementById('receiveWsError');
+  errBox.classList.add('d-none');
+  if (!itemIds.length) { errBox.textContent = 'Select at least one item.'; errBox.classList.remove('d-none'); return; }
+  const btn = this;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Receiving...';
+  udcPost(API_RECEIVE_WORKSHOP, { order_id: ORDER_ID_WS, item_ids: itemIds, remarks: document.getElementById('receiveWsRemarks').value }).then(function (res) {
+    btn.disabled = false; btn.textContent = original;
+    if (res.success) { location.reload(); } else {
+      errBox.textContent = (res.errors || ['Could not receive items.']).join(' ');
+      errBox.classList.remove('d-none');
+    }
+  });
+});
+</script>`;
 export const orderPaymentScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}): string => `<script>
 document.getElementById('addRow')?.addEventListener('click', function () {
   const wrap = document.getElementById('payRows');

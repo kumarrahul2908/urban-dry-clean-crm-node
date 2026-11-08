@@ -6,6 +6,7 @@ import { ApiError, num, ok } from '../../lib/http.js';
 import { phpEmpty, round2, toFloat, toInt } from '../../lib/php.js';
 import { qInt, qStr } from '../../lib/query.js';
 import { getSetting } from '../../services/settings.js';
+import { wsItemBelongs, wsScope } from '../../services/workshopScope.js';
 
 type Q = Record<string, unknown>;
 type Raw = Record<string, any>;
@@ -15,7 +16,7 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 /** Ports of the order / payment endpoints under api/mobile/ (+ OrderEditGuard). */
 export async function registerMobileOrderRoutes(app: FastifyInstance) {
-  const { db, orders: orderSvc, wallet } = app.services;
+  const { db, orders: orderSvc, wallet, workshop } = app.services;
 
   const route = (method: 'GET' | 'POST', name: string, handler: (req: FastifyRequest) => Promise<unknown>) => {
     app.route({ method, url: `/${name}`, handler });
@@ -547,5 +548,79 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const result = await orderSvc.removeItem(orderId, itemId, { userId: ctx.id, ip: req.ip });
     if (!result.success) failFromService(result, 'Could not remove item.');
     return ok({ order_id: orderId, item_id: itemId, removed: true });
+  });
+
+  // ---- workshop actions, scoped to one order (Order Detail: Send to Workshop / Receive from Workshop) --
+  // No new business logic -- these call the SAME WorkshopService methods the dedicated Send/Receive
+  // Workshop pages already use (see routes/mobile/workshop.ts's workshop_action). What's new is the
+  // extra check those generic methods don't do themselves: every submitted item must actually belong
+  // to THIS order, not just pass workshop.createChallan's own store/status checks -- the client-
+  // submitted item list is never trusted alone.
+  const orderItemIdsOf = async (orderId: number, raw: unknown): Promise<number[]> => {
+    const itemIds = Array.isArray(raw) ? [...new Set(raw.map(toInt).filter((n) => n > 0))] : [];
+    if (!itemIds.length) throw new ApiError('invalid_request', 'Select at least one item.', 422);
+    const rows = await db.query<{ id: number }>('SELECT id FROM order_items WHERE id IN (?) AND order_id = ?', [itemIds, orderId]);
+    if (rows.length !== itemIds.length) throw new ApiError('invalid_request', 'One or more items do not belong to this order.', 422);
+    return itemIds;
+  };
+
+  route('POST', 'order_send_to_workshop', async (req) => {
+    const ctx = await auth(req, 'workshop.manage');
+    if (ctx.role_name === 'Workshop Staff') throw new ApiError('forbidden', 'Workshop Staff cannot send garments to a workshop — this is a store-side action.', 403);
+    const p = payload(req);
+    const order = await loadForMutation(ctx, toInt(p.order_id));
+    const orderId = Number(order.id);
+    const itemIds = await orderItemIdsOf(orderId, p.item_ids);
+    const workshopId = toInt(p.workshop_id);
+    const remarks = typeof p.remarks === 'string' ? p.remarks.trim() : '';
+    const allowed = ctx.store_id !== null ? [ctx.store_id] : null;
+    const result = await workshop.createChallan(workshopId, itemIds, remarks, { userId: ctx.id, ip: req.ip }, allowed);
+    if (!result.success) throw new ApiError('action_failed', (result.errors ?? ['Could not send to workshop.']).join(' '), 422, { field_errors: result.errors });
+    return ok({ order_id: orderId, challan_id: num(result.challan_id), challan_number: result.challan_number, item_count: itemIds.length });
+  });
+
+  route('POST', 'order_receive_from_workshop', async (req) => {
+    const ctx = await auth(req, 'workshop.manage');
+    const p = payload(req);
+    const order = await loadForMutation(ctx, toInt(p.order_id));
+    const orderId = Number(order.id);
+    const itemIds = await orderItemIdsOf(orderId, p.item_ids);
+    const remarks = typeof p.remarks === 'string' ? p.remarks.trim() : '';
+
+    // Resolve each order_item's own (most recent, not-Rejected) workshop_items row -- the same
+    // candidate logic workshop_queue's store_receive_queue uses -- then force-receive it, the way the
+    // dedicated Receive Workshop page's "Receive" button already does.
+    const wis = await db.query<{ id: number; order_item_id: number }>(
+      "SELECT id, order_item_id FROM workshop_items WHERE order_item_id IN (?) AND status != 'Rejected' ORDER BY id DESC", [itemIds]);
+    const wiByItem = new Map<number, number>();
+    for (const w of wis) if (!wiByItem.has(Number(w.order_item_id))) wiByItem.set(Number(w.order_item_id), Number(w.id));
+
+    const [, myWs] = await wsScope(db, ctx.id, ctx.role_name);
+    const a = { userId: ctx.id, ip: req.ip };
+    const errors: string[] = [];
+    let received = 0;
+    for (const itemId of itemIds) {
+      const wiId = wiByItem.get(itemId);
+      if (!wiId) { errors.push(`Item #${itemId} was never sent to a workshop.`); continue; }
+      if (myWs !== null && !(await wsItemBelongs(db, wiId, myWs))) { errors.push(`Item #${itemId} was not sent to your workshop.`); continue; }
+      // Same two-path logic the dedicated Receive Workshop page's "Receive" button uses: a properly
+      // completed item goes through the real storeReceive() transition (via returnToStore() first if
+      // still at 'Completed'); anything else is force-received from wherever it actually is.
+      const current = await workshop.getCurrentStatus(wiId);
+      let result: { success: boolean; errors?: string[] };
+      if (current === 'Completed' || current === 'Returned') {
+        if (current === 'Completed') {
+          const r1 = await workshop.returnToStore(wiId, a, '');
+          if (!r1.success) { errors.push(...(r1.errors ?? [`Could not receive item #${itemId}.`])); continue; }
+        }
+        result = await workshop.storeReceive(wiId, a, remarks);
+      } else {
+        result = await workshop.forceStoreReceive(wiId, a, remarks);
+      }
+      if (!result.success) errors.push(...(result.errors ?? [`Could not receive item #${itemId}.`]));
+      else received++;
+    }
+    if (received === 0) throw new ApiError('action_failed', errors[0] ?? 'Could not receive any items.', 422, { field_errors: errors });
+    return ok({ order_id: orderId, received_count: received, warnings: errors });
   });
 }
