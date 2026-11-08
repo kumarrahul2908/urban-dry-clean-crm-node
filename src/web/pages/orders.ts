@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { code128Svg } from '../../lib/barcodeCode128.js';
+import { addDays } from '../../lib/dates.js';
 import { phpEmpty, phpRound } from '../../lib/php.js';
 import { WebRedirect, WebText, forbiddenPage, webPage, type WebCtx } from '../context.js';
 import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
@@ -29,26 +30,64 @@ export function registerOrderPages(app: FastifyInstance) {
   };
 
   // ---- list ------------------------------------------------------------------------------------
+  const PER_PAGE_OPTIONS = [20, 50, 100, 200];
+  const DATE_FIELDS: Record<string, string> = { order_date: 'Order Date', due_date: 'Due Date' };
   webPage(app, '/modules/orders/list', { auth: 'orders.view' }, async (ctx, req) => {
     const q = req.query as Record<string, unknown>;
     const search = clean(q.q), statusFilter = int(q.status_id), dateFrom = clean(q.from), dateTo = clean(q.to);
+    const dateField = Object.prototype.hasOwnProperty.call(DATE_FIELDS, clean(q.date_field)) ? clean(q.date_field) : 'order_date';
     const page = Math.max(1, int(q.page) || 1);
-    const perPage = 20, offset = (page - 1) * perPage;
+    // Validated ONCE into its own variable and used everywhere below (pagination math, SQL LIMIT, the
+    // page links, the <select>'s selected option) -- never re-derived from the raw query param a
+    // second time. The live PHP bug this avoids: a per-page ternary re-checked `$_GET['per_page']`
+    // directly instead of the already-defaulted value, so a request with none at all hit
+    // `(int)null === 0` right there and divided by zero computing the page count.
+    const rawPerPage = int(q.per_page);
+    const perPage = PER_PAGE_OPTIONS.includes(rawPerPage) ? rawPerPage : 20;
+    const offset = (page - 1) * perPage;
     let where = '1=1';
     const params: unknown[] = [];
     if (search !== '') { where += ' AND (o.order_number LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?)'; const like = `%${search}%`; params.push(like, like, like, like); }
     if (statusFilter) { where += ' AND o.status_id = ?'; params.push(statusFilter); }
-    if (dateFrom !== '') { where += ' AND DATE(o.order_date) >= ?'; params.push(dateFrom); }
-    if (dateTo !== '') { where += ' AND DATE(o.order_date) <= ?'; params.push(dateTo); }
-    const total = int((await db.query<Row>(`SELECT COUNT(*) AS n FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params))[0]!.n);
+    // dateField is checked against the DATE_FIELDS allow-list above before ever reaching the query.
+    if (dateFrom !== '') { where += ` AND DATE(o.${dateField}) >= ?`; params.push(dateFrom); }
+    if (dateTo !== '') { where += ` AND DATE(o.${dateField}) <= ?`; params.push(dateTo); }
+    const garmentsExpr = `(SELECT COALESCE(SUM(oi.quantity * GREATEST(g.pieces_per_unit, 1)), 0) FROM order_items oi JOIN garments g ON g.id = oi.garment_id WHERE oi.order_id = o.id)`;
+    const stats = (await db.query<Row>(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(o.grand_total), 0) AS total_amount, COALESCE(SUM(o.current_due), 0) AS total_due, COALESCE(SUM(${garmentsExpr}), 0) AS total_garments
+       FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params))[0]!;
+    const total = int(stats.n);
     const rows = await db.query<Row>(
-      `SELECT o.*, c.full_name, c.mobile, os.status_label, os.color FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id
+      `SELECT o.*, c.full_name, c.mobile, c.address, os.status_label, os.color, ${garmentsExpr} AS garment_count
+       FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id
        WHERE ${where} ORDER BY o.id DESC LIMIT ${perPage} OFFSET ${offset}`, params);
     const totalPages = Math.ceil(total / perPage);
     const statuses = await db.query<Row>('SELECT id, status_label FROM order_statuses ORDER BY sort_order');
-    const hasFilters = search !== '' || !!statusFilter || dateFrom !== '' || dateTo !== '';
+    const hasFilters = search !== '' || !!statusFilter || dateFrom !== '' || dateTo !== '' || dateField !== 'order_date';
     const showingFrom = total ? offset + 1 : 0, showingTo = Math.min(offset + perPage, total);
-    const pageUrl = (p: number) => `?q=${urlencode(search)}&status_id=${statusFilter}&from=${urlencode(dateFrom)}&to=${urlencode(dateTo)}&page=${p}`;
+    const baseQuery = (p: number, overrides: Partial<{ from: string; to: string; per_page: number }> = {}) =>
+      `?q=${urlencode(search)}&status_id=${statusFilter}&date_field=${dateField}&from=${urlencode(overrides.from ?? dateFrom)}&to=${urlencode(overrides.to ?? dateTo)}&per_page=${overrides.per_page ?? perPage}&page=${p}`;
+    const pageUrl = (p: number) => baseQuery(p);
+
+    // Quick date-range presets, computed server-side from ctx.today (not the browser's clock) so the
+    // links are plain, bookmarkable GETs -- each one is just a &from=&to= pair, same as typing dates in
+    // by hand. "This Week" is a direct ISO day-of-week calculation (today's weekday number, Monday=1,
+    // walked back to Monday), not a relative-date string -- the live PHP page used a 'monday this week'
+    // style string instead, which breaks specifically when today already IS Monday (it rolls to NEXT
+    // Monday rather than staying put).
+    const today = ctx.today;
+    const isoDow = new Date(`${today}T00:00:00Z`).getUTCDay() || 7;
+    const mondayThisWeek = addDays(today, -(isoDow - 1));
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const lastMonthEnd = addDays(monthStart, -1);
+    const lastMonthStart = `${lastMonthEnd.slice(0, 7)}-01`;
+    const quickRanges: [string, string, string][] = [
+      ['Today', today, today],
+      ['Yesterday', addDays(today, -1), addDays(today, -1)],
+      ['This Week', mondayThisWeek, today],
+      ['This Month', monthStart, today],
+      ['Last Month', lastMonthStart, lastMonthEnd],
+    ];
     const money = await ctx.loadMoney();
     const u = (p: string) => ctx.baseUrl(p);
 
@@ -105,6 +144,12 @@ export function registerOrderPages(app: FastifyInstance) {
               <option value="${s.id}" ${sel(statusFilter === Number(s.id))}>${s.status_label}</option>`)}
           </select>
         </div>
+        <div class="ol-field">
+          <select name="date_field" class="form-select ol-input">
+            ${Object.entries(DATE_FIELDS).map(([val, label]) => html`
+              <option value="${val}" ${sel(dateField === val)}>${label}</option>`)}
+          </select>
+        </div>
         <div class="ol-field ol-field--dates">
           <label>From</label>
           <input type="date" name="from" class="form-control ol-input" value="${dateFrom}">
@@ -113,17 +158,28 @@ export function registerOrderPages(app: FastifyInstance) {
           <label>To</label>
           <input type="date" name="to" class="form-control ol-input" value="${dateTo}">
         </div>
+        <div class="ol-field">
+          <select name="per_page" class="form-select ol-input">
+            ${PER_PAGE_OPTIONS.map((pp) => html`
+              <option value="${pp}" ${sel(perPage === pp)}>${pp} / page</option>`)}
+          </select>
+        </div>
         <button class="ol-apply-btn" type="submit"><i class="fa-solid fa-magnifying-glass"></i><span>Search</span></button>
         ${hasFilters ? html`
           <a href="?" class="ol-clear-btn" title="Clear all filters"><i class="fa-solid fa-xmark"></i><span>Clear</span></a>` : ''}
       </form>
 
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        ${quickRanges.map(([label, from, to]) => html`
+          <a href="${baseQuery(1, { from, to })}" class="btn btn-sm ${dateFrom === from && dateTo === to ? 'btn-secondary' : 'btn-outline-secondary'}">${label}</a>`)}
+      </div>
+
       <div class="table-responsive udc-cards-wrap">
         <table class="table table-hover align-middle udc-cards ol-table">
-          <thead><tr><th>Order#</th><th>Customer</th><th>Date</th><th>Due</th><th>Status</th><th class="text-end">Total</th><th class="text-end">Due Amt</th></tr></thead>
+          <thead><tr><th>Order#</th><th>Customer</th><th>Address</th><th>Date</th><th>Due</th><th>Status</th><th class="text-end">Garments</th><th class="text-end">Total</th><th class="text-end">Due Amt</th></tr></thead>
           <tbody>
           ${rows.length === 0 ? html`
-            <tr><td colspan="7" class="ol-empty">
+            <tr><td colspan="9" class="ol-empty">
               <i class="fa-solid fa-inbox"></i>
               <span>${hasFilters ? 'No orders match these filters.' : 'No orders yet.'}</span>
             </td></tr>` : ''}
@@ -131,13 +187,24 @@ export function registerOrderPages(app: FastifyInstance) {
             <tr>
               <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + o.id)}">${o.order_number}</a></td>
               <td class="udc-card-head">${o.full_name}<div class="text-muted small">${o.mobile}</div></td>
+              <td data-label="Address" class="small text-muted">${orEmpty(o.address, '—')}</td>
               <td data-label="Order Date">${raw(ctx.date(o.order_date))}</td>
               <td data-label="Due Date">${raw(ctx.date(o.due_date))}</td>
               <td data-label="Status"><span class="ol-status" style="background:${o.color}">${o.status_label}</span></td>
+              <td class="text-end" data-label="Garments">${numberFormat(flt(o.garment_count), 0)}</td>
               <td class="text-end" data-label="Total">${raw(money(o.grand_total))}</td>
               <td class="text-end udc-card-total ol-due${flt(o.current_due) > 0 ? ' ol-due--open' : ''}" data-label="Due Amt">${raw(money(o.current_due))}</td>
             </tr>`)}
           </tbody>
+          ${rows.length > 0 ? html`
+          <tfoot>
+            <tr class="ol-totals-row fw-bold">
+              <td colspan="6" class="text-end">Totals (${numberFormat(total, 0)} ${total === 1 ? 'order' : 'orders'}):</td>
+              <td class="text-end">${numberFormat(flt(stats.total_garments), 0)}</td>
+              <td class="text-end">${raw(money(flt(stats.total_amount)))}</td>
+              <td class="text-end">${raw(money(flt(stats.total_due)))}</td>
+            </tr>
+          </tfoot>` : ''}
         </table>
       </div>
 
