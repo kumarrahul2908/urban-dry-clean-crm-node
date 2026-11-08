@@ -9,7 +9,7 @@ const NUMBER_COLUMNS: Record<string, [table: string, column: string]> = {
   // Deliberately separate from challan_prefix above: workshop_challans (UDC-CHL-, internal
   // send-to-workshop tracking) and challans (customer-facing delivery/packing-note documents) are
   // two independent numbering sequences that must never collide.
-  delivery_challan_prefix: ['challans', 'challan_number'],
+  customer_challan_prefix: ['challans', 'challan_number'],
 };
 
 /** Highest numeric tail among values `<prefix><digits>` of table.column (0 when none). Never throws: a missing table just means "no floor". */
@@ -77,4 +77,4 @@ export async function generateShortOrderCode(db: Db, storeId: number | null = nu
 export const generateInvoiceNumber = (db: Db) => generateDocumentNumber(db, 'invoice_prefix', 6);
 export const generatePaymentNumber = (db: Db) => generateDocumentNumber(db, 'payment_prefix', 6);
 export const generateRefundNumber = (db: Db) => generateDocumentNumber(db, 'refund_prefix', 6);
-export const generateChallanNumber = (db: Db) => generateDocumentNumber(db, 'delivery_challan_prefix', 6);
+export const generateChallanNumber = (db: Db) => generateDocumentNumber(db, 'customer_challan_prefix', 6);

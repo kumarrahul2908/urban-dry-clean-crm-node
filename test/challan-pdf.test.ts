@@ -22,13 +22,13 @@ function streams(pdf: Buffer): string[] {
 
 const business: Business = { name: 'Urban Dry Clean', address: '12 Market Road, Hauz Khas, New Delhi', phone: '9876543210', gstin: '07ABCDE1234F1Z5', currencySymbol: 'Rs.' };
 const challan = { id: 1, challan_number: 'UDC-CHL-000001', created_at: '2026-11-08 10:30:00', with_amount: 1 };
-const orderA: ChallanOrderRow = { id: 1, order_number: 'UDC-2026-000001', short_order_code: 'A0001', order_date: '2026-11-06 09:00:00', customer_name: 'Rahul Verma', mobile: '9876500000' };
-const orderB: ChallanOrderRow = { id: 2, order_number: 'UDC-2026-000002', short_order_code: 'A0002', order_date: '2026-11-07 11:15:00', customer_name: 'Priya Singh', mobile: '9876500001' };
-const line = (orderId: number, garment: string, service: string, qty: string, unitPrice: string, total: string): ChallanLineRow => ({ order_id: orderId, garment_name: garment, service_name: service, quantity: qty, unit_price: unitPrice, total });
+const orderA: ChallanOrderRow = { id: 1, order_number: 'UDC-2026-000001', short_order_code: 'A0001', order_date: '2026-11-06 09:00:00', customer_name: 'Rahul Verma', mobile: '9876500000', subtotal: '200.00', discount_amount: '0.00', tax_amount: '0.00', grand_total: '250.00' };
+const orderB: ChallanOrderRow = { id: 2, order_number: 'UDC-2026-000002', short_order_code: 'A0002', order_date: '2026-11-07 11:15:00', customer_name: 'Priya Singh', mobile: '9876500001', subtotal: '400.00', discount_amount: '20.00', tax_amount: '10.00', grand_total: '450.00' };
+const line = (orderId: number, garment: string, service: string, qty: string, piecesPerUnit: string, unitPrice: string, total: string): ChallanLineRow => ({ order_id: orderId, garment_name: garment, service_name: service, quantity: qty, pieces_per_unit: piecesPerUnit, unit_price: unitPrice, total });
 
 describe('challan PDF', () => {
   it('renders a valid single-object-per-page PDF, single order, with amount', () => {
-    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '100.00', '200.00'), line(1, 'Suit', 'Dry Clean', '1.00', '450.00', '450.00')];
+    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '1', '100.00', '200.00'), line(1, 'Suit', 'Dry Clean', '1.00', '1', '450.00', '450.00')];
     const buf = ChallanPdfService.render(challan, [orderA], lines, business, true, false).output();
     const s = buf.toString('latin1');
     expect(s.startsWith('%PDF-1.3\n')).toBe(true);
@@ -42,7 +42,8 @@ describe('challan PDF', () => {
     expect(text).toContain('(Shirt) Tj');
     expect(text).toContain('(Suit) Tj');
     expect(text).toContain('(Dry Clean) Tj');
-    // single-order mode is NOT aggregated: two distinct garments, two distinct rows
+    // single-order mode is NOT aggregated, and shows the ordered-unit quantity (no pieces_per_unit
+    // multiplication) and real per-line amounts: two distinct garments, two distinct rows
     expect(text).toContain('(Rs. 200.00) Tj');
     expect(text).toContain('(Rs. 450.00) Tj');
     expect(text).toContain('(Total Value) Tj');
@@ -50,7 +51,7 @@ describe('challan PDF', () => {
   });
 
   it('without amount: no rate/amount columns, no totals block', () => {
-    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '100.00', '200.00')];
+    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '1', '100.00', '200.00')];
     const buf = ChallanPdfService.render(challan, [orderA], lines, business, false, false).output();
     const text = streams(buf)[0]!;
     expect(text).not.toContain('(Rs. 200.00) Tj');
@@ -60,37 +61,52 @@ describe('challan PDF', () => {
     expect(text).toContain('(Qty) Tj');
   });
 
-  it('combined mode aggregates by garment name across orders, drops the Service column', () => {
+  it('combined mode: no customer section, garments folded by name using physical pieces (quantity * pieces_per_unit), never a per-garment-name amount', () => {
     const lines = [
-      line(1, 'Shirt', 'Dry Clean', '2.00', '100.00', '200.00'),
-      line(2, 'Shirt', 'Steam Press', '1.00', '50.00', '50.00'),
-      line(2, 'Suit', 'Dry Clean', '1.00', '450.00', '450.00'),
+      line(1, 'Shirt', 'Dry Clean', '2.00', '1', '100.00', '200.00'),
+      line(2, 'Shirt', 'Steam Press', '1.00', '1', '50.00', '50.00'),
+      line(2, 'Suit', 'Dry Clean', '1.00', '2', '450.00', '450.00'), // a 2-piece Set: 1 ordered unit = 2 physical pieces
     ];
     const buf = ChallanPdfService.render(challan, [orderA, orderB], lines, business, true, true).output();
     const text = streams(buf)[0]!;
     expect(text).toContain('(ORDERS ON THIS CHALLAN \\(2\\)) Tj');
-    expect(text).toContain('(Rahul Verma) Tj');
-    expect(text).toContain('(Priya Singh) Tj');
-    // Shirt appears ONCE, combining both orders' quantity (2+1=3) and amount (200+50=250)
+    expect(text).toContain('(A0001) Tj');
+    expect(text).toContain('(A0002) Tj');
+    // no customer section at all for combined challans (confirmed business rule)
+    expect(text).not.toContain('(Rahul Verma) Tj');
+    expect(text).not.toContain('(Priya Singh) Tj');
+    expect(text).not.toContain('(Customer) Tj');
+    // Shirt appears ONCE, combining both orders' quantity (2+1=3 physical pieces)
     expect((text.match(/\(Shirt\) Tj/g) ?? []).length).toBe(1);
     expect(text).toContain('(3) Tj');
-    expect(text).toContain('(Rs. 250.00) Tj');
-    expect(text).toContain('(Rs. 450.00) Tj');
-    expect(text).toContain('(Total Value) Tj');
-    expect(text).toContain('(Rs. 700.00) Tj');
+    // Suit: 1 ordered unit * 2 pieces_per_unit = 2 physical pieces
+    expect(text).toContain('(Suit) Tj');
+    expect(text).toContain('(2) Tj');
+    // never a per-garment-name amount column, even With Amount
+    expect(text).not.toContain('(Amount) Tj');
+    expect(text).not.toContain('(Rs. 250.00) Tj');
+    expect(text).not.toContain('(Rs. 450.00) Tj');
+    // instead, each financial component summed across every included order, as one totals block
+    expect(text).toContain('(Subtotal) Tj');
+    expect(text).toContain('(Rs. 600.00) Tj'); // 200 + 400
+    expect(text).toContain('(Discount) Tj');
+    expect(text).toContain('(Tax) Tj');
+    expect(text).toContain('(Grand Total) Tj');
+    expect(text).toContain('(Rs. 700.00) Tj'); // 250 + 450
     // Service column is dropped entirely in combined mode
     expect(text).not.toContain('(Dry Clean) Tj');
     expect(text).not.toContain('(Steam Press) Tj');
     expect(text).not.toContain('(Service) Tj');
   });
 
-  it('combined mode, without amount', () => {
-    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '100.00', '200.00'), line(2, 'Shirt', 'Steam Press', '1.00', '50.00', '50.00')];
+  it('combined mode, without amount: no totals block at all', () => {
+    const lines = [line(1, 'Shirt', 'Dry Clean', '2.00', '1', '100.00', '200.00'), line(2, 'Shirt', 'Steam Press', '1.00', '1', '50.00', '50.00')];
     const buf = ChallanPdfService.render(challan, [orderA, orderB], lines, business, false, true).output();
     const text = streams(buf)[0]!;
     expect((text.match(/\(Shirt\) Tj/g) ?? []).length).toBe(1);
     expect(text).toContain('(3) Tj');
-    expect(text).not.toContain('(Total Value) Tj');
+    expect(text).not.toContain('(Subtotal) Tj');
+    expect(text).not.toContain('(Grand Total) Tj');
     expect(text).not.toContain('(Rs.');
   });
 
@@ -128,6 +144,9 @@ describe.skipIf(!dbEnabled)('ChallanPdfService.generate (real MariaDB schema)', 
     const text = streams(buf)[0]!;
     expect(text).toContain('(Seed Cleaners)');
     expect(text).toContain('(UDC-CHL-000001)');
+    // combined (2 orders): no customer section at all
+    expect(text).not.toContain('(Vip Cust)');
+    expect(text).not.toContain('(Plain)');
     unlinkSync(r.file_path!);
     expect(existsSync(r.file_path!)).toBe(false);
 

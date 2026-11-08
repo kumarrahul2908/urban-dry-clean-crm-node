@@ -24,9 +24,12 @@ const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct
 const f = (v: unknown) => { const n = parseFloat(String(v ?? '')); return Number.isFinite(n) ? n : 0; };
 const str = (v: unknown) => (v === null || v === undefined ? '' : String(v));
 
-export interface ChallanOrderRow { id: number; order_number: string; short_order_code: string | null; order_date: unknown; customer_name: string; mobile: string }
-export interface ChallanLineRow { order_id: number; garment_name: string; service_name: string; quantity: unknown; unit_price: unknown; total: unknown }
-/** One rendered row of the items table — already resolved for single-order (as-is) or combined (aggregated by garment name) mode. */
+export interface ChallanOrderRow {
+  id: number; order_number: string; short_order_code: string | null; order_date: unknown; customer_name: string; mobile: string;
+  subtotal: unknown; discount_amount: unknown; tax_amount: unknown; grand_total: unknown;
+}
+export interface ChallanLineRow { order_id: number; garment_name: string; service_name: string; quantity: unknown; pieces_per_unit: unknown; unit_price: unknown; total: unknown }
+/** One rendered row of the items table — already resolved for single-order (as-is) or combined (aggregated by garment name, physical-piece-counted) mode. */
 export interface ChallanLine { garment_name: string; service_name: string; quantity: number; amount: number }
 
 /**
@@ -50,10 +53,10 @@ export class ChallanPdfService {
     if (!orderIds.length) return { success: false, error: 'This challan has no orders on it.' };
 
     const orders = await this.db.query<ChallanOrderRow>(
-      `SELECT o.id, o.order_number, o.short_order_code, o.order_date, c.full_name AS customer_name, c.mobile
+      `SELECT o.id, o.order_number, o.short_order_code, o.order_date, o.subtotal, o.discount_amount, o.tax_amount, o.grand_total, c.full_name AS customer_name, c.mobile
        FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id IN (?) ORDER BY o.id`, [orderIds]);
     const lines = await this.db.query<ChallanLineRow>(
-      `SELECT oi.order_id, COALESCE(g.garment_name, 'Unknown Garment') AS garment_name, COALESCE(s.service_name, 'Unknown Service') AS service_name, oi.quantity, oi.unit_price, oi.total
+      `SELECT oi.order_id, COALESCE(g.garment_name, CONCAT('Laundry: ', s.service_name)) AS garment_name, COALESCE(s.service_name, 'Unknown Service') AS service_name, oi.quantity, oi.pieces_per_unit, oi.unit_price, oi.total
        FROM order_items oi LEFT JOIN garments g ON g.id = oi.garment_id LEFT JOIN services s ON s.id = oi.service_id
        WHERE oi.order_id IN (?) ORDER BY oi.id`, [orderIds]);
 
@@ -85,27 +88,37 @@ export class ChallanPdfService {
     pdf.setAuthor(business.name);
     pdf.addPage();
     ChallanPdfService.header(pdf, challan, business);
+    // Confirmed business rule: a combined challan shows no per-order customer section (just order
+    // numbers + the garments summary) and never a per-garment-name line price -- the same garment
+    // name can carry a different rate on different orders, so a per-line amount would be misleading.
+    // With Amount instead sums each financial component across every included order, as one totals
+    // block, never inside the garments table itself.
     let y = combined ? ChallanPdfService.ordersBox(pdf, orders) : ChallanPdfService.singleOrderBox(pdf, orders[0]!);
     const rows = combined ? ChallanPdfService.aggregateByGarment(lines) : ChallanPdfService.perOrderLines(lines);
     y = ChallanPdfService.itemsTable(pdf, rows, withAmount, combined, y + 6, business, money);
-    if (withAmount) ChallanPdfService.totals(pdf, rows, y + 4, money);
+    if (withAmount) { if (combined) ChallanPdfService.combinedTotals(pdf, orders, y + 4, money); else ChallanPdfService.totals(pdf, rows, y + 4, money); }
     ChallanPdfService.footer(pdf, business);
     return pdf;
   }
 
   // ------------------------------------------------------------------ data shaping
-  /** Single-order mode: every line as-is, in order. */
+  /** Single-order mode: every line as-is, in order -- the ordered-unit quantity, not multiplied by
+   * pieces_per_unit (that physical-piece convention is combined mode's own aggregation rule below). */
   private static perOrderLines(lines: ChallanLineRow[]): ChallanLine[] {
     return lines.map((l) => ({ garment_name: l.garment_name, service_name: l.service_name, quantity: f(l.quantity), amount: f(l.total) }));
   }
 
-  /** Combined mode: folded by garment NAME alone across every order on the challan (service is dropped — a combined challan is a packing note, not a priced breakdown per service). */
+  /** Combined mode: folded by garment NAME alone across every order on the challan (service AND amount
+   * are dropped -- see the business rule above). Quantity is physical pieces (quantity *
+   * pieces_per_unit, order_items' own order-time-frozen copy, same convention used everywhere else in
+   * this app a 2-piece Set garment must not be undercounted as 1). */
   private static aggregateByGarment(lines: ChallanLineRow[]): ChallanLine[] {
     const byName = new Map<string, ChallanLine>();
     for (const l of lines) {
+      const qty = f(l.quantity) * Math.max(1, f(l.pieces_per_unit) || 1);
       const existing = byName.get(l.garment_name);
-      if (existing) { existing.quantity += f(l.quantity); existing.amount += f(l.total); }
-      else byName.set(l.garment_name, { garment_name: l.garment_name, service_name: '', quantity: f(l.quantity), amount: f(l.total) });
+      if (existing) existing.quantity += qty;
+      else byName.set(l.garment_name, { garment_name: l.garment_name, service_name: '', quantity: qty, amount: 0 });
     }
     return [...byName.values()].sort((a, b) => a.garment_name.localeCompare(b.garment_name));
   }
@@ -168,7 +181,9 @@ export class ChallanPdfService {
     return top + h;
   }
 
-  /** Combined mode: a compact table of every order this challan covers, since more than one customer may be involved. */
+  /** Combined mode: no customer section at all (an explicit, confirmed business rule -- a combined
+   * challan can cover several different customers, and this is a packing/delivery note handed to a
+   * driver or processing unit, not a customer-facing document) -- just the order numbers it covers. */
   private static ordersBox(pdf: MiniFpdf, orders: ChallanOrderRow[]): number {
     const top = 45;
     pdf.setXY(15, top);
@@ -181,9 +196,8 @@ export class ChallanPdfService {
     pdf.setFont('Helvetica', 'B', 8);
     pdf.setTextColor(255, 255, 255);
     pdf.setXY(17, y);
-    pdf.cell(50, 6.5, 'Order #', 0);
-    pdf.cell(80, 6.5, 'Customer', 0);
-    pdf.cell(48, 6.5, 'Date', 0);
+    pdf.cell(90, 6.5, 'Order #', 0);
+    pdf.cell(88, 6.5, 'Date', 0);
     y += 6.5;
     let n = 0;
     for (const o of orders) {
@@ -192,9 +206,8 @@ export class ChallanPdfService {
       pdf.setXY(17, y + 1);
       pdf.setFont('Helvetica', '', 8.5);
       text(pdf, INK);
-      pdf.cell(48, 4.5, ascii(clip(pdf, str(o.short_order_code ?? o.order_number), 48)), 0);
-      pdf.cell(78, 4.5, ascii(clip(pdf, o.customer_name, 78)), 0);
-      pdf.cell(46, 4.5, ascii(dateStr(o.order_date)), 0);
+      pdf.cell(88, 4.5, ascii(clip(pdf, str(o.short_order_code ?? o.order_number), 88)), 0);
+      pdf.cell(86, 4.5, ascii(dateStr(o.order_date)), 0);
       y += 6;
     }
     draw(pdf, LINE);
@@ -203,13 +216,15 @@ export class ChallanPdfService {
     return y;
   }
 
-  /** Combined mode drops the Service column entirely (garment-name-aggregated — no per-service breakdown once orders are mixed together). */
+  /** Combined mode drops the Service AND Amount columns entirely, regardless of with_amount --
+   * garment-name-aggregated, no per-service breakdown once orders are mixed together, and never a
+   * per-garment-name price (see the business rule on render()). */
   private static itemsTable(pdf: MiniFpdf, rows: ChallanLine[], withAmount: boolean, combined: boolean, y0: number, b: Business, money: (v: unknown) => string): number {
     const cols: [number, string, string][] = combined
-      ? (withAmount ? [[9, '#', 'C'], [121, 'Garment', 'L'], [20, 'Qty', 'R'], [30, 'Amount', 'R']] : [[12, '#', 'C'], [95, 'Garment', 'L'], [73, 'Qty', 'R']])
+      ? [[12, '#', 'C'], [95, 'Garment', 'L'], [73, 'Qty', 'R']]
       : (withAmount ? [[9, '#', 'C'], [68, 'Garment', 'L'], [43, 'Service', 'L'], [20, 'Qty', 'R'], [40, 'Amount', 'R']] : [[12, '#', 'C'], [98, 'Garment', 'L'], [50, 'Service', 'L'], [20, 'Qty', 'R']]);
     const rowCells = (n: number, r: ChallanLine): string[] => combined
-      ? (withAmount ? [String(n), r.garment_name, numStr(r.quantity), money(r.amount)] : [String(n), r.garment_name, numStr(r.quantity)])
+      ? [String(n), r.garment_name, numStr(r.quantity)]
       : (withAmount ? [String(n), r.garment_name, r.service_name, numStr(r.quantity), money(r.amount)] : [String(n), r.garment_name, r.service_name, numStr(r.quantity)]);
 
     const drawHead = (y: number) => {
@@ -280,6 +295,39 @@ export class ChallanPdfService {
     pdf.setFont('Helvetica', 'B', 11);
     pdf.cell(lw - 3, 10, 'Total Value', 0, 'L');
     pdf.cell(vw, 10, ascii(money(totalAmount)), 0, 'R');
+  }
+
+  /** Combined mode's own With Amount block: each financial component summed across every included
+   * order (never a per-garment line price -- see the business rule on render()). */
+  private static combinedTotals(pdf: MiniFpdf, orders: ChallanOrderRow[], y0: number, money: (v: unknown) => string) {
+    let y = y0;
+    if (y + 34 > 268) { pdf.addPage(); y = 20; }
+    const sum = (k: 'subtotal' | 'discount_amount' | 'tax_amount' | 'grand_total') => orders.reduce((s, o) => s + f(o[k]), 0);
+    const rows: [string, string][] = [['Subtotal', money(sum('subtotal'))]];
+    const discount = sum('discount_amount');
+    if (discount > 0.009) rows.push(['Discount', `- ${money(discount)}`]);
+    const tax = sum('tax_amount');
+    if (tax > 0.009) rows.push(['Tax', money(tax)]);
+
+    const x = 115, w = 80, lw = 44, vw = 32;
+    let cy = y;
+    for (const [label, value] of rows) {
+      pdf.setXY(x, cy);
+      pdf.setFont('Helvetica', '', 9.5);
+      text(pdf, MUTED);
+      pdf.cell(lw, 6.5, ascii(label), 0, 'L');
+      text(pdf, INK);
+      pdf.cell(vw, 6.5, ascii(value), 0, 'R');
+      cy += 6.5;
+    }
+    cy += 1.5;
+    fill(pdf, NAVY);
+    pdf.rect(x, cy, w, 10, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setXY(x + 3, cy);
+    pdf.setFont('Helvetica', 'B', 11);
+    pdf.cell(lw - 3, 10, 'Grand Total', 0, 'L');
+    pdf.cell(vw, 10, ascii(money(sum('grand_total'))), 0, 'R');
   }
 
   private static footer(pdf: MiniFpdf, b: Business) {

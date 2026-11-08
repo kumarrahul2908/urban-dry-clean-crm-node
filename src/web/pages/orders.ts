@@ -52,7 +52,12 @@ export function registerOrderPages(app: FastifyInstance) {
     // dateField is checked against the DATE_FIELDS allow-list above before ever reaching the query.
     if (dateFrom !== '') { where += ` AND DATE(o.${dateField}) >= ?`; params.push(dateFrom); }
     if (dateTo !== '') { where += ` AND DATE(o.${dateField}) <= ?`; params.push(dateTo); }
-    const garmentsExpr = `(SELECT COALESCE(SUM(oi.quantity * GREATEST(g.pieces_per_unit, 1)), 0) FROM order_items oi JOIN garments g ON g.id = oi.garment_id WHERE oi.order_id = o.id)`;
+    // order_items.pieces_per_unit is its own order-time-frozen copy of garments.pieces_per_unit (a
+    // Set garment's piece count at the moment it was ordered), the same convention piecesInLine()
+    // and every other "physical garment count" in this app already uses -- joining garments here
+    // instead would both use its CURRENT config (which can drift from what was true at order time)
+    // and silently exclude weight-mode orders (order_items.garment_id is NULL there).
+    const garmentsExpr = `(SELECT COALESCE(SUM(oi.quantity * GREATEST(oi.pieces_per_unit, 1)), 0) FROM order_items oi WHERE oi.order_id = o.id)`;
     const stats = (await db.query<Row>(
       `SELECT COUNT(*) AS n, COALESCE(SUM(o.grand_total), 0) AS total_amount, COALESCE(SUM(o.current_due), 0) AS total_due, COALESCE(SUM(${garmentsExpr}), 0) AS total_garments
        FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params))[0]!;

@@ -224,7 +224,7 @@ export async function registerMobileChallanRoutes(app: FastifyInstance) {
     if (allowed !== null) { where += storeClause(allowed); params.push(allowed); }
     const rows = await db.query<Raw>(
       `SELECT DATE(ch.created_at) AS day, COUNT(DISTINCT ch.id) AS challan_count,
-              COALESCE(SUM((SELECT COALESCE(SUM(oi.quantity), 0) FROM order_items oi WHERE oi.order_id IN (SELECT order_id FROM challan_orders WHERE challan_id = ch.id))), 0) AS garment_count,
+              COALESCE(SUM((SELECT COALESCE(SUM(oi.quantity * GREATEST(oi.pieces_per_unit, 1)), 0) FROM order_items oi WHERE oi.order_id IN (SELECT order_id FROM challan_orders WHERE challan_id = ch.id))), 0) AS garment_count,
               COALESCE(SUM((SELECT COALESCE(SUM(oi.total), 0) FROM order_items oi WHERE oi.order_id IN (SELECT order_id FROM challan_orders WHERE challan_id = ch.id))), 0) AS total_value
        FROM challans ch WHERE ${where} GROUP BY DATE(ch.created_at) ORDER BY day DESC`, params);
     return ok({
@@ -242,13 +242,14 @@ export async function registerMobileChallanRoutes(app: FastifyInstance) {
     const params: unknown[] = [from, to];
     if (allowed !== null) { where += storeClause(allowed); params.push(allowed); }
     const rows = await db.query<Raw>(
-      `SELECT COALESCE(g.garment_name, 'Unknown Garment') AS garment_name, COALESCE(SUM(oi.quantity), 0) AS quantity, COALESCE(SUM(oi.total), 0) AS total_value
+      `SELECT COALESCE(g.garment_name, CONCAT('Laundry: ', s.service_name)) AS garment_name, COALESCE(SUM(oi.quantity * GREATEST(oi.pieces_per_unit, 1)), 0) AS quantity, COALESCE(SUM(oi.total), 0) AS total_value
        FROM challans ch
        JOIN challan_orders co ON co.challan_id = ch.id
        JOIN order_items oi ON oi.order_id = co.order_id
        LEFT JOIN garments g ON g.id = oi.garment_id
+       LEFT JOIN services s ON s.id = oi.service_id
        WHERE ${where}
-       GROUP BY COALESCE(g.garment_name, 'Unknown Garment')
+       GROUP BY COALESCE(g.garment_name, CONCAT('Laundry: ', s.service_name))
        ORDER BY quantity DESC`, params);
     return ok({
       period, from, to,
