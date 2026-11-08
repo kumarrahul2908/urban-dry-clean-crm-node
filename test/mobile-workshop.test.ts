@@ -68,4 +68,18 @@ describe.skipIf(!enabled)('workshop_queue mobile API (real MariaDB schema)', () 
     const row = queue.piece.items.find((r: any) => r.order_item_id === orderItemId);
     expect(row).toMatchObject({ workshop_status: 'Sent' });
   });
+
+  it('piece items expose packaging_style and defect_names (backend support for the Android Send-Report feature)', async () => {
+    const created = await post('pos_orders_create', {
+      client_request_id: 'wq-p-2', customer_id: 2,
+      items: [{ garment_id: 1, service_id: 1, quantity: 1, packaging_style: 'HANGER', defect_ids: [1] }],
+    });
+    expect(created.statusCode).toBe(200);
+    const orderItemId = (await db.query<any>('SELECT id FROM order_items WHERE order_id = ?', [created.json().data.order_id]))[0].id;
+
+    await post('workshop_action', { action: 'create_challan', workshop_id: 1, item_ids: [orderItemId], remarks: '' });
+    const queue = (await get('workshop_queue')).json().data;
+    const row = queue.piece.items.find((r: any) => r.order_item_id === orderItemId);
+    expect(row).toMatchObject({ packaging_style: 'HANGER', defect_names: 'Stain' });
+  });
 });
