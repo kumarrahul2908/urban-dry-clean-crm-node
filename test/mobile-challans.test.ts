@@ -122,4 +122,16 @@ describe.skipIf(!enabled)('challan_* mobile API (real MariaDB schema)', () => {
     expect(garmentsWise.json().data.report[0]).toHaveProperty('garment_name');
     expect(garmentsWise.json().data.report[0]).toHaveProperty('quantity');
   });
+
+  it('challan_whatsapp_numbers: standalone list/save, independent of sending one, capped at 5', async () => {
+    expect((await get('challan_whatsapp_numbers')).json().data).toEqual({ numbers: [] });
+
+    const saved = await post('challan_whatsapp_numbers', { numbers: ['9876543210', '9876543211', '9876543210', ''] });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().data.numbers).toEqual(['9876543210', '9876543211']);
+    expect((await get('challan_whatsapp_numbers')).json().data.numbers).toEqual(['9876543210', '9876543211']);
+
+    const tooMany = await post('challan_whatsapp_numbers', { numbers: ['1', '2', '3', '4', '5', '6'] });
+    expect(tooMany.json().data.numbers).toHaveLength(5);
+  });
 });

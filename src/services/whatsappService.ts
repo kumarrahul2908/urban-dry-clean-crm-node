@@ -70,6 +70,10 @@ export class WhatsAppService {
       access_token: this.crypto.decrypt(account.access_token_encrypted),
       app_id: account.app_id ?? null,
       app_secret: !phpEmpty(account.app_secret_encrypted) ? this.crypto.decrypt(account.app_secret_encrypted) : null,
+      // Stored since whatsapp_accounts was created and already managed in the admin CRUD, but never
+      // actually surfaced through this config object until now -- needed for template MANAGEMENT
+      // calls (distinct from the ordinary sending methods below, which only need phone_number_id).
+      waba_id: account.waba_id ?? null,
     };
   }
 

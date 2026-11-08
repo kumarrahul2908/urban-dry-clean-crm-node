@@ -8,6 +8,10 @@ export interface WaConfig {
   access_token: string;
   app_id?: string | null;
   app_secret?: string | null;
+  /** WhatsApp Business Account id -- distinct from phone_number_id, needed for template
+   * management (not ordinary message sending): stored since whatsapp_accounts was created, but
+   * never surfaced here until now. */
+  waba_id?: string | null;
 }
 
 export interface SendResult { success: boolean; provider_message_id: string | null; error: string | null }

@@ -184,6 +184,21 @@ export async function registerMobileChallanRoutes(app: FastifyInstance) {
     return ok({ sent: true, mode: result.mode });
   });
 
+  // ---- saved WhatsApp numbers (standalone management, independent of sending one) -----------------
+  route('GET', 'challan_whatsapp_numbers', async (req) => {
+    await auth(req);
+    return ok({ numbers: await getSavedWhatsAppNumbers() });
+  });
+  route('POST', 'challan_whatsapp_numbers', async (req) => {
+    await auth(req);
+    const b = req.body;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) throw new ApiError('invalid_request', 'Invalid request payload.', 400);
+    const raw = (b as Raw).numbers;
+    const numbers = Array.isArray(raw) ? [...new Set(raw.map((n) => String(n ?? '').trim()).filter((n) => n !== ''))].slice(0, MAX_SAVED_WHATSAPP_NUMBERS) : [];
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_whatsapp_numbers', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [JSON.stringify(numbers)]);
+    return ok({ numbers });
+  });
+
   // ---- PDF (view/print) ----------------------------------------------------------------------------
   route('GET', 'challan_pdf', async (req, reply) => {
     const ctx = await auth(req);

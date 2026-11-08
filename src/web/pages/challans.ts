@@ -71,7 +71,11 @@ export function registerChallanPages(app: FastifyInstance) {
 <div class="col-12">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h4 class="fw-bold mb-0"><i class="fa-solid fa-truck me-2"></i>Challans</h4>
-    <a href="${u(ctx)('modules/challans/generate.php')}" class="btn btn-primary"><i class="fa-solid fa-plus me-1"></i>New Challan</a>
+    <div class="d-flex gap-2">
+      <a href="${u(ctx)('modules/challans/report.php')}" class="btn btn-outline-secondary"><i class="fa-solid fa-chart-column me-1"></i>Report</a>
+      <a href="${u(ctx)('modules/challans/whatsapp_settings.php')}" class="btn btn-outline-secondary"><i class="fa-brands fa-whatsapp me-1"></i>WhatsApp Numbers</a>
+      <a href="${u(ctx)('modules/challans/generate.php')}" class="btn btn-primary"><i class="fa-solid fa-plus me-1"></i>New Challan</a>
+    </div>
   </div>
   <div class="card">
     <div class="card-body">
@@ -317,6 +321,49 @@ ${raw(challanWhatsAppScript())}
     if (result.success && !!clean(p.save_number)) await saveWhatsAppNumber(toNumber);
     ctx.flashSet(result.success ? 'success' : 'danger', result.success ? 'Challan sent via WhatsApp.' : (result.error ?? 'Could not send the challan.'));
     return new WebRedirect(`modules/challans/view.php?id=${challanId}`);
+  });
+
+  // ---- saved WhatsApp numbers (standalone management, independent of sending one) -----------------
+  webPage(app, '/modules/challans/whatsapp_settings', { auth: 'challans.manage', methods: ['GET', 'POST'] }, async (ctx, req) => {
+    if (req.method === 'POST') {
+      if (!ctx.csrfValid()) return new WebText('Invalid or expired security token (CSRF). Please refresh the page and try again.', 419);
+      const p = req.body as Record<string, unknown>;
+      const numbers = [...new Set(formArray(p, 'numbers').map((n) => n.trim()).filter((n) => n !== ''))].slice(0, MAX_SAVED_WHATSAPP_NUMBERS);
+      await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('challan_whatsapp_numbers', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [JSON.stringify(numbers)]);
+      ctx.flashSet('success', 'Saved WhatsApp numbers updated.');
+      return new WebRedirect('modules/challans/whatsapp_settings.php');
+    }
+    const numbers = await getSavedWhatsAppNumbers();
+    return layout(ctx, { title: 'Challan WhatsApp Numbers' }, html`
+<div class="col-12">
+  <h4 class="fw-bold mb-3"><i class="fa-brands fa-whatsapp me-2"></i>Challan WhatsApp Numbers</h4>
+  <div class="card"><div class="card-body">
+    <p class="text-muted small">Up to ${MAX_SAVED_WHATSAPP_NUMBERS} numbers shown as quick-pick buttons whenever a challan is sent via WhatsApp -- a recurring driver or accountant number doesn't need retyping each time.</p>
+    <form method="POST" id="waNumbersForm">
+      ${ctx.csrfField()}
+      <div id="waNumbersList">
+        ${numbers.map((n) => html`
+        <div class="input-group mb-2"><input type="text" name="numbers[]" class="form-control" value="${n}"><button type="button" class="btn btn-outline-danger wa-remove-row">Remove</button></div>`)}
+      </div>
+      <button type="button" class="btn btn-outline-secondary btn-sm mb-3" id="waAddRow">+ Add number</button>
+      <div><button type="submit" class="btn btn-primary">Save</button></div>
+    </form>
+  </div></div>
+</div>
+<script>
+function wireRemove(row) { row.querySelector('.wa-remove-row').addEventListener('click', function () { row.remove(); }); }
+document.querySelectorAll('#waNumbersList .input-group').forEach(wireRemove);
+document.getElementById('waAddRow').addEventListener('click', function () {
+  const list = document.getElementById('waNumbersList');
+  if (list.querySelectorAll('.input-group').length >= ${MAX_SAVED_WHATSAPP_NUMBERS}) { alert('Up to ${MAX_SAVED_WHATSAPP_NUMBERS} numbers only.'); return; }
+  const row = document.createElement('div');
+  row.className = 'input-group mb-2';
+  row.innerHTML = '<input type="text" name="numbers[]" class="form-control" placeholder="10-digit mobile number"><button type="button" class="btn btn-outline-danger wa-remove-row">Remove</button>';
+  list.appendChild(row);
+  wireRemove(row);
+});
+</script>
+`);
   });
 
   // ---- report (date-wise / garments-wise) -----------------------------------------------------------
