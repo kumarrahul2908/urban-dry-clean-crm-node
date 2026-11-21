@@ -63,4 +63,6 @@ INSERT INTO `invoice_design_toggles` (toggle_key, toggle_label, is_on, sort_orde
 ('show_barcode', 'Print Barcode', 0, 90),
 ('show_signature_box', 'Print Customer Signature Box', 0, 100),
 ('show_terms', 'Print Terms & Conditions', 0, 110);
+INSERT INTO return_reasons (reason_name, sort_order) VALUES
+('Saaf nahi hua (not clean)', 1), ('Daag nahi gaya (stain remains)', 2), ('Badbu / smell', 3), ('Press / finishing kharab', 4), ('Rang ya damage', 5), ('Item missing', 6), ('Other', 7);
 SET FOREIGN_KEY_CHECKS = 1;

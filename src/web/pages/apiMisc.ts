@@ -128,7 +128,7 @@ export function registerApiMisc(app: FastifyInstance) {
     const customer = (await db.query<Row>('SELECT id, full_name, mobile FROM customers WHERE id = ?', [customerId]))[0];
     if (!customer) return json({ success: false, error: 'Customer not found.' }, 404);
     if (phpEmpty(customer.mobile)) return json({ success: false, error: 'This customer has no mobile number on file.' }, 422);
-    const due = (await db.query<Row>("SELECT ar.due_amount, o.order_number FROM accounts_receivable ar JOIN orders o ON o.id = ar.order_id WHERE ar.customer_id = ? AND ar.status = 'Open' AND ar.due_amount > 0 ORDER BY ar.due_amount DESC LIMIT 1", [customerId]))[0];
+    const due = (await db.query<Row>("SELECT ar.due_amount, COALESCE(o.short_order_code, o.order_number) AS order_number FROM accounts_receivable ar JOIN orders o ON o.id = ar.order_id WHERE ar.customer_id = ? AND ar.status = 'Open' AND ar.due_amount > 0 ORDER BY ar.due_amount DESC LIMIT 1", [customerId]))[0];
     if (!due) return json({ success: false, error: 'This customer has no open due to remind about.' }, 422);
     const r = await whatsapp.enqueue(customerId, null, customer.mobile, 'payment_reminder', { due_amount: numberFormat2(parseFloat(due.due_amount)), order_number: due.order_number }, `due_reminder_manual:${customerId}:${ctx.today}`);
     return json({ success: r.success, error: r.error, duplicate: r.duplicate });
