@@ -8,10 +8,13 @@ export interface WaConfig {
   access_token: string;
   app_id?: string | null;
   app_secret?: string | null;
+  /** needed only for template management (POST /{waba_id}/message_templates) */
+  waba_id?: string | null;
 }
 
 export interface SendResult { success: boolean; provider_message_id: string | null; error: string | null }
 export interface UploadResult { success: boolean; media_id: string | null; error: string | null }
+export interface TemplateSubmitResult { success: boolean; status: string | null; id?: string | null; error: string | null }
 export interface HeaderDocument { id: string; filename?: string | null }
 
 /** Port of WhatsAppProviderInterface — swappable provider, Meta Cloud API is the only implementation. */
@@ -21,6 +24,12 @@ export interface WhatsAppProvider {
   sendMedia(config: WaConfig, to: string, mediaId: string, mediaType: string, caption?: string): Promise<SendResult>;
   uploadMedia(config: WaConfig, localFilePath: string, mimeType: string): Promise<UploadResult>;
   testConnection(config: WaConfig): Promise<{ success: boolean; error: string | null }>;
+  /** DOCUMENT-header template (example PDF uploaded via Meta's Resumable Upload API first) submitted for review. */
+  createDocumentTemplate(config: WaConfig, name: string, language: string, category: string, bodyText: string, bodyExampleValues: string[], sampleFilePath: string, sampleMimeType: string): Promise<TemplateSubmitResult>;
+  /** Text template (optional {{n}} body variables) submitted for Meta review. */
+  createTextTemplate(config: WaConfig, name: string, language: string, category: string, bodyText: string, bodyExampleValues: string[]): Promise<TemplateSubmitResult>;
+  /** Review status of every template on the account: name -> {status,id,reason}. */
+  listTemplateStatuses(config: WaConfig): Promise<{ success: boolean; templates: Record<string, { status: string | null; id: string | null; reason: string | null }>; error: string | null }>;
 }
 
 type FetchFn = typeof fetch;
@@ -125,5 +134,78 @@ export class MetaCloudProvider implements WhatsAppProvider {
     try { url = this.baseUrl(config); } catch (e) { return { success: false, error: (e as Error).message }; }
     const r = await this.request(config, 'GET', url);
     return { success: r.success, error: r.success ? null : r.error };
+  }
+
+  // ---- template management (Rahul, 21 Nov 2026) -------------------------------------------------
+  async createDocumentTemplate(config: WaConfig, name: string, language: string, category: string, bodyText: string, bodyExampleValues: string[], sampleFilePath: string, sampleMimeType: string): Promise<TemplateSubmitResult> {
+    const wabaId = config.waba_id ?? '';
+    if (wabaId === '') return { success: false, status: null, error: 'No WABA ID configured for this account -- needed for template management (different from the phone_number_id used for sending).' };
+    const appId = config.app_id ?? '';
+    if (appId === '') return { success: false, status: null, error: 'No app_id configured for this account -- needed for the example-file upload.' };
+    const up = await this.uploadTemplateExampleFile(config, appId, sampleFilePath, sampleMimeType);
+    if (!up.success) return { success: false, status: null, error: `Example file upload failed: ${up.error}` };
+    const body = {
+      name, language, category,
+      components: [
+        { type: 'HEADER', format: 'DOCUMENT', example: { header_handle: [up.handle] } },
+        { type: 'BODY', text: bodyText, example: { body_text: [bodyExampleValues] } },
+      ],
+    };
+    const version = config.api_version ?? '';
+    if (!VERSION_PATTERN.test(version)) return { success: false, status: null, error: `Configured Meta API version "${version}" doesn't look valid.` };
+    const r = await this.request(config, 'POST', `${GRAPH_HOST}/${version}/${encodeURIComponent(wabaId)}/message_templates`, body);
+    if (!r.success) return { success: false, status: null, error: r.error };
+    return { success: true, status: r.data?.status ?? 'PENDING', error: null };
+  }
+
+  async createTextTemplate(config: WaConfig, name: string, language: string, category: string, bodyText: string, bodyExampleValues: string[]): Promise<TemplateSubmitResult> {
+    const wabaId = config.waba_id ?? '';
+    if (wabaId === '') return { success: false, status: null, id: null, error: 'No WABA ID configured for this account -- needed for template management.' };
+    const version = config.api_version ?? '';
+    if (!VERSION_PATTERN.test(version)) return { success: false, status: null, id: null, error: `Configured Meta API version "${version}" doesn't look valid.` };
+    const bodyComponent: Record<string, unknown> = { type: 'BODY', text: bodyText };
+    if (bodyExampleValues.length) bodyComponent.example = { body_text: [bodyExampleValues] };
+    const r = await this.request(config, 'POST', `${GRAPH_HOST}/${version}/${encodeURIComponent(wabaId)}/message_templates`, { name, language, category, components: [bodyComponent] });
+    if (!r.success) return { success: false, status: null, id: null, error: r.error };
+    return { success: true, status: r.data?.status ?? 'PENDING', id: r.data?.id ?? null, error: null };
+  }
+
+  async listTemplateStatuses(config: WaConfig) {
+    const wabaId = config.waba_id ?? '';
+    const version = config.api_version ?? '';
+    if (wabaId === '' || !VERSION_PATTERN.test(version)) return { success: false, templates: {}, error: 'WABA ID / API version not configured.' };
+    const r = await this.request(config, 'GET', `${GRAPH_HOST}/${version}/${encodeURIComponent(wabaId)}/message_templates?fields=name,status,id,rejected_reason&limit=200`);
+    if (!r.success) return { success: false, templates: {}, error: r.error };
+    const out: Record<string, { status: string | null; id: string | null; reason: string | null }> = {};
+    for (const t of (Array.isArray(r.data?.data) ? r.data.data : [])) {
+      if (t?.name === undefined || t?.name === null) continue;
+      out[String(t.name)] = { status: t.status ?? null, id: t.id ?? null, reason: t.rejected_reason ?? null };
+    }
+    return { success: true, templates: out, error: null };
+  }
+
+  /** Meta's Resumable Upload API: start a session (tied to the APP), then upload the bytes -> reusable file "handle" for a template header example. */
+  private async uploadTemplateExampleFile(config: WaConfig, appId: string, filePath: string, mimeType: string): Promise<{ success: boolean; handle: string | null; error: string | null }> {
+    let bytes: Buffer;
+    try { bytes = await readFile(filePath); } catch { return { success: false, handle: null, error: 'Sample file not found.' }; }
+    const token = config.access_token ?? '';
+    if (token === '') return { success: false, handle: null, error: 'No access token configured.' };
+    const sessionUrl = `${GRAPH_HOST}/${config.api_version ?? 'v21.0'}/${encodeURIComponent(appId)}/uploads?file_length=${bytes.length}&file_type=${encodeURIComponent(mimeType)}&access_token=${encodeURIComponent(token)}`;
+    let sessionData: any;
+    try {
+      const res = await this.fetchFn(sessionUrl, { method: 'POST', body: '', signal: AbortSignal.timeout(20_000) });
+      sessionData = JSON.parse(await res.text());
+    } catch (e) { return { success: false, handle: null, error: `Could not start upload session: ${(e as Error).message}` }; }
+    const sessionId = sessionData?.id ?? null;
+    if (!sessionId) return { success: false, handle: null, error: sessionData?.error?.message ?? 'Could not start upload session.' };
+    // The session id already carries its own "?sig=..." suffix: used as-is, NOT url-encoded and not version-prefixed.
+    let uploadData: any;
+    try {
+      const res = await this.fetchFn(`${GRAPH_HOST}/${sessionId}`, { method: 'POST', headers: { Authorization: `OAuth ${token}`, file_offset: '0' }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(30_000) });
+      uploadData = JSON.parse(await res.text());
+    } catch (e) { return { success: false, handle: null, error: `Could not upload example file: ${(e as Error).message}` }; }
+    const handle = uploadData?.h ?? null;
+    if (!handle) return { success: false, handle: null, error: uploadData?.error?.message ?? 'Upload did not return a file handle.' };
+    return { success: true, handle, error: null };
   }
 }

@@ -162,36 +162,46 @@ export class MiniFpdf {
   /** Borderless, unfilled Cell(): ln 0 right, 1 next line, 2 below. */
   cell(w: number, h = 0, txt = '', ln = 0, align = '') { this.cellB(w, h, txt, 0, ln, align, false); }
 
-  /** MultiCell() for left-aligned text without borders/fill. */
-  multiCell(w: number, h: number, txt: string) {
+  private ws = 0;
+
+  /** MultiCell() without borders/fill. align 'L' (default here) or 'J' (FPDF's own default: word spacing via Tw on wrapped lines). */
+  multiCell(w: number, h: number, txt: string, align: 'L' | 'J' = 'L') {
     const cw = this.requireFont().widths;
     if (w === 0) w = this.w - this.rMargin - this.x;
     const wmax = ((w - 2 * this.cMargin) * 1000) / this.fontSize;
     const s = txt.replace(/\r/g, '');
     let nb = s.length;
     if (nb > 0 && s[nb - 1] === '\n') nb--;
-    let sep = -1, i = 0, j = 0, l = 0;
+    let sep = -1, i = 0, j = 0, l = 0, ls = 0, ns = 0;
+    const resetWs = () => { if (this.ws > 0) { this.ws = 0; this.out('0 Tw'); } };
     while (i < nb) {
       const c = s[i]!;
       if (c === '\n') {
-        this.cell(w, h, s.slice(j, i), 2, 'L');
-        i++; sep = -1; j = i; l = 0;
+        resetWs();
+        this.cell(w, h, s.slice(j, i), 2, align);
+        i++; sep = -1; j = i; l = 0; ns = 0;
         continue;
       }
-      if (c === ' ') sep = i;
+      if (c === ' ') { sep = i; ls = l; ns++; }
       l += cw[c.charCodeAt(0) & 0xff]!;
       if (l > wmax) {
         if (sep === -1) {
           if (i === j) i++;
-          this.cell(w, h, s.slice(j, i), 2, 'L');
+          resetWs();
+          this.cell(w, h, s.slice(j, i), 2, align);
         } else {
-          this.cell(w, h, s.slice(j, sep), 2, 'L');
+          if (align === 'J') {
+            this.ws = ns > 1 ? ((wmax - ls) / 1000 * this.fontSize) / (ns - 1) : 0;
+            this.out(`${f3(this.ws * K)} Tw`);
+          }
+          this.cell(w, h, s.slice(j, sep), 2, align);
           i = sep + 1;
         }
-        sep = -1; j = i; l = 0;
+        sep = -1; j = i; l = 0; ns = 0;
       } else i++;
     }
-    this.cell(w, h, s.slice(j, i), 2, 'L');
+    resetWs();
+    this.cell(w, h, s.slice(j, i), 2, align);
     this.x = this.lMargin;
   }
 
