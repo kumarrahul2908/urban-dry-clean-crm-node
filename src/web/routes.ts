@@ -24,6 +24,8 @@ import { registerAdminSettingsPages } from './pages/adminSettings.js';
 import { registerAdminBackupPages } from './pages/adminBackup.js';
 import { registerAdminOrderPhotoPages } from './pages/adminOrderPhotos.js';
 import { registerCustomerReturnPages } from './pages/customerReturns.js';
+import { registerChallanPages } from './pages/challans.js';
+import { registerWhatsAppChatPages } from './pages/waChat.js';
 import { registerAdminUsersPage } from './pages/adminUsers.js';
 import { registerPricelistImportPage } from './pages/pricelistImport.js';
 import { registerPricingPages } from './pages/pricing.js';
@@ -90,6 +92,8 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerAdminBackupPages(app);
   registerAdminOrderPhotoPages(app);
   registerCustomerReturnPages(app);
+  registerChallanPages(app);
+  registerWhatsAppChatPages(app);
   registerMiscPages(app);
   registerReportPages(app);
   registerDesignPages(app);

@@ -41,6 +41,8 @@ import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
 import { registerMobileReturnRoutes } from './routes/mobile/returns.js';
+import { registerMobileChallanRoutes } from './routes/mobile/challans.js';
+import { registerMobileWhatsAppChatRoutes } from './routes/mobile/whatsappChat.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
@@ -230,6 +232,8 @@ export async function buildApp(services: Services, tenancy?: { install(app: Fast
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileReturnRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileChallanRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileWhatsAppChatRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });

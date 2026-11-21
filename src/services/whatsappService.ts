@@ -8,7 +8,7 @@ import { datetimeIn, dMonY } from '../lib/tzFormat.js';
 import { todayIn } from '../lib/dates.js';
 import { getSetting } from './settings.js';
 import { CustomerSegments } from './customerSegments.js';
-import { sniffImage } from '../storage/imageSniff.js';
+import { sniffMime } from '../web/uploads.js';
 import type { SendResult, WaConfig, WhatsAppProvider } from '../whatsapp/provider.js';
 
 type Row = Record<string, any>;
@@ -344,13 +344,9 @@ export class WhatsAppService {
   async sendUploadedAttachment(customerId: number, toNumber: string, file: { buffer: Buffer } | null, caption: string, userId: number | null): Promise<{ success: boolean; error?: string | null; provider_message_id?: string | null }> {
     if (!file || file.buffer.length === 0) return { success: false, error: 'Select a valid file.' };
     if (file.buffer.length > 10 * 1024 * 1024) return { success: false, error: 'File is too large (max 10 MB).' };
-    const head = file.buffer.subarray(0, 16);
-    const kind = sniffImage(head);
-    let realMime: string | null = kind === 'jpg' ? 'image/jpeg' : kind === 'png' ? 'image/png' : null;
-    if (!realMime && file.buffer.subarray(0, 5).toString('latin1') === '%PDF-') realMime = 'application/pdf';
-    if (!realMime) {
-      const detected = kind === 'webp' ? 'image/webp' : kind === 'gif' ? 'image/gif' : 'application/octet-stream';
-      return { success: false, error: `File type not allowed (detected: ${detected}). Only JPEG/PNG images and PDF documents are supported.` };
+    const realMime = sniffMime(file.buffer);
+    if (!['image/jpeg', 'image/png', 'application/pdf'].includes(realMime)) {
+      return { success: false, error: `File type not allowed (detected: ${realMime}). Only JPEG/PNG images and PDF documents are supported.` };
     }
     const [mediaType, ext] = realMime === 'application/pdf' ? ['document', 'pdf'] : realMime === 'image/png' ? ['image', 'png'] : ['image', 'jpg'];
     const dir = join(this.mediaRoot(), 'tmp');

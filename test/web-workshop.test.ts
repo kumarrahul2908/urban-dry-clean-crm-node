@@ -225,6 +225,9 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     await write('pay future', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '1', payment_type_id: '1', paid_on: '2099-01-01' }), o);
     await write('pay zero', php, node, post({ action: 'record_payment', bill_id: String(bills[0].id), amount: '0', payment_type_id: '1', paid_on: day(0) }), o);
     await write('pay void/missing', php, node, post({ action: 'record_payment', bill_id: '99', amount: '1', payment_type_id: '1', paid_on: day(0) }), o);
+    await write('send wa (no account)', php, node, post({ action: 'send_whatsapp', bill_id: String(bills[0].id), whatsapp_number: '9876543210' }), o);
+    await write('send wa missing bill', php, node, post({ action: 'send_whatsapp', bill_id: '99', whatsapp_number: '9876543210' }), o);
+    await write('send wa blank number', php, node, post({ action: 'send_whatsapp', bill_id: String(bills[0].id), whatsapp_number: ' ' }), o);
     await write('void', php, node, post({ action: 'void', bill_id: String(bills[1].id), reason: 'wrong period' }), o);
     await write('void paid', php, node, post({ action: 'void', bill_id: String(bills[0].id), reason: 'oops' }), o);
     await write('void short reason', php, node, post({ action: 'void', bill_id: String(bills[1].id), reason: 'x' }), o);

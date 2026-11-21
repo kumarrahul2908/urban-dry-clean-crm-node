@@ -32,7 +32,7 @@ function groupByStore(items: Row[]) {
 }
 
 export function registerWorkshopBillingPage(app: FastifyInstance) {
-  const { db, workshop, workshopInvoice } = app.services;
+  const { db, workshop, workshopInvoice, whatsapp } = app.services;
 
   webPage(app, '/modules/workshop/billing', { auth: 'login' }, async (ctx, req) => {
     const q = req.query as Record<string, unknown>;
@@ -136,6 +136,17 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
             const r = await workshop.resolveUnprocessed(wiId, { userId, ip: req.ip });
             if (r.success) success = 'Item resolved and returned to the active queue.'; else errors = r.errors ?? [];
           }
+        }
+      } else if (action === 'send_whatsapp') {
+        // Rahul: "Bill whatsapp aur print ka option" -- sends the invoice PDF on WhatsApp.
+        const sendBillId = int(p.bill_id);
+        const chkWs = (await db.query<Row>('SELECT workshop_id FROM workshop_bills WHERE id = ?', [sendBillId]))[0]?.workshop_id;
+        if (chkWs === undefined || (myWorkshopId !== null && Number(chkWs) !== myWorkshopId)) errors.push('Invoice not found.');
+        else if (!canManage) errors.push('You do not have permission to send invoices.');
+        else {
+          const sent = await whatsapp.sendWorkshopInvoice(sendBillId, str(p.whatsapp_number).trim(), userId);
+          if (sent.success) success = 'Invoice sent on WhatsApp' + (sent.mode === 'free_form' ? ' (as a plain document message; it is delivered only if this number messaged you in the last 24 hours, until the Meta template is approved).' : '.');
+          else errors.push(String(sent.error));
         }
       } else if (action === 'void') {
         if (!canManage) errors.push('You do not have permission to void bills.');
@@ -430,6 +441,8 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
         const canPay = canManage && ['Unpaid', 'Partially Paid'].includes(b.status);
         const canVoid = canManage && b.status === 'Unpaid' && flt(b.amount_paid) === 0;
         const gstRate = phpFloatStr(flt(b.gst_rate));
+        let waStorePhone = '';
+        if (!isVoid && canManage && !phpEmpty(b.store_id)) waStorePhone = String((await db.query<Row>('SELECT phone FROM stores WHERE id = ?', [b.store_id]))[0]?.phone ?? '');
         content = html`
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -437,8 +450,20 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       <span>
         <span class="badge ${badge(display)} me-2">${display}</span>
         <a class="btn btn-sm btn-primary" target="_blank" href="${u('modules/workshop/bill_print.php?id=' + b.id)}">View / Print Invoice</a>
+        <a class="btn btn-sm btn-outline-primary" href="${u('modules/workshop/bill_pdf.php?id=' + b.id)}">Download PDF</a>
       </span>
     </div>
+    ${!isVoid && canManage ? html`
+    <div class="card-body border-bottom py-2">
+      <form method="post" class="row g-2 align-items-center" onsubmit="this.querySelector('button').disabled=true;">
+        <input type="hidden" name="csrf_token" value="${ctx.csrfToken()}">
+        <input type="hidden" name="action" value="send_whatsapp">
+        <input type="hidden" name="bill_id" value="${int(b.id)}">
+        <div class="col-auto"><label class="col-form-label small">Send on WhatsApp to</label></div>
+        <div class="col-auto"><input type="tel" name="whatsapp_number" class="form-control form-control-sm" placeholder="Mobile number" value="${waStorePhone}" required></div>
+        <div class="col-auto"><button class="btn btn-sm btn-success" type="submit">Send Invoice PDF</button></div>
+      </form>
+    </div>` : ''}
     <div class="card-body">
       <div class="row mb-3">
         <div class="col-md-6">
