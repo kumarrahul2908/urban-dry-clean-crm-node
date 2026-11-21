@@ -17,7 +17,9 @@ export function createPool(env: Env): { db: Db; close: () => Promise<void> } {
     user: env.DB_USER,
     password: env.DB_PASS,
     charset: 'utf8mb4',
-    // The PHP app stores everything in UTC (MySQL NOW()); keep dates as strings, no TZ shifting.
+    // Dates stay strings (no JS-side TZ shifting). The PHP app now pins every connection's MySQL
+    // SESSION time zone to IST (config/database.php, 21 Nov 2026), so NOW()/CURRENT_TIMESTAMP
+    // store IST -- the 'connection' hook below does the same here.
     timezone: 'Z',
     dateStrings: true,
     connectionLimit: 10,
@@ -25,6 +27,11 @@ export function createPool(env: Env): { db: Db; close: () => Promise<void> } {
     flags: ['-FOUND_ROWS'],
     namedPlaceholders: false,
   });
+
+  // Rahul: "Indian time dikhana chahiye" -- the MySQL server runs on the OS's SYSTEM timezone (UTC),
+  // so every CURRENT_TIMESTAMP/NOW() default silently stored UTC, ~5:30 behind real IST. PHP now
+  // sets the SESSION time zone to IST at its single shared connection point; mirrored here.
+  pool.pool.on('connection', (conn) => { conn.query("SET time_zone = '+05:30'"); });
 
   type Runner = Pick<mysql.Pool, 'query'>;
   const wrap = (runner: Runner, inTx: boolean): Db => ({

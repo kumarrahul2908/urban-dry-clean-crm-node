@@ -83,14 +83,14 @@ export function registerDashboardPages(app: FastifyInstance) {
                    THEN (SELECT COUNT(*) FROM laundry_garments lg JOIN order_items oiw ON oiw.id = lg.order_item_id WHERE oiw.order_id = o.id)
                    ELSE (SELECT COALESCE(SUM(oiq.quantity), 0) FROM order_items oiq WHERE oiq.order_id = o.id) END`;
     const dueOrders = (date: string) => db.query<Row>(
-      `SELECT o.id, o.order_number, o.due_time, o.grand_total, o.current_due, COALESCE(s.store_name, 'Unassigned') AS store_name, c.full_name AS customer_name, os.status_label, ${garmentsExpr} AS garments
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_time, o.grand_total, o.current_due, COALESCE(s.store_name, 'Unassigned') AS store_name, c.full_name AS customer_name, os.status_label, ${garmentsExpr} AS garments
        FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id LEFT JOIN stores s ON s.id = o.store_id
        WHERE o.due_date = ? AND os.status_key NOT IN ('delivered','cancelled')${sf}
        ORDER BY store_name, o.due_time IS NULL, o.due_time, o.order_number`, [date, ...sfp]);
     const dueToday = await dueOrders(today);
     const dueTomorrow = await dueOrders(tomorrow);
     const overdueRows = await db.query<Row>(
-      `SELECT o.id AS order_id, o.order_number, o.due_date, DATEDIFF(?, o.due_date) AS days_overdue, COALESCE(s.store_name, 'Unassigned') AS store_name, c.full_name AS customer_name,
+      `SELECT o.id AS order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, DATEDIFF(?, o.due_date) AS days_overdue, COALESCE(s.store_name, 'Unassigned') AS store_name, c.full_name AS customer_name,
               COALESCE(g.garment_name, sv.service_name) AS garment_name, oi.item_status, oi.quantity, (SELECT COUNT(*) FROM laundry_garments lg WHERE lg.order_item_id = oi.id) AS lg_count
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id
        LEFT JOIN stores s ON s.id = o.store_id LEFT JOIN garments g ON g.id = oi.garment_id LEFT JOIN services sv ON sv.id = oi.service_id

@@ -40,6 +40,7 @@ class Database {
             self::$pdo = new PDO('mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4', DB_USER, DB_PASS, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
+            self::$pdo->exec("SET time_zone = '+05:30'");  // same as the real config/database.php (21 Nov 2026)
         }
         return self::$pdo;
     }
@@ -48,5 +49,7 @@ PHP
 cp "$(dirname "$0")/../test/parity/run.php" "$OUT/run.php"
 cp "$(dirname "$0")/../test/parity/endpoint.php" "$OUT/endpoint.php"
 cp "$(dirname "$0")/../test/parity/invoice.php" "$OUT/invoice.php"
+cp "$(dirname "$0")/../test/parity/workshop_bill.php" "$OUT/workshop_bill.php"
+cp "$(dirname "$0")/../test/parity/challan.php" "$OUT/challan.php"
 mkdir -p "$OUT/uploads/tmp"
 echo "PHP parity app ready: $OUT"

@@ -32,7 +32,7 @@ export function registerDailyDashboard(app: FastifyInstance) {
     const sfp: unknown[] = fixed !== null ? [fixed] : [];
 
     const fetchOrderRows = (where: string, params: unknown[]) => db.query<Row>(
-      `SELECT o.id, o.order_number, o.due_time, o.due_date, c.full_name AS customer_name, c.mobile, o.grand_total, o.total_paid, o.current_due,
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_time, o.due_date, c.full_name AS customer_name, c.mobile, o.grand_total, o.total_paid, o.current_due,
               COALESCE(SUM(oi.quantity),0) AS pcs, COUNT(DISTINCT oi.garment_id) AS garment_types
        FROM orders o JOIN customers c ON c.id = o.customer_id LEFT JOIN order_items oi ON oi.order_id = o.id
        WHERE ${where} GROUP BY o.id ORDER BY o.due_time IS NULL, o.due_time`, params);
@@ -51,7 +51,7 @@ export function registerDailyDashboard(app: FastifyInstance) {
       `SELECT os.status_label, COUNT(DISTINCT o.id) AS order_count FROM orders o JOIN order_statuses os ON os.id = o.status_id
        WHERE os.status_key IN ('ready','packed','out_for_delivery','delivered')${sf} AND DATE(o.updated_at) = ? GROUP BY os.id ORDER BY os.sort_order`, [...sfp, selected]);
     const pendingWork = await db.query<Row>(
-      `SELECT o.id, o.order_number, o.due_date, c.full_name AS customer_name, c.mobile, COALESCE(SUM(oi.quantity),0) AS pcs
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, c.full_name AS customer_name, c.mobile, COALESCE(SUM(oi.quantity),0) AS pcs
        FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_items oi ON oi.order_id = o.id JOIN order_statuses os ON os.id = o.status_id
        WHERE oi.item_status NOT IN ('Ready','Packed','Delivered','Damaged','Missing') AND os.status_key NOT IN ('delivered','cancelled')${sf}
        GROUP BY o.id ORDER BY o.due_date`, sfp);

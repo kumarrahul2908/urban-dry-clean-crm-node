@@ -1,3 +1,4 @@
+import { dirname, resolve } from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -23,6 +24,10 @@ import { LaundryGarmentService } from './services/laundryGarmentService.js';
 import { FulfillmentService } from './services/fulfillmentService.js';
 import { WorkshopService } from './services/workshopService.js';
 import { WorkshopInvoice } from './services/workshopInvoice.js';
+import { ReturnService } from './services/returnService.js';
+import { FirebaseService } from './services/firebaseService.js';
+import { ChallanPdfService } from './services/challanPdf.js';
+import { WorkshopBillPdfService } from './services/workshopBillPdf.js';
 import { QcService } from './services/qcService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
@@ -35,6 +40,9 @@ import { registerMobileReportRoutes } from './routes/mobile/reports.js';
 import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
+import { registerMobileReturnRoutes } from './routes/mobile/returns.js';
+import { registerMobileChallanRoutes } from './routes/mobile/challans.js';
+import { registerMobileWhatsAppChatRoutes } from './routes/mobile/whatsappChat.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
@@ -72,6 +80,10 @@ export interface Services {
   fulfillment: FulfillmentService;
   workshop: WorkshopService;
   workshopInvoice: WorkshopInvoice;
+  returns: ReturnService;
+  firebase: FirebaseService;
+  challanPdf: ChallanPdfService;
+  workshopBillPdf: WorkshopBillPdfService;
   hooks: OrderHooks;
   whatsapp: WhatsAppService;
   passwordReset: PasswordResetService;
@@ -104,7 +116,10 @@ export interface BuildOptions {
 export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Services {
   const crypto = new Crypto(env.APP_SECRET_KEY);
   const audit0 = new AuditLog(db);
-  const whatsapp = new WhatsAppService(db, crypto, options.provider ?? new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE, invoicePdf: options.invoicePdf ?? new InvoicePdfService(db, env.APP_NAME) });
+  const challanPdf = new ChallanPdfService(db, env.APP_NAME, env.APP_TIMEZONE);
+  const workshopBillPdf = new WorkshopBillPdfService(db);
+  // customer media fetched from Meta + copies of what we sent live NEXT TO (never inside) the public uploads root
+  const whatsapp = new WhatsAppService(db, crypto, options.provider ?? new MetaCloudProvider(), { appName: env.APP_NAME, timezone: env.APP_TIMEZONE, invoicePdf: options.invoicePdf ?? new InvoicePdfService(db, env.APP_NAME), challanPdf, workshopBillPdf, mediaDir: resolve(dirname(resolve(env.UPLOAD_DIR)), 'whatsapp_media') });
   const hooks = options.hooks ?? whatsappOrderHooks(db, whatsapp, env.APP_NAME);
   const limiter = new LoginRateLimiter(db, env.LOGIN_LOCKOUT_MINUTES);
   const auth = new AuthService(db, limiter, { maxLoginAttempts: env.MAX_LOGIN_ATTEMPTS, lockoutMinutes: env.LOGIN_LOCKOUT_MINUTES });
@@ -136,6 +151,10 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     fulfillment: new FulfillmentService(db, audit, notifications),
     workshop,
     workshopInvoice: new WorkshopInvoice(db, audit, workshop, env.APP_TIMEZONE),
+    returns: new ReturnService(db, audit, notifications, storage),
+    firebase: new FirebaseService(db, crypto),
+    challanPdf,
+    workshopBillPdf,
     hooks,
     whatsapp,
     web: { sessions: new WebSessionStore(db), pages: new Set<string>(), navShowAll: !!options.navShowAll },
@@ -212,6 +231,9 @@ export async function buildApp(services: Services, tenancy?: { install(app: Fast
   await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileReturnRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileChallanRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileWhatsAppChatRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });

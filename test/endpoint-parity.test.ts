@@ -123,7 +123,9 @@ describe.skipIf(!enabled)('endpoint parity (real api/mobile/*.php vs Node)', () 
   for (const c of cases) it(c.name, async () => { await check(c); });
 
   // ---- write endpoints: same dataset, same calls, compare responses AND resulting rows ----------------
-  const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at', 'paid_at', 'order_date']);
+  // 'defect_names' (workshop_queue): the real PHP always answers [] there -- its array_map() closure lacks `use ($pieceDefectsByItem)`, so
+// the lookup is always undefined. Node returns the real defect names (documented divergence, docs/PARITY.md), so the key is not compared.
+const TIME_KEYS = new Set(['created_at', 'updated_at', 'read_at', 'checked_at', 'paid_at', 'order_date', 'defect_names']);
   const strip = (v: any): any => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !TIME_KEYS.has(k)).map(([k, x]) => [k, strip(x)])) : v);
   async function state() {
     const q = (sql: string) => db.query<any>(sql).then((r) => r.map(strip));

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { checkCustomerDuplicate, CodeCollisionError, type CustomerForm, type DupMatch } from '../../services/customerService.js';
 import { CustomerSegments } from '../../services/customerSegments.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
-import { int, numberFormat, urlencode } from '../format.js';
+import { phpEmpty } from '../../lib/php.js';
+import { int, numberFormat, urlencode, whatsappLinkNumber } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
 import { customerAddScript, customerEditScript, customerListStyle, customerViewScript, customerViewStyle } from './customers.static.js';
@@ -425,11 +426,11 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
     const walletTxns = await db.query<Row>('SELECT * FROM wallet_transactions WHERE customer_id=? ORDER BY created_at DESC LIMIT 30', [id]);
     const garments = await db.query<Row>(
       `SELECT garment_name, service_name, quantity, rate, weight, order_date, order_number FROM (
-         SELECT g.garment_name, s.service_name, oi.quantity, CASE WHEN oi.weight IS NOT NULL THEN oi.weight_rate ELSE oi.unit_price END AS rate, oi.weight, o.order_date, o.order_number
+         SELECT g.garment_name, s.service_name, oi.quantity, CASE WHEN oi.weight IS NOT NULL THEN oi.weight_rate ELSE oi.unit_price END AS rate, oi.weight, o.order_date, COALESCE(o.short_order_code, o.order_number) AS order_number
          FROM order_items oi JOIN garments g ON g.id=oi.garment_id JOIN services s ON s.id=oi.service_id JOIN orders o ON o.id=oi.order_id
          WHERE o.customer_id=? AND o.order_mode = 'piece'
          UNION ALL
-         SELECT g.garment_name, s.service_name, 1 AS quantity, NULL AS rate, NULL AS weight, o.order_date, o.order_number
+         SELECT g.garment_name, s.service_name, 1 AS quantity, NULL AS rate, NULL AS weight, o.order_date, COALESCE(o.short_order_code, o.order_number) AS order_number
          FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id JOIN orders o ON o.id = oi.order_id
          WHERE o.customer_id=?
        ) combined ORDER BY order_date DESC LIMIT 50`, [id, id]);
@@ -437,7 +438,7 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
     const feedback = await db.query<Row>('SELECT * FROM feedback WHERE customer_id=? ORDER BY created_at DESC LIMIT 20', [id]);
 
     const ledger: { date: string; type: string; debit: unknown; credit: unknown }[] = [];
-    for (const o of orders) ledger.push({ date: o.order_date, type: `Order ${o.order_number}`, debit: o.grand_total, credit: 0 });
+    for (const o of orders) ledger.push({ date: o.order_date, type: `Order ${o.short_order_code ?? o.order_number}`, debit: o.grand_total, credit: 0 });
     for (const p of payments) ledger.push({ date: p.payment_date, type: `Payment ${p.payment_number}`, debit: 0, credit: p.total_amount });
     ledger.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
@@ -482,7 +483,17 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
       <div class="cv-contact">
         <div class="cv-contact-item">
           <i class="fa-solid fa-phone"></i>
-          <div><span>Mobile</span><strong>${customer.mobile}${customer.alt_mobile ? raw(' / ' + e(customer.alt_mobile)) : ''}</strong></div>
+          <div>
+            <span>Mobile</span>
+            <strong>${customer.mobile}${customer.alt_mobile ? raw(' / ' + e(customer.alt_mobile)) : ''}</strong>
+            ${!phpEmpty(customer.mobile) ? html`
+            <!-- Rahul: "Customer details page pe number ke niche call and whatsapp ka link hona
+                 chahiye" -- one-tap call and WhatsApp straight from the number, no copy-pasting. -->
+            <div class="cv-quick-links">
+              <a href="tel:${customer.mobile}" class="cv-quick-link cv-quick-link--call"><i class="fa-solid fa-phone"></i>Call</a>
+              <a href="https://wa.me/${whatsappLinkNumber(String(customer.mobile))}" target="_blank" rel="noopener" class="cv-quick-link cv-quick-link--wa"><i class="fa-brands fa-whatsapp"></i>WhatsApp</a>
+            </div>` : ''}
+          </div>
         </div>
         <div class="cv-contact-item">
           <i class="fa-solid fa-location-dot"></i>
@@ -561,7 +572,7 @@ ${raw(customerEditScript(u, jsonEncode, e, { id }))}
             ${orders.length === 0 ? html`<tr><td colspan="6" class="cv-empty">No orders yet.</td></tr>` : ''}
             ${orders.map((o) => html`
               <tr>
-                <td data-label="Order#"><a href="${u('modules/orders/view.php?id=' + o.id)}">${o.order_number}</a></td>
+                <td data-label="Order#"><a href="${u('modules/orders/view.php?id=' + o.id)}">${o.short_order_code ?? o.order_number}</a></td>
                 <td data-label="Date">${raw(ctx.date(o.order_date))}</td>
                 <td data-label="Due">${raw(ctx.date(o.due_date))}</td>
                 <td data-label="Status"><span class="cv-status" style="background:${o.color}">${o.status_label}</span></td>

@@ -74,7 +74,7 @@ export class FulfillmentService {
         return p;
       });
     } catch (e) { return this.fail(e); }
-    const [o] = await this.db.query<{ order_number: string }>('SELECT order_number FROM orders WHERE id = ?', [pickup.order_id]);
+    const [o] = await this.db.query<{ order_number: string }>('SELECT COALESCE(short_order_code, order_number) AS order_number FROM orders WHERE id = ?', [pickup.order_id]);
     await this.notifications.notify('order_picked_up', `Order ${o?.order_number} picked up by customer.`, Number(pickup.customer_id), Number(pickup.order_id));
     return { success: true };
   }
@@ -127,7 +127,7 @@ export class FulfillmentService {
         return d;
       });
     } catch (e) { return this.fail(e); }
-    const [o] = await this.db.query<{ order_number: string }>('SELECT order_number FROM orders WHERE id = ?', [delivery.order_id]);
+    const [o] = await this.db.query<{ order_number: string }>('SELECT COALESCE(short_order_code, order_number) AS order_number FROM orders WHERE id = ?', [delivery.order_id]);
     await this.notifications.notify(isFinal ? 'order_delivered' : 'out_for_delivery', isFinal ? `Order ${o?.order_number} has been delivered.` : `Order ${o?.order_number} is out for delivery.`, Number(delivery.customer_id), Number(delivery.order_id));
     return { success: true };
   }
@@ -139,7 +139,8 @@ export class FulfillmentService {
   }
 
   private async markAllItemsDelivered(db: Db, orderId: number, userId: number, module: string) {
-    const items = await db.query<Raw>('SELECT id, item_status FROM order_items WHERE order_id = ?', [orderId]);
+    // Skip garments already 'Delivered' (e.g. the untouched ones when part of an order was returned and redone).
+    const items = await db.query<Raw>("SELECT id, item_status FROM order_items WHERE order_id = ? AND item_status != 'Delivered'", [orderId]);
     for (const it of items) {
       await db.execute("UPDATE order_items SET item_status = 'Delivered' WHERE id = ?", [it.id]);
       await db.execute("INSERT INTO garment_status_history (order_item_id, previous_status, new_status, changed_by, changed_at, module) VALUES (?,?,'Delivered',?,NOW(),?)", [it.id, it.item_status, userId, module]);

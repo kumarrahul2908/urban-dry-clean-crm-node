@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, unlink, open } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, unlink, open, writeFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
@@ -68,6 +68,15 @@ export class LocalDiskStorage {
     await mkdir(dir, { recursive: true });
     const filename = `${randomBytes(16).toString('hex')}.${ext}`;
     await rename(tmpPath, join(dir, filename));
+    return filename;
+  }
+
+  /** Writes an in-memory upload (web multipart) into <subdir>/ under a fresh random name. */
+  async saveBuffer(buf: Buffer, subdir: string, ext: string): Promise<string> {
+    const dir = this.dir(subdir);
+    await mkdir(dir, { recursive: true });
+    const filename = `${randomBytes(16).toString('hex')}.${ext}`;
+    await writeFile(join(dir, filename), buf, { mode: 0o644 });
     return filename;
   }
 

@@ -15,7 +15,7 @@ genpre() { # file sed-expr out export
 genpre audit/index.php 's/\$qs(/qsHelper(/g' audit_index tplAuditIndex
 gen notifications/index.php notifications_index tplNotificationsIndex
 genpre feedback/index.php 's/for (\$i=5;\$i>=1;\$i--):/foreach ([5,4,3,2,1] as $i):/' feedback_index tplFeedbackIndex
-genpre reports/index.php "s/http_build_query(array_merge(\\\$_GET,\\['export'=>'\\([a-z]*\\)'\\]))/exportQs('\\1')/" reports_index tplReportsIndex
+genpre reports/index.php "s/http_build_query(array_merge(\\\$_GET,\\['export'=>'\\([a-z]*\\)'\\]))/exportQs('\\1')/;s/date('d M Y, h:i A', strtotime(\\\$d\\['delivered_on'\\]))/wallDate('d M Y, h:i A', \\\$d['delivered_on'])/" reports_index tplReportsIndex
 # WhatsApp admin screens (reports/whatsapp/*)
 python3 - "$ROOT" "$(dirname "$0")/../src/web/tpl/whatsapp_sql.ts" <<'PY'
 import re, sys

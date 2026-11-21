@@ -4,6 +4,7 @@ import { isNumeric, phpEmpty, phpRound } from '../../lib/php.js';
 import { checkCustomerDuplicate } from '../../services/customerService.js';
 import { generateCustomerCode, generateDocumentNumber, generateInvoiceNumber, generateOrderNumber } from '../../services/documentNumber.js';
 import { GarmentTagService } from '../../services/garmentTagService.js';
+import { PACKAGING_STYLES } from '../../services/orderService.js';
 import { WebRedirect, WebText, webPage, type WebCtx } from '../context.js';
 import { csvBody } from '../csv.js';
 import { flt, httpBuildQuery, int } from '../format.js';
@@ -165,6 +166,15 @@ export function registerOrderPortPages(app: FastifyInstance) {
                   <label class="form-check-label small" for="agDefect${d.id}">${d.defect_name}</label>
                 </div>`)}
             </div>
+          </div>
+          <!-- Rahul: "Order edit me ... uska hanger etc edit nahi hota" -- a garment added to an
+               existing order gets the same Packaging choice as one entered on the New Order form. -->
+          <div class="col-12">
+            <label class="form-label small">Packaging</label>
+            <select id="agPackaging" class="form-select form-select-sm">
+              <option value="">None</option>
+              ${Object.entries(PACKAGING_STYLES).map(([pkgValue, pkgLabel]) => html`<option value="${pkgValue}">${pkgLabel}</option>`)}
+            </select>
           </div>
           <div class="col-12">
             <label class="form-label small">Remarks</label>

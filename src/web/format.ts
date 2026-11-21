@@ -86,6 +86,12 @@ function partsInTz(ms: number, tz: string): Parts {
   return { y: +o.year!, m: +o.month!, d: +o.day!, h: +o.hour! % 24, i: +o.minute!, s: +o.second!, dow };
 }
 
+/** date($fmt, strtotime($v)) for a DB wall-clock string: formatted AS-IS in the app timezone, no UTC->tz shift (unlike format_date). */
+export function wallDate(fmt: string, v: unknown): string {
+  const p = partsFromUtcString(String(v ?? '').trim());
+  return p ? phpDate(fmt, p) : '';
+}
+
 /** format_date($v, $fmt): '' for empty/zero dates. */
 export function formatDate(v: unknown, tz: string, fmt = 'd-M-Y'): string {
   if (v === null || v === undefined || v === '' || v === 0 || v === '0') return '';
@@ -116,3 +122,16 @@ export function formArray(body: Record<string, unknown>, name: string): string[]
 
 /** PHP (string) of a float: whole numbers without ".0". */
 export const floatStr = (n: number) => String(n);
+
+/**
+ * whatsapp_link_number(): normalizes a raw customer/staff-entered mobile number into the digits-only, country-coded shape a wa.me link needs
+ * (e.g. "919667271056"), assuming India/+91 when no country code is present.
+ */
+export function whatsappLinkNumber(rawNumber: string): string {
+  let digits = rawNumber.replace(/\D+/g, '');
+  if (digits === '') return digits;
+  if (digits.length >= 13 || (digits.length === 12 && digits.startsWith('91'))) return digits;
+  if (digits.length === 11 && digits[0] === '0') digits = digits.slice(1);
+  if (digits.length === 10) return '91' + digits;
+  return digits;
+}

@@ -108,7 +108,8 @@ export async function registerMobileUploadRoutes(app: FastifyInstance) {
   });
 
   route('POST', 'order_photo_delete', async (req) => {
-    const ctx = await auth(req, 'orders.edit');
+    // Deleting photos is Admin-only now; the app no longer shows a delete button.
+    const ctx = await auth(req, 'admin.settings');
     const payload = (req.body && typeof req.body === 'object' ? req.body : {}) as Raw;
     const photoId = toInt(payload.photo_id);
     if (!photoId) throw new ApiError('invalid_request', 'A valid photo_id is required.', 422);

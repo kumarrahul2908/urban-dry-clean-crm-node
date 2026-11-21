@@ -56,7 +56,7 @@ ${raw(barcodeSearchScript(u, JSON.stringify, e))}
     let pkg: Row | null = null;
     if (token !== '') {
       pkg = (await db.query<Row>(
-        `SELECT p.*, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
+        `SELECT p.*, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
          FROM packing p JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = o.customer_id WHERE p.qr_token = ?`, [token]))[0] ?? null;
       await audit.record({ action: 'lookup', module: 'packing', recordId: pkg ? String(pkg.order_id) : 'qr:' + token.slice(0, 8), newValue: { via: 'qr_token', found: !!pkg }, userId: ctx.data.user_id ?? null, ip: req.ip });
     }
@@ -186,7 +186,7 @@ ${raw(packingScript(u, JSON.stringify, e))}
     const ids = formArray(p, 'package_ids').map((x) => int(x)).filter((x) => x !== 0);
     if (!ids.length) return new WebText(`<p style="font-family:sans-serif;padding:20px;">No packages were selected. <a href="${e(u('modules/barcode/packing.php'))}">Go back</a></p>`, 200);
     const packages = await db.query<Row>(
-      `SELECT p.*, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
+      `SELECT p.*, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile
        FROM packing p JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = o.customer_id WHERE p.id IN (${ids.map(() => '?').join(',')})`, ids);
     if (!packages.length) return new WebText(`<p style="font-family:sans-serif;padding:20px;">Selected packages were not found. <a href="${e(u('modules/barcode/packing.php'))}">Go back</a></p>`, 200);
     for (const pk of packages) await packing.recordPrint(Number(pk.id), ctx.data.user_id!, req.ip);
@@ -261,7 +261,7 @@ document.querySelectorAll('.qr').forEach(function (el) {
     const params: unknown[] = [];
     if (dateFrom !== '') { where += ' AND DATE(o.order_date) >= ?'; params.push(dateFrom); }
     if (dateTo !== '') { where += ' AND DATE(o.order_date) <= ?'; params.push(dateTo); }
-    if (orderNumber !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderNumber}%`); }
+    if (orderNumber !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderNumber}%`, `%${orderNumber}%`); }
     if (invoiceNumber !== '') { where += ' AND o.invoice_number LIKE ?'; params.push(`%${invoiceNumber}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     if (serviceId) { where += ' AND oi.service_id = ?'; params.push(serviceId); }
@@ -273,7 +273,7 @@ document.querySelectorAll('.qr').forEach(function (el) {
       LEFT JOIN colors col ON col.id = oi.color_id LEFT JOIN barcodes bc ON bc.order_item_id = oi.id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id WHERE ${where}`;
     const total = int((await db.query<Row>(`SELECT COUNT(*) AS n ${baseSql}`, params))[0]!.n);
     const rows = await db.query<Row>(
-      `SELECT oi.id AS order_item_id, oi.remarks, oi.item_status, bc.id AS barcode_id, bc.barcode_value, bc.item_sequence, g.garment_name, s.service_name, col.color_name, o.order_number, o.due_date,
+      `SELECT oi.id AS order_item_id, oi.remarks, oi.item_status, bc.id AS barcode_id, bc.barcode_value, bc.item_sequence, g.garment_name, s.service_name, col.color_name, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date,
        c.full_name AS customer_name, COALESCE(gt.printed_count, 0) AS printed_count ${baseSql} ORDER BY o.id DESC, bc.item_sequence ASC LIMIT ${perPage} OFFSET ${offset}`, params);
     const totalPages = Math.ceil(total / perPage);
     const services = await db.query<Row>('SELECT id, service_name FROM services WHERE is_active=1 ORDER BY sort_order');
@@ -282,7 +282,7 @@ document.querySelectorAll('.qr').forEach(function (el) {
     const lp: unknown[] = [];
     if (dateFrom !== '') { lw += ' AND DATE(o.order_date) >= ?'; lp.push(dateFrom); }
     if (dateTo !== '') { lw += ' AND DATE(o.order_date) <= ?'; lp.push(dateTo); }
-    if (orderNumber !== '') { lw += ' AND o.order_number LIKE ?'; lp.push(`%${orderNumber}%`); }
+    if (orderNumber !== '') { lw += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; lp.push(`%${orderNumber}%`, `%${orderNumber}%`); }
     if (customerSearch !== '') { lw += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; lp.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     if (serviceId) { lw += ' AND oi.service_id = ?'; lp.push(serviceId); }
     if (garmentId) { lw += ' AND lg.garment_id = ?'; lp.push(garmentId); }
@@ -290,7 +290,7 @@ document.querySelectorAll('.qr').forEach(function (el) {
     if (printedFilter === 'printed') lw += ' AND gt.printed_count > 0';
     if (printedFilter === 'not_printed') lw += ' AND (gt.printed_count = 0 OR gt.printed_count IS NULL)';
     const laundryRows = await db.query<Row>(
-      `SELECT lg.id AS laundry_garment_id, lg.sequence, bc.id AS barcode_id, bc.barcode_value, g.garment_name, s.service_name, o.order_number, o.due_date, c.full_name AS customer_name,
+      `SELECT lg.id AS laundry_garment_id, lg.sequence, bc.id AS barcode_id, bc.barcode_value, g.garment_name, s.service_name, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, c.full_name AS customer_name,
        oi.quantity AS total_garments, COALESCE(gt.printed_count, 0) AS printed_count
        FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id
        JOIN services s ON s.id = oi.service_id LEFT JOIN barcodes bc ON bc.laundry_garment_id = lg.id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id

@@ -32,7 +32,7 @@ function groupByStore(items: Row[]) {
 }
 
 export function registerWorkshopBillingPage(app: FastifyInstance) {
-  const { db, workshop, workshopInvoice } = app.services;
+  const { db, workshop, workshopInvoice, whatsapp } = app.services;
 
   webPage(app, '/modules/workshop/billing', { auth: 'login' }, async (ctx, req) => {
     const q = req.query as Record<string, unknown>;
@@ -45,9 +45,30 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
     const today = ctx.today;
     const u = (p: string) => ctx.baseUrl(p);
     const parseStore = (r: string): [boolean, number] => (r === 'all' ? [true, 0] : [false, int(r)]);
+    const firstOfLastMonth = (d: string): string => {
+      const y = parseInt(d.slice(0, 4), 10), m = parseInt(d.slice(5, 7), 10);
+      const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+      return `${String(py).padStart(4, '0')}-${String(pm).padStart(2, '0')}-01`;
+    };
+    const lastDayOfMonth = (first: string): string => {
+      const y = parseInt(first.slice(0, 4), 10), m = parseInt(first.slice(5, 7), 10);
+      return `${first.slice(0, 8)}${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+    };
     const resolvePeriod = (period: string, cf: string, ct: string): [string, string | null, string | null] => {
       if (period === '15days') return ['15days', addDays(today, -14), today];
       if (period === '30days') return ['30days', addDays(today, -29), today];
+      if (period === 'month') return ['month', today.slice(0, 8) + '01', today];
+      if (period === 'lastmonth') {
+        const first = firstOfLastMonth(today);
+        return ['lastmonth', first, lastDayOfMonth(first)];
+      }
+      if (period === 'half') {
+        // Most recent COMPLETED half-month: from the 16th on = 1st-15th of this month,
+        // otherwise 16th-end of last month.
+        if (parseInt(today.slice(8, 10), 10) >= 16) return ['half', today.slice(0, 8) + '01', today.slice(0, 8) + '15'];
+        const first = firstOfLastMonth(today);
+        return ['half', first.slice(0, 8) + '16', lastDayOfMonth(first)];
+      }
       if (period === 'custom') {
         const ok = /^\d{4}-\d{2}-\d{2}$/.test(cf) && /^\d{4}-\d{2}-\d{2}$/.test(ct) && !Number.isNaN(Date.parse(cf)) && !Number.isNaN(Date.parse(ct)) && cf <= ct;
         return ok ? ['custom', cf, ct] : ['custom', null, null];
@@ -115,6 +136,17 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
             const r = await workshop.resolveUnprocessed(wiId, { userId, ip: req.ip });
             if (r.success) success = 'Item resolved and returned to the active queue.'; else errors = r.errors ?? [];
           }
+        }
+      } else if (action === 'send_whatsapp') {
+        // Rahul: "Bill whatsapp aur print ka option" -- sends the invoice PDF on WhatsApp.
+        const sendBillId = int(p.bill_id);
+        const chkWs = (await db.query<Row>('SELECT workshop_id FROM workshop_bills WHERE id = ?', [sendBillId]))[0]?.workshop_id;
+        if (chkWs === undefined || (myWorkshopId !== null && Number(chkWs) !== myWorkshopId)) errors.push('Invoice not found.');
+        else if (!canManage) errors.push('You do not have permission to send invoices.');
+        else {
+          const sent = await whatsapp.sendWorkshopInvoice(sendBillId, str(p.whatsapp_number).trim(), userId);
+          if (sent.success) success = 'Invoice sent on WhatsApp' + (sent.mode === 'free_form' ? ' (as a plain document message; it is delivered only if this number messaged you in the last 24 hours, until the Meta template is approved).' : '.');
+          else errors.push(String(sent.error));
         }
       } else if (action === 'void') {
         if (!canManage) errors.push('You do not have permission to void bills.');
@@ -237,6 +269,9 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
             <option value="week" ${sel(selPeriod === 'week')}>This Week (last 7 days)</option>
             <option value="15days" ${sel(selPeriod === '15days')}>Last 15 Days</option>
             <option value="30days" ${sel(selPeriod === '30days')}>Last 30 Days</option>
+            <option value="month" ${sel(selPeriod === 'month')}>This Month (1st to today)</option>
+            <option value="lastmonth" ${sel(selPeriod === 'lastmonth')}>Last Month (full month)</option>
+            <option value="half" ${sel(selPeriod === 'half')}>Last completed half-month (1&ndash;15 / 16&ndash;end)</option>
             <option value="custom" ${sel(selPeriod === 'custom')}>Custom dates</option>
           </select>
         </div>
@@ -406,6 +441,8 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
         const canPay = canManage && ['Unpaid', 'Partially Paid'].includes(b.status);
         const canVoid = canManage && b.status === 'Unpaid' && flt(b.amount_paid) === 0;
         const gstRate = phpFloatStr(flt(b.gst_rate));
+        let waStorePhone = '';
+        if (!isVoid && canManage && !phpEmpty(b.store_id)) waStorePhone = String((await db.query<Row>('SELECT phone FROM stores WHERE id = ?', [b.store_id]))[0]?.phone ?? '');
         content = html`
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -413,8 +450,20 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
       <span>
         <span class="badge ${badge(display)} me-2">${display}</span>
         <a class="btn btn-sm btn-primary" target="_blank" href="${u('modules/workshop/bill_print.php?id=' + b.id)}">View / Print Invoice</a>
+        <a class="btn btn-sm btn-outline-primary" href="${u('modules/workshop/bill_pdf.php?id=' + b.id)}">Download PDF</a>
       </span>
     </div>
+    ${!isVoid && canManage ? html`
+    <div class="card-body border-bottom py-2">
+      <form method="post" class="row g-2 align-items-center" onsubmit="this.querySelector('button').disabled=true;">
+        <input type="hidden" name="csrf_token" value="${ctx.csrfToken()}">
+        <input type="hidden" name="action" value="send_whatsapp">
+        <input type="hidden" name="bill_id" value="${int(b.id)}">
+        <div class="col-auto"><label class="col-form-label small">Send on WhatsApp to</label></div>
+        <div class="col-auto"><input type="tel" name="whatsapp_number" class="form-control form-control-sm" placeholder="Mobile number" value="${waStorePhone}" required></div>
+        <div class="col-auto"><button class="btn btn-sm btn-success" type="submit">Send Invoice PDF</button></div>
+      </form>
+    </div>` : ''}
     <div class="card-body">
       <div class="row mb-3">
         <div class="col-md-6">

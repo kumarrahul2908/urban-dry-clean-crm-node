@@ -36,6 +36,20 @@ export const orderListStyle = (u: (p: string) => string, j: (v: unknown) => stri
 .ol-clear-btn { background: #fff; color: #64748b; border-color: #dde3ec; }
 .ol-clear-btn:hover { background: #f3f6fb; color: #334155; }
 
+/* ---------- Quick date-range buttons ---------- */
+.ol-quick-ranges { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .9rem; }
+.ol-quick-btn {
+  display: inline-flex; align-items: center; height: 32px; padding: 0 .8rem;
+  border: 1px solid #dde3ec; border-radius: 999px; background: #fff; color: #475569;
+  font-size: .8rem; font-weight: 600; text-decoration: none;
+}
+.ol-quick-btn:hover { background: #f3f6fb; color: var(--udc-primary); border-color: #cbd5e1; }
+.ol-quick-btn.is-active { background: var(--udc-primary); border-color: var(--udc-primary); color: #fff; }
+
+/* ---------- Address column / totals row ---------- */
+.ol-address { font-size: .82rem; color: #64748b; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ol-totals-row td { font-weight: 700; color: #16233d; border-top: 2px solid #e2e8f0; background: #f8fafc; }
+
 /* ---------- Table ---------- */
 .ol-table thead th {
   font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
@@ -356,6 +370,84 @@ document.getElementById('pmConfirmBtn')?.addEventListener('click', function () {
       errBox.classList.remove('d-none');
     });
 });
+
+// Rahul: order-scoped Send to Workshop / Receive from Workshop -- same lazy-init pattern as
+// getPaymentModal() above (bootstrap.bundle.js loads later in the page via footer.php).
+let sendWorkshopModalInstance = null;
+function getSendWorkshopModal() {
+  if (!sendWorkshopModalInstance) sendWorkshopModalInstance = new bootstrap.Modal(document.getElementById('sendWorkshopModal'));
+  return sendWorkshopModalInstance;
+}
+let receiveWorkshopModalInstance = null;
+function getReceiveWorkshopModal() {
+  if (!receiveWorkshopModalInstance) receiveWorkshopModalInstance = new bootstrap.Modal(document.getElementById('receiveWorkshopModal'));
+  return receiveWorkshopModalInstance;
+}
+document.getElementById('btnSendToWorkshop')?.addEventListener('click', function () { getSendWorkshopModal().show(); });
+document.getElementById('btnReceiveFromWorkshop')?.addEventListener('click', function () { getReceiveWorkshopModal().show(); });
+
+document.getElementById('swConfirmBtn')?.addEventListener('click', function () {
+  const btn = this;
+  const errBox = document.getElementById('swError');
+  errBox.classList.add('d-none');
+  const workshopId = document.getElementById('swWorkshop').value;
+  const itemIds = Array.from(document.querySelectorAll('.sw-item:checked')).map(cb => cb.value);
+  if (!workshopId) { errBox.textContent = 'Choose a workshop.'; errBox.classList.remove('d-none'); return; }
+  if (itemIds.length === 0) { errBox.textContent = 'Select at least one garment.'; errBox.classList.remove('d-none'); return; }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Sending...';
+  const formData = new FormData();
+  formData.append('order_id', ORDER_ID);
+  formData.append('workshop_id', workshopId);
+  itemIds.forEach(id => formData.append('item_ids[]', id));
+  formData.append('csrf_token', ${j(a.csrf)});
+  fetch(${j(u('api/orders_send_to_workshop.php'))}, { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(function (result) {
+      if (result.success) {
+        window.location.href = ${j(u('modules/workshop/send_report.php?challan_ids='))} + result.challan_id;
+      } else {
+        btn.disabled = false; btn.textContent = original;
+        errBox.textContent = result.error || 'Something went wrong.';
+        errBox.classList.remove('d-none');
+      }
+    })
+    .catch(function () {
+      btn.disabled = false; btn.textContent = original;
+      errBox.textContent = 'Could not reach the server. Please try again.';
+      errBox.classList.remove('d-none');
+    });
+});
+
+document.getElementById('rwConfirmBtn')?.addEventListener('click', function () {
+  const btn = this;
+  const errBox = document.getElementById('rwError');
+  errBox.classList.add('d-none');
+  const itemIds = Array.from(document.querySelectorAll('.rw-item:checked')).map(cb => cb.value);
+  if (itemIds.length === 0) { errBox.textContent = 'Select at least one garment.'; errBox.classList.remove('d-none'); return; }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Receiving...';
+  const formData = new FormData();
+  formData.append('order_id', ORDER_ID);
+  itemIds.forEach(id => formData.append('workshop_item_ids[]', id));
+  formData.append('csrf_token', ${j(a.csrf)});
+  fetch(${j(u('api/orders_receive_from_workshop.php'))}, { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(function (result) {
+      if (result.success) {
+        location.reload();
+      } else {
+        btn.disabled = false; btn.textContent = original;
+        errBox.textContent = result.error || 'Something went wrong.';
+        errBox.classList.remove('d-none');
+      }
+    })
+    .catch(function () {
+      btn.disabled = false; btn.textContent = original;
+      errBox.textContent = 'Could not reach the server. Please try again.';
+      errBox.classList.remove('d-none');
+    });
+});
 </script>`;
 export const orderPaymentScript = (u: (p: string) => string, j: (v: unknown) => string, h: (v: unknown) => string, a: Record<string, unknown> = {}): string => `<script>
 document.getElementById('addRow')?.addEventListener('click', function () {
@@ -523,6 +615,7 @@ function openGarmentModal(g) {
   dom.agBrand.value = '';
   dom.agColor.value = '';
   dom.agRemarks.value = '';
+  document.getElementById('agPackaging').value = '';
   document.querySelectorAll('.ag-defect').forEach(cb => cb.checked = false);
   dom.agError.classList.add('d-none');
   // Manual Rate Override must never leak from one garment to the next.
@@ -694,6 +787,7 @@ function addToCart() {
     rate_override: rateOverride, manual_override: manualOverrideActive,
     brand_id: dom.agBrand.value || null, color_id: dom.agColor.value || null,
     defect_ids: defectIds, remarks: dom.agRemarks.value,
+    packaging_style: isWeight ? null : (document.getElementById('agPackaging').value || null),
   });
   agModal.hide();
   renderCart();
@@ -747,6 +841,7 @@ function saveItems() {
       order_id: ORDER_ID, garment_id: item.garment_id, service_id: item.service_id,
       quantity: item.quantity, weight: item.weight, rate_override: item.rate_override, manual_override: !!item.manual_override,
       brand_id: item.brand_id, color_id: item.color_id, defect_ids: item.defect_ids, remarks: item.remarks,
+      packaging_style: item.packaging_style,
     }).then(function (res) {
       if (!res.success) errors.push(item.garment_name + ': ' + (res.errors || ['Could not add.']).join(' '));
       next();

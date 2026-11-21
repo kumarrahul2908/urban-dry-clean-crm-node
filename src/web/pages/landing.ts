@@ -50,6 +50,16 @@ export function registerLandingPages(app: FastifyInstance) {
         <i class="fa-solid fa-calendar-day"></i>
         <span>Daily dashboard</span>
       </a>
+      <a href="${u('modules/orders/challan_list.php')}" class="udc-action">
+        <i class="fa-solid fa-file-lines"></i>
+        <span>Challans</span>
+      </a>
+      <!-- Rahul: "Whatsapp wala web me bhi bana do" -- matches the Android home banner's
+           WhatsApp quick-access tile added alongside Daily dashboard/Challans there. -->
+      <a href="${u('modules/whatsapp/messages_list.php')}" class="udc-action">
+        <i class="fa-brands fa-whatsapp"></i>
+        <span>WhatsApp</span>
+      </a>
     </div>
     <p class="udc-secondary">
       Looking for sales figures and order analytics?

@@ -21,11 +21,14 @@ describe.skipIf(!PHP_APP)('barcode/QR SVG: Node port is byte-identical to the PH
       if (got !== php[i]) { const k = [...got].findIndex((ch, j) => ch !== php[i]![j]); throw new Error(`${JSON.stringify(a)} differs at ${k}: node ${got.slice(k - 50, k + 30)} php ${php[i]!.slice(k - 50, k + 30)}`); }
     });
   });
-  it('QR (versions 1-9)', () => {
-    const values = ['x', 'https://example.test/track.php?t=abcdef0123456789abcdef0123456789', 'UDC-20260101-0001', 'a'.repeat(17), 'a'.repeat(18), 'b'.repeat(32), 'c'.repeat(33), 'd'.repeat(53), 'e'.repeat(54), 'f'.repeat(78), 'g'.repeat(106), 'h'.repeat(134), 'i'.repeat(154), 'j'.repeat(192), 'k'.repeat(230), 'é€ünï', 'https://example.test/track.php?t=' + 'f'.repeat(64)];
-    for (let i = 0; i < 25; i++) values.push(Array.from({ length: 1 + Math.floor(Math.random() * 120) }, () => String.fromCharCode(33 + Math.floor(Math.random() * 90))).join(''));
+  it('QR (versions 1-5, up to 106 bytes)', () => {
+    const values = ['x', 'https://example.test/track.php?t=abcdef0123456789abcdef0123456789', 'UDC-20260101-0001', 'A0026-01', 'a'.repeat(17), 'a'.repeat(18), 'b'.repeat(32), 'c'.repeat(33), 'd'.repeat(53), 'e'.repeat(54), 'f'.repeat(78), 'g'.repeat(106), 'é€ünï', 'https://example.test/track.php?t=' + 'f'.repeat(64)];
+    for (let i = 0; i < 25; i++) values.push(Array.from({ length: 1 + Math.floor(Math.random() * 106) }, () => String.fromCharCode(33 + Math.floor(Math.random() * 90))).join(''));
     const args = values.flatMap((v) => [[v, 260], [v, 180], [v, 200]] as [string, number][]);
     const php = run('QrEncoder', 'QrEncoder', args);
     args.forEach((a, i) => expect(qrSvg(a[0], a[1])).toBe(php[i]));
+  });
+  it('QR: content longer than version 5 is refused (versions 6-9 never worked and were removed in PHP)', () => {
+    expect(() => qrSvg('h'.repeat(107))).toThrow(/1-5, max 106 bytes/);
   });
 });

@@ -153,3 +153,33 @@ Not verified against PHP: whether `laundry_orders_create.php` ever accepted a st
 could not be checked (`add_repo` for the backup repo was denied this session). The fix is additive-only and carries no
 regression risk for the common case — `resolveAuthorizedStoreId` ignores the new parameter entirely once a user has a
 fixed `store_id`, which is unchanged by this fix either way.
+
+## Changelog 2026-10-31..11-21 (live PHP CRM) — ported 21 Nov 2026
+
+Source of truth for this port is the PHP repository's git history (50 commits after `395ec82`), **not** the hand-written change list: that
+list is a subset (it misses the Challan module, Orders List overhaul, POS packaging, Customer Returns text…). Every item below has a
+PHP ↔ Node test against the real PHP code (`PARITY_PHP_APP=/tmp/php-parity`, see `scripts/make-php-parity-app.sh`).
+
+| Area | Node | Test |
+|---|---|---|
+| Orders list (date mode, per page, quick ranges, totals row), order view / edit pages, change customer, garment edit in place + "print tags again" notice, Packaging per garment, due-date search | `web/pages/orders.ts`, `orderEditItem.ts`, `services/orderService.ts` (`updateItem`, `syncItemTags`, `changeOrderCustomer`), mobile `orders.ts` | `web-orders`, `orders.integration`, `endpoint-parity` |
+| Short order code everywhere (search + display: QC, packing, pickup, delivery, workshop, payments, notifications, WhatsApp texts…) | the same SQL (`COALESCE(o.short_order_code, o.order_number)`) in every page / service / mobile route | `web-ops`, `web-accounts`, `web-misc`, `web-workshop`, `endpoint-parity` |
+| Delivery/pickup eligibility: a fully **Packed** order whose other garments are already Delivered | `item_status NOT IN ('Packed','Delivered') AND EXISTS (… 'Packed')` in `ops.ts`, `delivery.ts`, mobile `fulfillment.ts` | `web-ops` |
+| POS Packaging radios (None / Fold / Hanger / Half Fold / Hanger + Fold) | `web/pages/pos.ts`, `pos.static.ts` | `web-accounts` |
+| Order photos: view-only on the order page, delete only in Admin → Order Photos | `adminOrderPhotos.ts`, `api/order_photo_delete` (admin.settings) | `web-apimisc` |
+| QR encoder fix | `lib/qrEncoder.ts` | `barcode-svg.test.ts` (byte-identical to PHP) |
+| **MySQL session time zone = IST** (`SET time_zone='+05:30'` on every connection, PHP `config/database.php`) | `db/pool.ts` (`connection` hook); `scripts/make-php-parity-app.sh` does the same for the PHP side | all DB tests |
+| Reports: **Delivered Orders** table + CSV | `web/pages/reports.ts`, regenerated `tpl/reports_index.ts` (`scripts/gen-tpl.extra.sh`) | `web-reports` |
+| **Challans** (single order, combined summary / order-wise, **Delivery challan**), list, reports, saved WhatsApp numbers, PDF viewer, delete + send APIs; mobile `challan_*` | `web/pages/challans.ts`, `services/challanPdf.ts` (FPDF-compatible), `routes/mobile/challans.ts`; live-only tables `challans`/`challan_orders` recreated by migration | `web-challan` (HTML, DB state **and PDF page content streams byte-for-byte** in every format), `endpoint-parity-new` |
+| **Workshop**: Send Report shows Packaging + Defects, billing period presets (this/last month, last completed half-month), invoice PDF (`services/workshopBillPdf.ts`, byte-identical streams), "Send invoice on WhatsApp", `bill_pdf.php`, mobile `workshop_billing_pdf` / `_send_whatsapp` | `web/pages/workshop*.ts`, `workshopBillPdf.ts` | `web-workshop`, `endpoint-parity-new` |
+| **Customer Returns** (register a return of a delivered order → rework pipeline, reasons admin, returns table + CSV, mobile `order_return` / `returns_list`) | `services/returnService.ts`, `web/pages/customerReturns.ts`, `routes/mobile/returns.ts` | `web-returns`, `endpoint-parity-new` |
+| **WhatsApp two-way log** (`whatsapp_messages`: every send, inbound reply/media/reaction, call events, delivery status), thread + list pages, attachments, media streaming, rewritten webhook (token from the `whatsapp_webhook_verify_token` setting; signature against the active account) | `services/whatsappService.ts`, `routes/whatsappWebhook.ts`, `web/pages/waChat.ts`, `routes/mobile/whatsappChat.ts` (live-only table recreated by migration) | `web-wachat`, `whatsapp.test.ts`, `endpoint-parity-new` |
+| WhatsApp **bulk campaigns + self-service Meta templates** (create → submit → sync status → queue per customer), challan / workshop-invoice **document templates** (`submit…Template`), caller lookup API | `whatsappService.ts`, `whatsapp/provider.ts` (`createDocumentTemplate`, `createTextTemplate`, `listTemplateStatuses`) | `web-wachat` (no-account paths against PHP), `endpoint-parity-new`; the Meta calls themselves are not testable offline |
+| **Firebase push** (FCM v1, service account encrypted in `settings`), `fcm_register`, settings page | `services/firebaseService.ts`, `web/pages/waChat.ts`, `routes/mobile/whatsappChat.ts` (live-only `fcm_tokens` table recreated by migration) | `web-wachat` (page + actions), `endpoint-parity-new` |
+
+### Deliberate differences from the live PHP (Node is right, PHP has a bug)
+* `api/mobile/workshop_queue.php`: `defect_names` is **always `[]`** in PHP — its `array_map(function ($r) { … $pieceDefectsByItem[…] })` closure has no `use ($pieceDefectsByItem)`. Node returns the real names. The parity test does not compare that key. (PHP fix: `use ($pieceDefectsByItem)` or an arrow function.)
+
+### Known follow-ups
+* `format_date()` still converts full datetimes from UTC to the display zone (unchanged in PHP). Since the connection is now IST, values written after 21 Nov are shifted twice by every page that uses it; pages that use PHP's own `date()` (e.g. the Delivered Orders report) are right. Fix in both apps together (`wallDate()` in `web/format.ts` is the "no conversion" helper).
+* The six failures that were red before this port (laundry-rate server-side resolution, see "Backend fixes 2026-11-01") are unchanged: `parity.test.ts` ×3, `endpoint-parity.test.ts` ×3.

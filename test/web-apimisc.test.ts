@@ -11,8 +11,8 @@ describe.skipIf(!webEnabled)('remaining web api/*.php: PHP ↔ Node parity', () 
   const write = writeCompare(h.db, h.env.APP_URL);
   const j = { jsonBody: true, sortRows: true };
   const prepare = async (db: Db) => {
-    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('whatsapp.settings','x'),('billing.view','x'),('orders.edit','x'),('accounts.view','x'),('garment_tags.view','x')");
-    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('whatsapp.settings','billing.view','orders.edit','accounts.view','garment_tags.view') WHERE r.id IN (1,3,4)");
+    await db.execute("INSERT IGNORE INTO permissions (permission_key, module) VALUES ('whatsapp.settings','x'),('billing.view','x'),('orders.edit','x'),('accounts.view','x'),('garment_tags.view','x'),('admin.settings','x')");
+    await db.execute("INSERT IGNORE INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('whatsapp.settings','billing.view','orders.edit','accounts.view','garment_tags.view','admin.settings') WHERE r.id IN (1,3,4)");
   };
   const asBoss = async () => { const c = await login('boss'); await c.php.get('/modules/dashboard/landing.php'); await c.node.get('/modules/dashboard/landing.php'); return c; };
   const get = (path: string) => (c: Client) => c.get(path);

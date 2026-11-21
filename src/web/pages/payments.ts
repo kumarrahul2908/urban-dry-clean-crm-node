@@ -4,6 +4,7 @@ import { WebText, forbiddenPage, webPage, type WebCtx } from '../context.js';
 import { flt, httpBuildQuery, int, numberFormat } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
+import { getSetting } from '../../services/settings.js';
 
 type Row = Record<string, any>;
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -42,9 +43,9 @@ export function registerPaymentPages(app: FastifyInstance) {
     if (dateFrom !== '') { where.push('p.payment_date >= ?'); params.push(`${dateFrom} 00:00:00`); }
     if (dateTo !== '') { where.push('p.payment_date <= ?'); params.push(`${dateTo} 23:59:59`); }
     if (search !== '') {
-      where.push('(o.order_number LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
+      where.push('(o.order_number LIKE ? OR o.short_order_code LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
       const like = `%${search}%`;
-      params.push(like, like, like, like);
+      params.push(like, like, like, like, like);
     }
     if (paymentTypeId) { where.push('EXISTS (SELECT 1 FROM payment_transactions ptf WHERE ptf.payment_id = p.id AND ptf.payment_type_id = ?)'); params.push(paymentTypeId); }
     const whereSql = where.join(' AND ');
@@ -53,7 +54,7 @@ export function registerPaymentPages(app: FastifyInstance) {
     const totalPages = Math.max(1, Math.ceil(total / perPage));
     const offset = (page - 1) * perPage;
     const payments = await db.query<Row>(
-      `SELECT DISTINCT p.id, p.payment_number, p.order_id, o.order_number, c.full_name AS customer_name,
+      `SELECT DISTINCT p.id, p.payment_number, p.order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, c.full_name AS customer_name,
        p.payment_date, p.total_amount, p.payment_kind, p.remarks, u.full_name AS created_by_name
        FROM payments p LEFT JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = p.customer_id
        LEFT JOIN payment_transactions pt ON pt.payment_id = p.id LEFT JOIN users u ON u.id = p.created_by
@@ -148,7 +149,7 @@ export function registerPaymentPages(app: FastifyInstance) {
     const totalPages = Math.max(1, Math.ceil(total / perPage));
     const offset = (page - 1) * perPage;
     const txns = await db.query<Row>(
-      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, o.order_number,
+      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, COALESCE(o.short_order_code, o.order_number) AS order_number,
        wt.txn_type, wt.debit, wt.credit, wt.balance_after, wt.remarks, wt.payment_mode, wt.created_at, u.full_name AS created_by_name
        FROM wallet_transactions wt JOIN customers c ON c.id = wt.customer_id LEFT JOIN orders o ON o.id = wt.order_id LEFT JOIN users u ON u.id = wt.created_by
        WHERE ${whereSql} ORDER BY wt.created_at DESC, wt.id DESC LIMIT ${perPage} OFFSET ${offset}`, params);
@@ -264,13 +265,23 @@ export function registerPaymentPages(app: FastifyInstance) {
         : await orders.createOrder(body, actor, canOverrideDiscount, store.store_id, ctx.can('pos.manual_rate_override'));
       if (!result.success) return json({ success: false, errors: result.errors }, 422);
 
-      // The customer's WhatsApp confirmation is queued automatically (direct Meta send) inside the order service, so there is no manual
-      // wa.me pre-fill any more. short_order_code is only mirrored back for the New Order screen's own UI.
-      const shortRow = (await db.query<Row>('SELECT short_order_code FROM orders WHERE id = ?', [result.order_id]))[0];
-      const shortOrderCode = shortRow?.short_order_code || null;
+      // The automated direct-Meta confirmation is queued inside the order service; on top of that the manual wa.me pop-up tab is back
+      // (plain URL, no enqueue). Built from the SAVED order, never from client-submitted values.
+      const info = (await db.query<Row>(
+        `SELECT o.short_order_code, o.order_number, o.grand_total, o.due_date, c.full_name, c.mobile
+         FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?`, [result.order_id]))[0];
+      const shortOrderCode = info?.short_order_code || null;
+      let whatsappUrl: string | null = null;
+      if (info && info.mobile) {
+        const shopName = (await getSetting(db, 'business_name', ctx.svc.env.APP_NAME)) ?? '';
+        const message = `Dear ${info.full_name}, thank you for your order. Your order number ${shortOrderCode ?? info.order_number} with Amount `
+          + `${numberFormat(flt(info.grand_total), 2)}, is expected to be ready on ${ctx.date(info.due_date)}. Thanks ${shopName}.`;
+        whatsappUrl = 'https://wa.me/' + String(info.mobile).replace(/\D+/g, '') + '?text=' + rawurlencode(message);
+      }
       const out: Row = { success: true, order_id: result.order_id, order_number: shortOrderCode ?? result.order_number };
       if (!laundry) out.invoice_number = result.invoice_number;
       out.grand_total = result.grand_total;
+      out.whatsapp_url = whatsappUrl;
       out.warnings = result.warnings;
       return json(out);
     });

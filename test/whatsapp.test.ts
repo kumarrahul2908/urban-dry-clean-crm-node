@@ -102,6 +102,9 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
     async sendMedia(...a) { sent.push({ kind: 'media', args: a.slice(1) }); return outcome; },
     async uploadMedia(_c, path, mime) { sent.push({ kind: 'upload', args: [existsSync(path), mime] }); return { success: true, media_id: 'media-1', error: null }; },
     async testConnection() { return { success: true, error: null }; },
+    async createDocumentTemplate() { return { success: true, status: 'PENDING', error: null }; },
+    async createTextTemplate() { return { success: true, status: 'PENDING', id: 't1', error: null }; },
+    async listTemplateStatuses() { return { success: true, templates: {}, error: null }; },
   };
   const pdfDir = mkdtempSync(join(tmpdir(), 'wa-pdf-'));
   let pdfPath = '';
@@ -201,49 +204,68 @@ describe.skipIf(!enabled)('WhatsApp queue, webhook, invoice (real MariaDB schema
     expect(sent).toHaveLength(0);
   });
 
-  it('webhook: verification handshake', async () => {
+  it('webhook: verification handshake (generated whatsapp_webhook_verify_token setting)', async () => {
+    await db.execute("INSERT INTO settings (setting_key, setting_value) VALUES ('whatsapp_webhook_verify_token', 'verify-me') ON DUPLICATE KEY UPDATE setting_value = 'verify-me'");
     const ok = await app.inject({ method: 'GET', url: '/api/whatsapp_webhook?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=CH123' });
     expect(ok.statusCode).toBe(200);
     expect(ok.body).toBe('CH123');
     expect((await app.inject({ method: 'GET', url: '/api/whatsapp_webhook.php?hub_mode=subscribe&hub_verify_token=verify-me&hub_challenge=7' })).body).toBe('7');
-    expect((await app.inject({ method: 'GET', url: '/api/whatsapp_webhook?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=CH' })).statusCode).toBe(403);
-    expect((await app.inject({ method: 'GET', url: '/api/whatsapp_webhook?hub.mode=subscribe&hub.verify_token=verify-me' })).statusCode).toBe(403);
+    const bad = await app.inject({ method: 'GET', url: '/api/whatsapp_webhook?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=CH' });
+    expect(bad.statusCode).toBe(403);
+    expect(bad.body).toBe('Verification failed.');
+    expect((await app.inject({ method: 'GET', url: '/api/whatsapp_webhook?hub.mode=other&hub.verify_token=verify-me&hub.challenge=CH' })).statusCode).toBe(403);
   });
 
   const hook = (payload: string, secret: string | null = SECRET) =>
     app.inject({ method: 'POST', url: '/api/whatsapp_webhook', headers: { 'content-type': 'application/json', ...(secret ? { 'x-hub-signature-256': `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}` } : {}) }, payload });
 
-  it('webhook: rejects bad / missing signatures, malformed JSON', async () => {
+  it('webhook: rejects bad / missing signatures; any signed body gets 200 OK', async () => {
     const body = JSON.stringify({ entry: [] });
-    expect((await hook(body, 'other-secret')).statusCode).toBe(403);
+    const bad = await hook(body, 'other-secret');
+    expect(bad.statusCode).toBe(403);
+    expect(bad.body).toBe('Invalid signature.');
     expect((await hook(body, null)).statusCode).toBe(403);
-    expect((await hook('not json')).statusCode).toBe(400);
-    expect((await hook('[1,2]')).statusCode).toBe(400);
-    expect((await hook(body)).statusCode).toBe(200);
+    expect((await hook('not json')).statusCode).toBe(200);
+    expect((await hook('[1,2]')).statusCode).toBe(200);
+    const ok = await hook(body);
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body).toBe('OK');
   });
 
-  it('webhook: status updates only move forward; inbound messages are logged once and matched to the customer', async () => {
-    await wa.enqueue(1, null, '9999999999', 'order_ready', {}, 'r1');
-    await wa.processQueueBatch(); // → Sent, provider id wamid.X
-    const status = (s: string) => JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.X', status: s }] } }] }] });
-    expect((await hook(status('read'))).statusCode).toBe(200);
-    expect((await queue())[0].status).toBe('Read');
-    await hook(status('delivered')); // older than Read → ignored
-    expect((await queue())[0].status).toBe('Read');
-    await hook(status('bogus'));
-    expect((await queue())[0].status).toBe('Read');
+  it('webhook: messages, reactions, calls and statuses land in whatsapp_messages', async () => {
+    await db.execute("INSERT INTO whatsapp_messages (phone_number, customer_id, direction, message_type, message_text, provider_message_id, status) VALUES ('919999999999', 1, 'outbound', 'text', 'hi', 'wamid.OUT', 'sent')");
+    const status = (s: string) => JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.OUT', status: s }] } }] }] });
+    await hook(status('delivered'));
+    expect((await db.query<any>("SELECT status FROM whatsapp_messages WHERE provider_message_id = 'wamid.OUT'"))[0].status).toBe('delivered');
+    await hook(status('read'));
+    expect((await db.query<any>("SELECT status FROM whatsapp_messages WHERE provider_message_id = 'wamid.OUT'"))[0].status).toBe('read');
 
     const inbound = JSON.stringify({ entry: [{ changes: [{ value: { messages: [
       { from: '919999999999', id: 'wamid.IN1', type: 'text', text: { body: 'hello' } },
-      { from: '15550001111', id: 'wamid.IN2', type: 'image' },
-      { from: '', id: 'wamid.IN3' }] } }] }] });
+      { from: '15550001111', id: 'wamid.IN2', type: 'image', image: { id: '555', caption: 'pic' } },
+      { from: '919999999999', id: 'wamid.IN3', type: 'reaction', reaction: { message_id: 'wamid.OUT', emoji: '👍' } },
+      { from: '', id: 'wamid.IN4' }] } }] }] });
     await hook(inbound);
-    await hook(inbound);
-    const rows = await db.query<any>("SELECT customer_id, recipient, message, direction, provider FROM notification_logs WHERE direction = 'Inbound' ORDER BY id");
+    const rows = await db.query<any>("SELECT phone_number, customer_id, direction, message_type, message_text, media_url, provider_message_id, status FROM whatsapp_messages WHERE direction = 'inbound' ORDER BY id");
     expect(rows).toEqual([
-      { customer_id: 1, recipient: '919999999999', message: 'hello', direction: 'Inbound', provider: 'meta' },
-      { customer_id: null, recipient: '15550001111', message: '[image message]', direction: 'Inbound', provider: 'meta' },
+      { phone_number: '919999999999', customer_id: 1, direction: 'inbound', message_type: 'text', message_text: 'hello', media_url: null, provider_message_id: 'wamid.IN1', status: 'received' },
+      { phone_number: '15550001111', customer_id: null, direction: 'inbound', message_type: 'image', message_text: 'pic', media_url: '555', provider_message_id: 'wamid.IN2', status: 'received' },
+      { phone_number: '919999999999', customer_id: 1, direction: 'inbound', message_type: 'reaction', message_text: '👍', media_url: 'wamid.OUT', provider_message_id: 'wamid.IN3', status: 'received' },
     ]);
+    // a new reaction from the same phone to the same message REPLACES the old one; an empty emoji removes it
+    const react = (emoji: string, id: string) => JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ from: '919999999999', id, type: 'reaction', reaction: { message_id: 'wamid.OUT', emoji } }] } }] }] });
+    await hook(react('❤️', 'wamid.IN5'));
+    expect((await db.query<any>("SELECT message_text FROM whatsapp_messages WHERE message_type = 'reaction'")).map((r) => r.message_text)).toEqual(['❤️']);
+    await hook(react('', 'wamid.IN6'));
+    expect(await db.query("SELECT 1 FROM whatsapp_messages WHERE message_type = 'reaction'")).toHaveLength(0);
+
+    // calls: one row per call id, updated in place (ringing -> ended)
+    const call = (c: object) => JSON.stringify({ entry: [{ changes: [{ value: { calls: [c] } }] }] });
+    await hook(call({ id: 'call1', event: 'connect', from: '919999999999' }));
+    await hook(call({ id: 'call1', event: 'terminate', from: '919999999999', status: 'COMPLETED', duration: 135 }));
+    expect(await db.query<any>("SELECT direction, message_text, status FROM whatsapp_messages WHERE message_type = 'call'")).toEqual([{ direction: 'inbound', message_text: '📞 WhatsApp call · 2:15', status: 'ended' }]);
+    await hook(call({ id: 'call2', event: 'terminate', from: '919999999999', status: 'MISSED' }));
+    expect((await db.query<any>("SELECT message_text FROM whatsapp_messages WHERE provider_message_id = 'call2'"))[0].message_text).toBe('📵 Missed WhatsApp call');
   });
 
   it('sendInvoice: template mode with header document, deletes the temp PDF, logs it', async () => {

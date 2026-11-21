@@ -39,7 +39,7 @@ export class QcService {
     try {
       garment = await this.db.tx(async (t) => {
         const [g] = await t.query<Raw>(
-          `SELECT lg.id, lg.order_item_id, oi.order_id, os.status_key AS order_status_key, o.customer_id, o.order_number, g.garment_name
+          `SELECT lg.id, lg.order_item_id, oi.order_id, os.status_key AS order_status_key, o.customer_id, COALESCE(o.short_order_code, o.order_number) AS order_number, g.garment_name
            FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id
            JOIN order_statuses os ON os.id = o.status_id JOIN garments g ON g.id = lg.garment_id WHERE lg.id = ? FOR UPDATE`, [laundryGarmentId]);
         if (!g) throw new BusinessError('Laundry garment not found.');
@@ -72,7 +72,7 @@ export class QcService {
     try {
       item = await this.db.tx(async (t) => {
         const [it] = await t.query<Raw>(
-          `SELECT oi.item_status, oi.order_id, os.status_key AS order_status_key, o.customer_id, o.order_number, g.garment_name
+          `SELECT oi.item_status, oi.order_id, os.status_key AS order_status_key, o.customer_id, COALESCE(o.short_order_code, o.order_number) AS order_number, g.garment_name
            FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN garments g ON g.id = oi.garment_id
            WHERE oi.id = ? FOR UPDATE`, [orderItemId]);
         if (!it) throw new BusinessError('Garment/order item not found.');

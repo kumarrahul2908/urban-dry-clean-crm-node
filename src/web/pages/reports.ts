@@ -72,17 +72,33 @@ export function registerReportPages(app: FastifyInstance) {
     const overdueCount = Number((await one(`SELECT COUNT(DISTINCT o.id) AS n FROM orders o JOIN order_statuses os ON os.id = o.status_id WHERE os.status_key NOT IN ('delivered','cancelled') AND o.due_date < CURDATE()${sfSql}`, sfParams)).n);
     const urgentCount = Number((await one(`SELECT COUNT(DISTINCT o.id) AS n FROM orders o JOIN order_statuses os ON os.id = o.status_id WHERE os.status_key NOT IN ('delivered','cancelled') AND o.urgent_level_id IS NOT NULL${sfSql}`, sfParams)).n);
 
+    // ---------- DELIVERED ORDERS LIST (Rahul, 20 Nov 2026) ----------
+    // Delivery date = latest 'Delivered' garment-history stamp (written by both the delivery-boy flow
+    // and counter pickup), falling back to orders.updated_at for orders that have no history rows
+    // (e.g. imported ones) -- same fallback the dashboard's "delivered today" figure uses.
+    const deliveredOrders = await db.query<Row>(
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, c.full_name, c.mobile, o.order_mode,
+       o.grand_total, o.current_due,
+       COALESCE((SELECT MAX(h.changed_at) FROM garment_status_history h JOIN order_items i ON i.id = h.order_item_id
+                 WHERE i.order_id = o.id AND h.new_status = 'Delivered'), o.updated_at) AS delivered_on
+       FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id
+       WHERE os.status_key = 'delivered'${sfSql}
+       HAVING DATE(delivered_on) BETWEEN ? AND ?
+       ORDER BY delivered_on DESC LIMIT 1000`, [...sfParams, dateFrom, dateTo]);
+    const deliveredTotal = phpRound(deliveredOrders.reduce((a, d) => a + toFloat(d.grand_total), 0), 2);
+
     if ('export' in q) {
       const exportType = clean(q.export);
       const dl = (name: string, headers: string[], rows: unknown[][]) => new WebText(csvBody(headers, rows), 200, 'text/csv; charset=utf-8', { 'Content-Disposition': `attachment; filename="${name}"` });
       if (exportType === 'garments') return dl(`garment_report_${dateFrom}_${dateTo}.csv`, ['Garment', 'Item Count', 'Revenue'], byGarment.map((g) => [g.garment_name, g.item_count, g.revenue]));
+      if (exportType === 'delivered') return dl(`delivered_orders_${dateFrom}_${dateTo}.csv`, ['Order', 'Customer', 'Mobile', 'Type', 'Delivered On', 'Order Amount', 'Due'], deliveredOrders.map((d) => [d.order_number, d.full_name, d.mobile, d.order_mode === 'weight' ? 'Laundry' : 'Dry Cleaning', d.delivered_on, d.grand_total, d.current_due]));
       if (exportType === 'customers') return dl(`customer_report_${dateFrom}_${dateTo}.csv`, ['Customer', 'Mobile', 'Orders', 'Revenue', 'Outstanding'], topCustomers.map((c) => [c.full_name, c.mobile, c.order_count, c.revenue, c.outstanding]));
     }
 
     const exportQs = (type: string) => httpBuildQuery({ ...q, export: type });
     const h = await tplHelpers(ctx, { exportQs });
     return layout(ctx, { title: 'Reports' }, raw(tplReportsIndex({
-      advanceDeposits, byGarment, byService, byStatus, collections, dateFrom, dateTo, newCustomers, op, orderStats, overdueCount, paidStatus, qcResult, returningCustomers, topCustomers, totalCollected, totalRefunded, urgentCount,
+      advanceDeposits, byGarment, byService, byStatus, collections, dateFrom, dateTo, deliveredOrders, deliveredTotal, newCustomers, op, orderStats, overdueCount, paidStatus, qcResult, returningCustomers, topCustomers, totalCollected, totalRefunded, urgentCount,
     }, h)));
   });
 }
