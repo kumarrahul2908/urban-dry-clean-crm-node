@@ -4,6 +4,12 @@ import type { Db } from '../src/db/pool.js';
 import { noopOrderHooks } from '../src/services/hooks.js';
 import { writeCompare } from './web/dbstate.js';
 import { expectSameHtml, webEnabled, webHarness, type Client } from './web/harness.js';
+import { pdfFonts, pdfStreams } from './web/pdfStreams.js';
+import { WorkshopBillPdfService } from '../src/services/workshopBillPdf.js';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.setConfig({ testTimeout: 240_000 });
 
@@ -234,6 +240,24 @@ describe.skipIf(!webEnabled)('workshop pages: PHP ↔ Node parity', () => {
     await write('orphan generate', orphan.php, orphan.node, post({ action: 'generate', store_id: 'all', workshop_id: '1', from: day(6), to: day(0), invoice_date: day(0) }), o);
     const viewer = await login('nobody');
     await write('viewer cannot manage', viewer.php, viewer.node, post({ action: 'void', bill_id: String(bills[0].id), reason: 'abc' }), o);
+
+    // Invoice PDF: real PHP WorkshopBillPdfService ↔ Node port, page content streams byte-for-byte (incl. the VOID watermark).
+    const all = await h.db.query<any>('SELECT id FROM workshop_bills ORDER BY id');
+    expect(all.length).toBeGreaterThan(0);
+    for (const bill of all) {
+      const dir = mkdtempSync(join(tmpdir(), 'wbill-'));
+      const phpFile = join(dir, 'php.pdf');
+      execFileSync('php', [`${process.env.PARITY_PHP_APP}/workshop_bill.php`, phpFile, String(bill.id)], {
+        env: { ...process.env, UDC_DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1', UDC_DB_PORT: process.env.TEST_DB_PORT ?? '3306', UDC_DB_NAME: process.env.TEST_DB_NAME ?? '', UDC_DB_USER: process.env.TEST_DB_USER ?? '', UDC_DB_PASS: process.env.TEST_DB_PASS ?? '' },
+      });
+      const r = await new WorkshopBillPdfService(h.db).generate(bill.id);
+      expect(r.success, `bill ${bill.id}`).toBe(true);
+      const node = readFileSync(r.file_path!), php = readFileSync(phpFile);
+      const a = pdfStreams(node), b = pdfStreams(php);
+      expect(a.length, `bill ${bill.id} pages`).toBe(b.length);
+      a.forEach((st, i) => expect(st, `bill ${bill.id} page ${i + 1}`).toBe(b[i]));
+      expect(pdfFonts(node)).toEqual(pdfFonts(php));
+    }
   });
 
   /**

@@ -91,7 +91,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
     const params: unknown[] = [];
     if (myWs !== null) { where += ' AND wc.workshop_id = ?'; params.push(myWs); }
     if (statusFilter !== '') { where += ' AND oi.item_status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') {
       if (myWs !== null) { where += ' AND c.full_name LIKE ?'; params.push(`%${customerSearch}%`); }
       else { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
@@ -362,7 +362,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
               ${laundryPending.map((lg) => html`
                 <tr>
                   <td data-label=""><input type="checkbox" name="laundry_garment_ids[]" value="${lg.id}" class="lg-row-check ws-check-box"></td>
-                  <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.order_number}</a></td>
+                  <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.short_order_code ?? lg.order_number}</a></td>
                   <td class="udc-card-head">${lg.customer_name}</td>
                   <td data-label="Sequence"><span class="ws-seq">${int(lg.sequence)}/${int(lg.total_garments)}</span></td>
                   <td data-label="Garment"><a href="${u('modules/barcode/garment_detail.php?laundry_garment_id=' + lg.id)}">${lg.garment_name}</a></td>
@@ -381,7 +381,7 @@ export function registerWorkshopIndexPage(app: FastifyInstance) {
             <tbody>
             ${laundryInProgress.map((lg) => html`
               <tr>
-                <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.order_number}</a></td>
+                <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.short_order_code ?? lg.order_number}</a></td>
                 <td class="udc-card-head">${lg.customer_name}</td>
                 <td data-label="Sequence"><span class="ws-seq">${int(lg.sequence)}/${int(lg.total_garments)}</span></td>
                 <td data-label="Garment"><a href="${u('modules/barcode/garment_detail.php?laundry_garment_id=' + lg.id)}">${lg.garment_name}</a></td>

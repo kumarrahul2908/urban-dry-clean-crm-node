@@ -86,6 +86,12 @@ function partsInTz(ms: number, tz: string): Parts {
   return { y: +o.year!, m: +o.month!, d: +o.day!, h: +o.hour! % 24, i: +o.minute!, s: +o.second!, dow };
 }
 
+/** date($fmt, strtotime($v)) for a DB wall-clock string: formatted AS-IS in the app timezone, no UTC->tz shift (unlike format_date). */
+export function wallDate(fmt: string, v: unknown): string {
+  const p = partsFromUtcString(String(v ?? '').trim());
+  return p ? phpDate(fmt, p) : '';
+}
+
 /** format_date($v, $fmt): '' for empty/zero dates. */
 export function formatDate(v: unknown, tz: string, fmt = 'd-M-Y'): string {
   if (v === null || v === undefined || v === '' || v === 0 || v === '0') return '';

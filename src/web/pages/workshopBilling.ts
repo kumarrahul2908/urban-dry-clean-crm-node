@@ -45,9 +45,30 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
     const today = ctx.today;
     const u = (p: string) => ctx.baseUrl(p);
     const parseStore = (r: string): [boolean, number] => (r === 'all' ? [true, 0] : [false, int(r)]);
+    const firstOfLastMonth = (d: string): string => {
+      const y = parseInt(d.slice(0, 4), 10), m = parseInt(d.slice(5, 7), 10);
+      const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+      return `${String(py).padStart(4, '0')}-${String(pm).padStart(2, '0')}-01`;
+    };
+    const lastDayOfMonth = (first: string): string => {
+      const y = parseInt(first.slice(0, 4), 10), m = parseInt(first.slice(5, 7), 10);
+      return `${first.slice(0, 8)}${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+    };
     const resolvePeriod = (period: string, cf: string, ct: string): [string, string | null, string | null] => {
       if (period === '15days') return ['15days', addDays(today, -14), today];
       if (period === '30days') return ['30days', addDays(today, -29), today];
+      if (period === 'month') return ['month', today.slice(0, 8) + '01', today];
+      if (period === 'lastmonth') {
+        const first = firstOfLastMonth(today);
+        return ['lastmonth', first, lastDayOfMonth(first)];
+      }
+      if (period === 'half') {
+        // Most recent COMPLETED half-month: from the 16th on = 1st-15th of this month,
+        // otherwise 16th-end of last month.
+        if (parseInt(today.slice(8, 10), 10) >= 16) return ['half', today.slice(0, 8) + '01', today.slice(0, 8) + '15'];
+        const first = firstOfLastMonth(today);
+        return ['half', first.slice(0, 8) + '16', lastDayOfMonth(first)];
+      }
       if (period === 'custom') {
         const ok = /^\d{4}-\d{2}-\d{2}$/.test(cf) && /^\d{4}-\d{2}-\d{2}$/.test(ct) && !Number.isNaN(Date.parse(cf)) && !Number.isNaN(Date.parse(ct)) && cf <= ct;
         return ok ? ['custom', cf, ct] : ['custom', null, null];
@@ -237,6 +258,9 @@ export function registerWorkshopBillingPage(app: FastifyInstance) {
             <option value="week" ${sel(selPeriod === 'week')}>This Week (last 7 days)</option>
             <option value="15days" ${sel(selPeriod === '15days')}>Last 15 Days</option>
             <option value="30days" ${sel(selPeriod === '30days')}>Last 30 Days</option>
+            <option value="month" ${sel(selPeriod === 'month')}>This Month (1st to today)</option>
+            <option value="lastmonth" ${sel(selPeriod === 'lastmonth')}>Last Month (full month)</option>
+            <option value="half" ${sel(selPeriod === 'half')}>Last completed half-month (1&ndash;15 / 16&ndash;end)</option>
             <option value="custom" ${sel(selPeriod === 'custom')}>Custom dates</option>
           </select>
         </div>

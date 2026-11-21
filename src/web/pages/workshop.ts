@@ -381,7 +381,7 @@ ${queue('URGENT WORK', '🚨', urgent, 'No urgent items right now.', 'danger')}$
             <tr>
               <td style="width:36px;"><input type="checkbox" class="item-check" name="laundry_garment_ids[]" value="${lg.id}"></td>
               <td>${lg.garment_name}</td>
-              <td class="text-muted">${lg.order_number ?? ''} — ${lg.customer_name ?? ''}</td>
+              <td class="text-muted">${lg.short_order_code ?? lg.order_number ?? ''} — ${lg.customer_name ?? ''}</td>
             </tr>`)}
           </tbody>
         </table>
@@ -413,12 +413,14 @@ document.getElementById('sendForm')?.addEventListener('submit', function (e) {
     const ph = challanIds.map(() => '?').join(',');
 
     const pieceItems = await db.query<Row>(
-      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, oi.weight, oi.unit, o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, oi.weight, oi.unit, oi.packaging_style,
+       o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
        g.garment_name, s.service_name, s.billing_unit, w.workshop_name, wc.challan_number, wc.challan_date
        FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id JOIN workshops w ON w.id = wc.workshop_id JOIN order_items oi ON oi.id = wi.order_item_id JOIN orders o ON o.id = oi.order_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id WHERE wi.challan_id IN (${ph}) ORDER BY o.id, oi.id`, challanIds);
     const laundryItems = await db.query<Row>(
-      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT wi.id AS workshop_item_id, oi.id AS order_item_id, oi.quantity, oi.packaging_style,
+       o.short_order_code, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name,
        g.garment_name, s.service_name, w.workshop_name, wc.challan_number, wc.challan_date
        FROM workshop_items wi JOIN workshop_challans wc ON wc.id = wi.challan_id JOIN workshops w ON w.id = wc.workshop_id JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id
        JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id WHERE wi.challan_id IN (${ph}) ORDER BY o.id, lg.id`, challanIds);
@@ -445,12 +447,17 @@ document.getElementById('sendForm')?.addEventListener('submit', function (e) {
       ordersGrouped.get(code)!.items.push(r);
     }
 
+    // Rahul: packaging is its own field now (order_items.packaging_style), separate from Defects.
+    const packagingLabels: Record<string, string> = { FOLD: 'Fold', HANGER: 'Hanger', HALF_FOLD: 'Half Fold', HANGER_AND_FOLD: 'Hanger + Fold' };
+    const pkgLabel = (it: Row): string | null => (!phpEmpty(it.packaging_style) && packagingLabels[String(it.packaging_style)] !== undefined ? packagingLabels[String(it.packaging_style)]! : null);
+
     const waLines: string[] = [`*Sent to Workshop: ${workshopName}*`, 'Challan: ' + challanNumbers.join(', '), ''];
     for (const ord of ordersGrouped.values()) {
       waLines.push(`*${ord.code}* — ${ord.customer} (Due: ${ctx.date(ord.due_date, 'd M')})`);
       for (const it of ord.items) {
         const defects = defectsByItem.get(Number(it.order_item_id))?.length ? ` [${defectsByItem.get(Number(it.order_item_id))!.join(', ')}]` : '';
-        waLines.push(`- ${it.garment_name} (${it.service_name})${defects}`);
+        const packaging = pkgLabel(it) !== null ? ` (${pkgLabel(it)})` : '';
+        waLines.push(`- ${it.garment_name} (${it.service_name})${packaging}${defects}`);
       }
       waLines.push('');
     }
@@ -499,13 +506,14 @@ document.getElementById('sendForm')?.addEventListener('submit', function (e) {
   <div class="order-block">
     <div class="order-head"><span>${ord.code} — ${ord.customer}</span><span>Due: ${raw(ctx.date(ord.due_date, 'd M Y'))}${!phpEmpty(ord.due_time) ? raw(', ' + ctx.date(ord.due_time, 'h:i A')) : ''}</span></div>
     <table>
-      <thead><tr><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Hanger/Fold/Remarks</th></tr></thead>
+      <thead><tr><th>Garment</th><th>Service</th><th>Qty/Weight</th><th>Packaging</th><th>Defects</th></tr></thead>
       <tbody>
         ${ord.items.map((it: Row) => html`
         <tr>
           <td>${it.garment_name}</td>
           <td>${it.service_name}</td>
           <td>${it.weight !== undefined && it.weight !== null ? String(it.weight) + ' KG' : String(it.quantity) + ' Pcs'}</td>
+          <td>${pkgLabel(it) ?? '—'}</td>
           <td class="defects">${defectsByItem.get(Number(it.order_item_id))?.join(', ') ?? '—'}</td>
         </tr>`)}
       </tbody>

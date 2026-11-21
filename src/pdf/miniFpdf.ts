@@ -21,8 +21,9 @@ interface FontRef { key: string; index: number; widths: number[]; baseFont: stri
 export class MiniFpdf {
   readonly w = 595.28 / K;
   readonly h = 841.89 / K;
-  private readonly lMargin = 15;
-  private readonly tMargin = 15;
+  private lMargin = 15;
+  private tMargin = 15;
+  private rMargin = 15;
   private readonly cMargin = 28.35 / K / 10;
   private x = 15;
   private y = 15;
@@ -41,6 +42,14 @@ export class MiniFpdf {
   private title = '';
   private author = '';
 
+  /** SetMargins(): left/top/right (FPDF also resets x/y only on the next AddPage, like the original). */
+  setMargins(left: number, top: number, right: number | null = null) {
+    this.lMargin = left; this.tMargin = top; this.rMargin = right ?? left;
+    if (this.pages.length && this.x < left) this.x = left;
+  }
+  getX() { return this.x; }
+  getY() { return this.y; }
+  setX(x: number) { this.x = x >= 0 ? x : this.w + x; }
   setTitle(t: string) { this.title = t; }
   setAuthor(a: string) { this.author = a; }
 
@@ -119,14 +128,24 @@ export class MiniFpdf {
   ln(h?: number) { this.x = this.lMargin; this.y += h ?? this.lastH; }
   private lastH = 0;
 
-  /** Cell(): only border=0 / no fill (the invoice never draws cell borders or fills). ln: 0 right, 1 next line, 2 below. */
-  cell(w: number, h = 0, txt = '', ln = 0, align = '') {
+  /** FPDF Cell() without auto page break (every PDF in this app calls SetAutoPageBreak(false)). Border: 0 | 1 | 'LTRB' subset; fill: draw background. */
+  cellB(w: number, h = 0, txt = '', border: number | string = 0, ln = 0, align = '', fill = false) {
     const k = K;
-    if (w === 0) w = this.w - 15 - this.x;
+    if (w === 0) w = this.w - this.rMargin - this.x;
     let s = '';
+    if (fill || border === 1) {
+      const op = fill ? (border === 1 ? 'B' : 'f') : 'S';
+      s = `${f2(this.x * k)} ${f2((this.h - this.y) * k)} ${f2(w * k)} ${f2(-h * k)} re ${op} `;
+    }
+    if (typeof border === 'string') {
+      const { x, y } = this;
+      if (border.includes('L')) s += `${f2(x * k)} ${f2((this.h - y) * k)} m ${f2(x * k)} ${f2((this.h - (y + h)) * k)} l S `;
+      if (border.includes('T')) s += `${f2(x * k)} ${f2((this.h - y) * k)} m ${f2((x + w) * k)} ${f2((this.h - y) * k)} l S `;
+      if (border.includes('R')) s += `${f2((x + w) * k)} ${f2((this.h - y) * k)} m ${f2((x + w) * k)} ${f2((this.h - (y + h)) * k)} l S `;
+      if (border.includes('B')) s += `${f2(x * k)} ${f2((this.h - (y + h)) * k)} m ${f2((x + w) * k)} ${f2((this.h - (y + h)) * k)} l S `;
+    }
     if (txt !== '') {
-      const font = this.requireFont();
-      void font;
+      this.requireFont();
       const dx = align === 'R' ? w - this.cMargin - this.getStringWidth(txt) : align === 'C' ? (w - this.getStringWidth(txt)) / 2 : this.cMargin;
       if (this.colorFlag) s += `q ${this.textColor} `;
       s += `BT ${f2((this.x + dx) * k)} ${f2((this.h - (this.y + 0.5 * h + 0.3 * this.fontSize)) * k)} Td (${esc(txt)}) Tj ET`;
@@ -140,10 +159,13 @@ export class MiniFpdf {
     } else this.x += w;
   }
 
+  /** Borderless, unfilled Cell(): ln 0 right, 1 next line, 2 below. */
+  cell(w: number, h = 0, txt = '', ln = 0, align = '') { this.cellB(w, h, txt, 0, ln, align, false); }
+
   /** MultiCell() for left-aligned text without borders/fill. */
   multiCell(w: number, h: number, txt: string) {
     const cw = this.requireFont().widths;
-    if (w === 0) w = this.w - 15 - this.x;
+    if (w === 0) w = this.w - this.rMargin - this.x;
     const wmax = ((w - 2 * this.cMargin) * 1000) / this.fontSize;
     const s = txt.replace(/\r/g, '');
     let nb = s.length;
