@@ -4,6 +4,7 @@
 $in = json_decode(stream_get_contents(STDIN), true);
 $_SERVER['REQUEST_METHOD'] = $in['method'];
 $_GET = $in['query'] ?: [];
+$_POST = $in['post'] ?? []; // form fields (multipart/urlencoded endpoints read $_POST)
 $_SERVER['HTTP_AUTHORIZATION'] = $in['token'] ? 'Bearer ' . $in['token'] : '';
 $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
 class InputWrap {
