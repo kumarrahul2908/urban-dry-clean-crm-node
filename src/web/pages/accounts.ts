@@ -263,7 +263,7 @@ ${raw(walletAdjustScript(u, (v) => JSON.stringify(v), (v) => String(v)))}
     const fp: unknown[] = [date];
     if (methodFilter) { fw += ' AND ptx.payment_type_id = ?'; fp.push(methodFilter); }
     if (staffFilter) { fw += ' AND p.created_by = ?'; fp.push(staffFilter); }
-    if (orderSearch !== '') { fw += ' AND o.order_number LIKE ?'; fp.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { fw += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; fp.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { fw += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; fp.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const byType = (refund: boolean) => db.query<Row>(
       `SELECT pt.type_name, COALESCE(SUM(ptx.amount),0) AS total FROM payment_transactions ptx
@@ -280,7 +280,7 @@ ${raw(walletAdjustScript(u, (v) => JSON.stringify(v), (v) => String(v)))}
     const paymentTypes = await db.query<Row>('SELECT id, type_name FROM payment_types ORDER BY sort_order');
     const staff = await db.query<Row>('SELECT DISTINCT u.id, u.full_name FROM payments p JOIN users u ON u.id = p.created_by ORDER BY u.full_name');
     const details = await db.query<Row>(
-      `SELECT p.payment_number, p.payment_date, p.payment_kind, p.total_amount, c.full_name, c.mobile, o.order_number, u.full_name AS created_by_name,
+      `SELECT p.payment_number, p.payment_date, p.payment_kind, p.total_amount, c.full_name, c.mobile, COALESCE(o.short_order_code, o.order_number) AS order_number, u.full_name AS created_by_name,
        GROUP_CONCAT(CONCAT(pt.type_name, ': ', ptx.amount) SEPARATOR ', ') AS breakdown
        FROM payments p JOIN customers c ON c.id = p.customer_id LEFT JOIN orders o ON o.id = p.order_id LEFT JOIN users u ON u.id = p.created_by
        JOIN payment_transactions ptx ON ptx.payment_id = p.id JOIN payment_types pt ON pt.id = ptx.payment_type_id
@@ -390,7 +390,7 @@ ${raw(walletAdjustScript(u, (v) => JSON.stringify(v), (v) => String(v)))}
     let where = "ar.status = 'Open' AND ar.due_amount > 0.01";
     const params: unknown[] = [];
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (dueDate !== '') { where += ' AND ar.due_date = ?'; params.push(dueDate); }
     if (minAmount !== '' && isNumeric(minAmount)) { where += ' AND ar.due_amount >= ?'; params.push(flt(minAmount)); }
     const ageingCase = `
@@ -404,7 +404,7 @@ ${raw(walletAdjustScript(u, (v) => JSON.stringify(v), (v) => String(v)))}
   END`;
     if (ageingBucket !== '') { where += ` AND (${ageingCase}) = ?`; params.push(ageingBucket); }
     const rows = await db.query<Row>(
-      `SELECT ar.order_id, ar.total_amount, ar.paid_amount, ar.due_amount, ar.due_date, c.full_name AS customer_name, c.mobile, o.order_number, o.order_date,
+      `SELECT ar.order_id, ar.total_amount, ar.paid_amount, ar.due_amount, ar.due_date, c.full_name AS customer_name, c.mobile, COALESCE(o.short_order_code, o.order_number) AS order_number, o.order_date,
        ${ageingCase} AS ageing_bucket,
        (SELECT MAX(p.payment_date) FROM payments p WHERE p.order_id = ar.order_id AND p.payment_kind != 'Refund') AS last_payment_date
        FROM accounts_receivable ar JOIN orders o ON o.id = ar.order_id JOIN customers c ON c.id = ar.customer_id WHERE ${where} ORDER BY ar.due_date`, params);

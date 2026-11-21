@@ -43,9 +43,9 @@ export function registerPaymentPages(app: FastifyInstance) {
     if (dateFrom !== '') { where.push('p.payment_date >= ?'); params.push(`${dateFrom} 00:00:00`); }
     if (dateTo !== '') { where.push('p.payment_date <= ?'); params.push(`${dateTo} 23:59:59`); }
     if (search !== '') {
-      where.push('(o.order_number LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
+      where.push('(o.order_number LIKE ? OR o.short_order_code LIKE ? OR c.full_name LIKE ? OR pt.reference_no LIKE ? OR p.payment_number LIKE ?)');
       const like = `%${search}%`;
-      params.push(like, like, like, like);
+      params.push(like, like, like, like, like);
     }
     if (paymentTypeId) { where.push('EXISTS (SELECT 1 FROM payment_transactions ptf WHERE ptf.payment_id = p.id AND ptf.payment_type_id = ?)'); params.push(paymentTypeId); }
     const whereSql = where.join(' AND ');
@@ -54,7 +54,7 @@ export function registerPaymentPages(app: FastifyInstance) {
     const totalPages = Math.max(1, Math.ceil(total / perPage));
     const offset = (page - 1) * perPage;
     const payments = await db.query<Row>(
-      `SELECT DISTINCT p.id, p.payment_number, p.order_id, o.order_number, c.full_name AS customer_name,
+      `SELECT DISTINCT p.id, p.payment_number, p.order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, c.full_name AS customer_name,
        p.payment_date, p.total_amount, p.payment_kind, p.remarks, u.full_name AS created_by_name
        FROM payments p LEFT JOIN orders o ON o.id = p.order_id JOIN customers c ON c.id = p.customer_id
        LEFT JOIN payment_transactions pt ON pt.payment_id = p.id LEFT JOIN users u ON u.id = p.created_by
@@ -149,7 +149,7 @@ export function registerPaymentPages(app: FastifyInstance) {
     const totalPages = Math.max(1, Math.ceil(total / perPage));
     const offset = (page - 1) * perPage;
     const txns = await db.query<Row>(
-      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, o.order_number,
+      `SELECT wt.id, wt.customer_id, c.full_name AS customer_name, c.mobile, wt.order_id, COALESCE(o.short_order_code, o.order_number) AS order_number,
        wt.txn_type, wt.debit, wt.credit, wt.balance_after, wt.remarks, wt.payment_mode, wt.created_at, u.full_name AS created_by_name
        FROM wallet_transactions wt JOIN customers c ON c.id = wt.customer_id LEFT JOIN orders o ON o.id = wt.order_id LEFT JOIN users u ON u.id = wt.created_by
        WHERE ${whereSql} ORDER BY wt.created_at DESC, wt.id DESC LIMIT ${perPage} OFFSET ${offset}`, params);

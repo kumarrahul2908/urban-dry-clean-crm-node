@@ -58,8 +58,10 @@ export function registerMiscPages(app: FastifyInstance) {
     let where = "channel = 'In-App' AND (user_id = ? OR user_id IS NULL)";
     if (filter === 'unread') where += ' AND is_read = 0';
     const notifications = await db.query<Row>(
-      `SELECT nl.*, o.order_number, c.full_name AS customer_name FROM notification_logs nl LEFT JOIN orders o ON o.id = nl.order_id LEFT JOIN customers c ON c.id = nl.customer_id
+      `SELECT nl.*, COALESCE(o.short_order_code, o.order_number) AS order_number, o.order_number AS long_order_number, c.full_name AS customer_name FROM notification_logs nl LEFT JOIN orders o ON o.id = nl.order_id LEFT JOIN customers c ON c.id = nl.customer_id
        WHERE ${where} ORDER BY nl.created_at DESC LIMIT 100`, [userId]);
+    // Notifications saved before the short order code was used everywhere still have the long number inside their stored text: shown with the short code instead (the saved row is not changed).
+    for (const n of notifications) if (n.long_order_number && n.order_number && n.long_order_number !== '0' && n.order_number !== '0') n.message = String(n.message ?? '').split(String(n.long_order_number)).join(String(n.order_number));
     const unreadCount = Number((await db.query<Row>("SELECT COUNT(*) AS n FROM notification_logs WHERE channel = 'In-App' AND (user_id = ? OR user_id IS NULL) AND is_read = 0", [userId]))[0]!.n);
     const h = await tplHelpers(ctx);
     return layout(ctx, { title: 'Notifications' }, raw(tplNotificationsIndex({ filter, notifications, unreadCount }, h)));
@@ -113,9 +115,9 @@ export function registerMiscPages(app: FastifyInstance) {
     if (ratingFilter) { where += ' AND f.rating = ?'; params.push(ratingFilter); }
     if (statusFilter !== '') { where += ' AND f.status = ?'; params.push(statusFilter); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     const rows = await db.query<Row>(
-      `SELECT f.*, c.full_name AS customer_name, c.mobile, o.order_number FROM feedback f JOIN customers c ON c.id = f.customer_id LEFT JOIN orders o ON o.id = f.order_id
+      `SELECT f.*, c.full_name AS customer_name, c.mobile, COALESCE(o.short_order_code, o.order_number) AS order_number FROM feedback f JOIN customers c ON c.id = f.customer_id LEFT JOIN orders o ON o.id = f.order_id
        WHERE ${where} ORDER BY f.created_at DESC LIMIT 100`, params);
     const summary = (await db.query<Row>(
       `SELECT COUNT(*) AS total, AVG(rating) AS avg_rating, SUM(rating=5) AS r5, SUM(rating=4) AS r4, SUM(rating=3) AS r3, SUM(rating=2) AS r2, SUM(rating=1) AS r1,

@@ -32,7 +32,7 @@ export function registerDeliveryPages(app: FastifyInstance) {
 
   const notify = async (ctx: WebCtx, deliveryId: number, eventKey: string) => {
     try {
-      const row = (await db.query<Row>('SELECT o.id AS order_id, o.order_number, c.id AS customer_id, c.full_name, c.mobile FROM delivery_orders d JOIN orders o ON o.id = d.order_id JOIN customers c ON c.id = o.customer_id WHERE d.id = ?', [deliveryId]))[0];
+      const row = (await db.query<Row>('SELECT o.id AS order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, c.id AS customer_id, c.full_name, c.mobile FROM delivery_orders d JOIN orders o ON o.id = d.order_id JOIN customers c ON c.id = o.customer_id WHERE d.id = ?', [deliveryId]))[0];
       if (!row || phpEmpty(row.mobile)) return;
       await whatsapp.enqueue(Number(row.customer_id), Number(row.order_id), String(row.mobile), eventKey,
         { customer_name: row.full_name, order_number: row.order_number, business_name: (await ctx.setting('business_name', ctx.svc.env.APP_NAME)) ?? ctx.svc.env.APP_NAME }, `${eventKey}:${deliveryId}`);
@@ -59,15 +59,16 @@ export function registerDeliveryPages(app: FastifyInstance) {
     }
     const orderSearch = clean(q.order), customerSearch = clean(q.customer), statusFilter = clean(q.status);
     let ew = `os.status_key != 'cancelled'
-       AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status != 'Packed')
+       AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status NOT IN ('Packed','Delivered'))
+       AND EXISTS (SELECT 1 FROM order_items oip WHERE oip.order_id = o.id AND oip.item_status = 'Packed')
        AND EXISTS (SELECT 1 FROM order_items oi2 WHERE oi2.order_id = o.id)
        AND NOT EXISTS (SELECT 1 FROM pickup_orders p WHERE p.order_id = o.id AND p.status NOT IN ('Picked Up','Cancelled','Completed'))
        AND NOT EXISTS (SELECT 1 FROM delivery_orders d WHERE d.order_id = o.id AND d.status NOT IN ('Delivered','Cancelled'))`;
     const ep: unknown[] = [];
-    if (orderSearch !== '') { ew += ' AND o.order_number LIKE ?'; ep.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { ew += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; ep.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { ew += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; ep.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const eligible = statusFilter === '' || statusFilter === 'eligible' ? await db.query<Row>(
-      `SELECT o.id, o.order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS item_count
        FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
        WHERE ${ew} ORDER BY (o.urgent_level_id IS NULL), o.due_date`, ep) : [];
@@ -75,10 +76,10 @@ export function registerDeliveryPages(app: FastifyInstance) {
     const params: unknown[] = [];
     if (!manager) { where += ' AND drv.user_id = ?'; params.push(ctx.data.user_id ?? 0); }
     if (statusFilter !== '' && statusFilter !== 'eligible') { where += ' AND dl.status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const active = await db.query<Row>(
-      `SELECT dl.*, o.order_number, o.grand_total, o.total_paid, ul.level_name AS urgent_level_name, c.full_name AS customer_name, drv.driver_name,
+      `SELECT dl.*, COALESCE(o.short_order_code, o.order_number) AS order_number, o.grand_total, o.total_paid, ul.level_name AS urgent_level_name, c.full_name AS customer_name, drv.driver_name,
        (SELECT COUNT(*) FROM order_items WHERE order_id = dl.order_id) AS item_count
        FROM delivery_orders dl JOIN orders o ON o.id = dl.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = dl.customer_id LEFT JOIN drivers drv ON drv.id = dl.driver_id
        WHERE ${where} AND dl.status NOT IN ('Delivered','Cancelled') ORDER BY dl.delivery_date`, params);
@@ -321,7 +322,7 @@ ${raw(driversScript(u, JSON.stringify, e))}
     else if (isManager(ctx)) where += ' AND dl.driver_id IS NOT NULL';
     else where += ' AND 1 = 0';
     const rows = await db.query<Row>(
-      `SELECT dl.*, o.order_number, ul.level_name AS urgent_level_name, c.full_name AS customer_name, (SELECT COUNT(*) FROM order_items WHERE order_id = dl.order_id) AS item_count
+      `SELECT dl.*, COALESCE(o.short_order_code, o.order_number) AS order_number, ul.level_name AS urgent_level_name, c.full_name AS customer_name, (SELECT COUNT(*) FROM order_items WHERE order_id = dl.order_id) AS item_count
        FROM delivery_orders dl JOIN orders o ON o.id = dl.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = dl.customer_id
        WHERE ${where} ORDER BY (o.urgent_level_id IS NULL), dl.delivery_date`, params);
     const money = await ctx.loadMoney();
@@ -366,7 +367,7 @@ ${raw(driversScript(u, JSON.stringify, e))}
     const deliveryId = int((req.query as Record<string, unknown>).delivery_id);
     if (!(await canActAsDelivery(ctx, deliveryId))) return new WebText('<h2>403 - Access Denied</h2><p>You can only open delivery slips for deliveries assigned to you.</p>', 403);
     const d = (await db.query<Row>(
-      `SELECT dl.*, o.order_number, o.invoice_number, o.order_mode, o.grand_total, o.total_paid, o.current_due, o.store_id, c.full_name AS customer_name, c.mobile AS customer_mobile, drv.driver_name
+      `SELECT dl.*, COALESCE(o.short_order_code, o.order_number) AS order_number, o.invoice_number, o.order_mode, o.grand_total, o.total_paid, o.current_due, o.store_id, c.full_name AS customer_name, c.mobile AS customer_mobile, drv.driver_name
        FROM delivery_orders dl JOIN orders o ON o.id = dl.order_id JOIN customers c ON c.id = dl.customer_id LEFT JOIN drivers drv ON drv.id = dl.driver_id WHERE dl.id = ?`, [deliveryId]))[0];
     if (!d) { ctx.flashSet('danger', 'Delivery not found.'); return new WebRedirect('modules/delivery/index.php'); }
     const items = d.order_mode === 'weight'

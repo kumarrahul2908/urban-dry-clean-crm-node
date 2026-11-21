@@ -11,7 +11,8 @@ type Q = Record<string, unknown>;
 const numOrNull = (v: unknown) => (v !== null && v !== undefined ? Number(v) : null);
 const stripTags = (s: string) => s.replace(/<[^>]*>?/g, '');
 const ELIGIBLE = `os.status_key != 'cancelled'
-  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status != 'Packed')
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status NOT IN ('Packed','Delivered'))
+  AND EXISTS (SELECT 1 FROM order_items oip WHERE oip.order_id = o.id AND oip.item_status = 'Packed')
   AND EXISTS (SELECT 1 FROM order_items oi2 WHERE oi2.order_id = o.id)
   AND NOT EXISTS (SELECT 1 FROM pickup_orders p WHERE p.order_id = o.id AND p.status NOT IN ('Picked Up','Cancelled','Completed'))
   AND NOT EXISTS (SELECT 1 FROM delivery_orders d WHERE d.order_id = o.id AND d.status NOT IN ('Delivered','Cancelled'))`;

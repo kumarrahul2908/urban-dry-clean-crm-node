@@ -191,6 +191,16 @@ export const customerViewStyle = (u: (p: string) => string, j: (v: unknown) => s
 .cv-contact-item strong { display: block; font-size: .87rem; font-weight: 600; color: #334155; word-break: break-word; }
 .cv-muted { color: #a8b2c1 !important; font-weight: 500 !important; }
 
+.cv-quick-links { display: flex; gap: .4rem; margin-top: .4rem; }
+.cv-quick-link {
+  display: inline-flex; align-items: center; gap: .3rem; font-size: .74rem; font-weight: 600;
+  padding: .22rem .55rem; border-radius: 999px; text-decoration: none; border: 1px solid #dde3ec;
+}
+.cv-quick-link--call { background: #eef2ff; color: #3730a3; border-color: #dfe3fb; }
+.cv-quick-link--call:hover { background: #e0e5ff; }
+.cv-quick-link--wa { background: #e3f8ec; color: #047857; border-color: #d2f2e1; }
+.cv-quick-link--wa:hover { background: #d1f3e0; }
+
 /* ---------- Stats ---------- */
 .cv-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; }
 .cv-stat {

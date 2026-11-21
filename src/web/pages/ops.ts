@@ -45,7 +45,7 @@ export function registerOpsPages(app: FastifyInstance) {
     let where = "oi.item_status IN ('QC','Rework') AND os.status_key != 'cancelled'";
     const params: unknown[] = [];
     if (statusFilter !== '') { where += ' AND oi.item_status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     if (garmentSearch !== '') { where += ' AND g.garment_name LIKE ?'; params.push(`%${garmentSearch}%`); }
     if (dueDate !== '') { where += ' AND o.due_date = ?'; params.push(dueDate); }
@@ -54,7 +54,7 @@ export function registerOpsPages(app: FastifyInstance) {
       JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id WHERE ${where}`;
     const total = int((await db.query<Row>(`SELECT COUNT(*) AS n ${baseSql}`, params))[0]!.n);
     const rows = await db.query<Row>(
-      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
+      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
        ${baseSql} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${offset}`, params);
     const totalPages = Math.ceil(total / perPage);
     const qsForRedirect = httpBuildQuery(q);
@@ -131,7 +131,7 @@ export function registerOpsPages(app: FastifyInstance) {
           <tbody>
           ${lgAll.map((lg) => html`
             <tr>
-              <td data-label="Order"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.order_number}</a></td>
+              <td data-label="Order"><a href="${u('modules/orders/view.php?id=' + lg.order_id)}">${lg.short_order_code ?? lg.order_number}</a></td>
               <td data-label="Customer">${lg.customer_name}</td>
               <td data-label="Sequence">${int(lg.sequence)} / ${int(lg.total_garments)}</td>
               <td data-label="Garment"><a href="${u('modules/barcode/garment_detail.php?laundry_garment_id=' + lg.id)}">${lg.garment_name}</a></td>
@@ -210,13 +210,13 @@ document.getElementById('failModal').addEventListener('show.bs.modal', function 
       return new WebRedirect('modules/qc/rework.php');
     }
     const rows = await db.query<Row>(
-      `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, oi.id AS order_item_id, oi.quantity, oi.weight, o.id AS order_id, o.order_number, o.due_date, o.due_time,
+      `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, oi.id AS order_item_id, oi.quantity, oi.weight, o.id AS order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time,
        c.full_name AS customer_name, g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name
        FROM rework_records rr JOIN order_items oi ON oi.id = rr.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
        JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
        WHERE oi.item_status = 'Rework' AND rr.status != 'Completed' ORDER BY (o.urgent_level_id IS NULL), o.due_date, rr.id`);
     const laundryRows = await db.query<Row>(
-      `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, lg.id AS laundry_garment_id, lg.sequence, oi.quantity AS total_garments, o.id AS order_id, o.order_number, o.due_date, o.due_time,
+      `SELECT rr.id AS rework_id, rr.reason, rr.status AS rework_status, rr.created_at, lg.id AS laundry_garment_id, lg.sequence, oi.quantity AS total_garments, o.id AS order_id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time,
        c.full_name AS customer_name, g.garment_name, s.service_name
        FROM rework_records rr JOIN laundry_garments lg ON lg.id = rr.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id
        JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id
@@ -308,10 +308,10 @@ document.getElementById('failModal').addEventListener('show.bs.modal', function 
     const orderSearch = clean(q.order), customerSearch = clean(q.customer);
     let where = "oi.item_status = 'Ready' AND os.status_key != 'cancelled'";
     const params: unknown[] = [];
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const rows = await db.query<Row>(
-      `SELECT oi.id, oi.order_id, oi.quantity, oi.weight, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.billing_unit, ul.level_name AS urgent_level_name, bc.barcode_value, bc.qr_token
+      `SELECT oi.id, oi.order_id, oi.quantity, oi.weight, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, c.full_name AS customer_name, g.garment_name, s.billing_unit, ul.level_name AS urgent_level_name, bc.barcode_value, bc.qr_token
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id
        JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id LEFT JOIN barcodes bc ON bc.order_item_id = oi.id
        WHERE ${where} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id`, params);
@@ -321,7 +321,7 @@ document.getElementById('failModal').addEventListener('show.bs.modal', function 
       g.items.push(r);
     }
     const batches = await db.query<Row>(
-      `SELECT oi.id, oi.order_id, oi.quantity AS total_garments, oi.weight, oi.weight_rate, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, s.service_name, ul.level_name AS urgent_level_name
+      `SELECT oi.id, oi.order_id, oi.quantity AS total_garments, oi.weight, oi.weight_rate, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, c.full_name AS customer_name, s.service_name, ul.level_name AS urgent_level_name
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id JOIN services s ON s.id = oi.service_id
        LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
        WHERE oi.item_status = 'Ready' AND o.order_mode = 'weight' AND os.status_key != 'cancelled' ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id`);
@@ -424,7 +424,7 @@ document.getElementById('failModal').addEventListener('show.bs.modal', function 
         flash(ctx, r, 'Pickup scheduled.');
         if (r.success) {
           try {
-            const row = (await db.query<Row>('SELECT o.order_number, c.id AS customer_id, c.full_name, c.mobile FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?', [orderId]))[0];
+            const row = (await db.query<Row>('SELECT COALESCE(o.short_order_code, o.order_number) AS order_number, c.id AS customer_id, c.full_name, c.mobile FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?', [orderId]))[0];
             if (row && !phpEmpty(row.mobile)) {
               await whatsapp.enqueue(Number(row.customer_id), orderId, String(row.mobile), 'pickup_scheduled',
                 { customer_name: row.full_name, order_number: row.order_number, pickup_date: clean(p.pickup_date), business_name: (await ctx.setting('business_name', ctx.svc.env.APP_NAME)) ?? ctx.svc.env.APP_NAME },
@@ -438,25 +438,26 @@ document.getElementById('failModal').addEventListener('show.bs.modal', function 
     }
     const orderSearch = clean(q.order), customerSearch = clean(q.customer), statusFilter = clean(q.status);
     let ew = `os.status_key != 'cancelled'
-       AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status != 'Packed')
+       AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.item_status NOT IN ('Packed','Delivered'))
+       AND EXISTS (SELECT 1 FROM order_items oip WHERE oip.order_id = o.id AND oip.item_status = 'Packed')
        AND EXISTS (SELECT 1 FROM order_items oi2 WHERE oi2.order_id = o.id)
        AND NOT EXISTS (SELECT 1 FROM pickup_orders p WHERE p.order_id = o.id AND p.status NOT IN ('Picked Up','Cancelled','Completed'))
        AND NOT EXISTS (SELECT 1 FROM delivery_orders d WHERE d.order_id = o.id AND d.status NOT IN ('Delivered','Cancelled'))`;
     const ep: unknown[] = [];
-    if (orderSearch !== '') { ew += ' AND o.order_number LIKE ?'; ep.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { ew += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; ep.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { ew += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; ep.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const eligible = statusFilter === '' || statusFilter === 'eligible' ? await db.query<Row>(
-      `SELECT o.id, o.order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
+      `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.due_date, o.due_time, o.grand_total, o.total_paid, o.current_due, c.full_name AS customer_name, c.mobile, ul.level_name AS urgent_level_name,
        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS item_count
        FROM orders o JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id
        WHERE ${ew} ORDER BY (o.urgent_level_id IS NULL), o.due_date`, ep) : [];
     let where = '1=1';
     const params: unknown[] = [];
     if (statusFilter !== '' && statusFilter !== 'eligible') { where += ' AND p.status = ?'; params.push(statusFilter); }
-    if (orderSearch !== '') { where += ' AND o.order_number LIKE ?'; params.push(`%${orderSearch}%`); }
+    if (orderSearch !== '') { where += ' AND (o.order_number LIKE ? OR o.short_order_code LIKE ?)'; params.push(`%${orderSearch}%`, `%${orderSearch}%`); }
     if (customerSearch !== '') { where += ' AND (c.full_name LIKE ? OR c.mobile LIKE ?)'; params.push(`%${customerSearch}%`, `%${customerSearch}%`); }
     const active = await db.query<Row>(
-      `SELECT p.*, o.order_number, ul.level_name AS urgent_level_name, c.full_name AS customer_name, c.mobile, dr.driver_name
+      `SELECT p.*, COALESCE(o.short_order_code, o.order_number) AS order_number, ul.level_name AS urgent_level_name, c.full_name AS customer_name, c.mobile, dr.driver_name
        FROM pickup_orders p LEFT JOIN orders o ON o.id = p.order_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id JOIN customers c ON c.id = p.customer_id LEFT JOIN drivers dr ON dr.id = p.driver_id
        WHERE ${where} AND p.status NOT IN ('Picked Up','Cancelled','Completed') ORDER BY p.pickup_date`, params);
     const drivers = await db.query<Row>('SELECT id, driver_name FROM drivers WHERE is_active=1 ORDER BY driver_name');

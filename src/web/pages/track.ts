@@ -15,7 +15,7 @@ export function registerTrackPage(app: FastifyInstance) {
     let items: Row[] = [];
     if (token !== '' && /^[a-f0-9]{32}$/.test(token)) {
       order = (await db.query<Row>(
-        `SELECT o.id, o.order_number, o.order_date, o.due_date, o.due_time, os.status_label, os.color AS status_color, o.order_mode, c.full_name AS customer_name
+        `SELECT o.id, COALESCE(o.short_order_code, o.order_number) AS order_number, o.order_date, o.due_date, o.due_time, os.status_label, os.color AS status_color, o.order_mode, c.full_name AS customer_name
          FROM barcodes bc JOIN orders o ON o.id = bc.order_id JOIN order_statuses os ON os.id = o.status_id JOIN customers c ON c.id = o.customer_id WHERE bc.qr_token = ?`, [token]))[0] ?? null;
       if (order && order.order_mode === 'weight') {
         items = await db.query<Row>(

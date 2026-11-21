@@ -116,3 +116,16 @@ export function formArray(body: Record<string, unknown>, name: string): string[]
 
 /** PHP (string) of a float: whole numbers without ".0". */
 export const floatStr = (n: number) => String(n);
+
+/**
+ * whatsapp_link_number(): normalizes a raw customer/staff-entered mobile number into the digits-only, country-coded shape a wa.me link needs
+ * (e.g. "919667271056"), assuming India/+91 when no country code is present.
+ */
+export function whatsappLinkNumber(rawNumber: string): string {
+  let digits = rawNumber.replace(/\D+/g, '');
+  if (digits === '') return digits;
+  if (digits.length >= 13 || (digits.length === 12 && digits.startsWith('91'))) return digits;
+  if (digits.length === 11 && digits[0] === '0') digits = digits.slice(1);
+  if (digits.length === 10) return '91' + digits;
+  return digits;
+}
