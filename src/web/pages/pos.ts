@@ -271,6 +271,24 @@ ${raw(posStyle(u, jsonEncode, h))}
             <label class="form-label small">Estimated Line Total</label>
             <input type="text" id="agLineTotalDisplay" class="form-control form-control-sm fw-bold" readonly>
           </div>
+          <!-- Rahul: packaging (Fold/Hanger/Half Fold/Hanger+Fold) used to be mixed into the
+               Defects list below (it isn't a defect) -- now its own single-choice section,
+               radio buttons (not checkboxes, since a garment is only ever one of these) with a
+               None option to clear the choice. Matches the Android app's same split. -->
+          <div class="col-12">
+            <label class="form-label small">Packaging</label>
+            <div class="d-flex flex-wrap gap-2">
+              <div class="form-check">
+                <input class="form-check-input ag-packaging" type="radio" name="agPackaging" value="" id="agPackagingNone" checked>
+                <label class="form-check-label small" for="agPackagingNone">None</label>
+              </div>
+              ${Object.entries({ FOLD: 'Fold', HANGER: 'Hanger', HALF_FOLD: 'Half Fold', HANGER_AND_FOLD: 'Hanger + Fold' }).map(([val, label]) => html`
+                <div class="form-check">
+                  <input class="form-check-input ag-packaging" type="radio" name="agPackaging" value="${val}" id="agPackaging${val}">
+                  <label class="form-check-label small" for="agPackaging${val}">${label}</label>
+                </div>`)}
+            </div>
+          </div>
           <div class="col-12">
             <label class="form-label small">Defects (select any that apply)</label>
             <div class="d-flex flex-wrap gap-2">
