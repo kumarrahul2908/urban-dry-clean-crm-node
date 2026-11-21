@@ -23,6 +23,7 @@ import { LaundryGarmentService } from './services/laundryGarmentService.js';
 import { FulfillmentService } from './services/fulfillmentService.js';
 import { WorkshopService } from './services/workshopService.js';
 import { WorkshopInvoice } from './services/workshopInvoice.js';
+import { ReturnService } from './services/returnService.js';
 import { QcService } from './services/qcService.js';
 import { ExpenseService } from './services/expenseService.js';
 import { noopOrderHooks, type OrderHooks } from './services/hooks.js';
@@ -35,6 +36,7 @@ import { registerMobileReportRoutes } from './routes/mobile/reports.js';
 import { registerMobileMiscRoutes } from './routes/mobile/misc.js';
 import { registerMobileGarmentRoutes } from './routes/mobile/garments.js';
 import { registerMobileUploadRoutes } from './routes/mobile/uploads.js';
+import { registerMobileReturnRoutes } from './routes/mobile/returns.js';
 import { registerMobileQcRoutes } from './routes/mobile/qc.js';
 import { registerMobileFulfillmentRoutes } from './routes/mobile/fulfillment.js';
 import { registerMobileWorkshopRoutes } from './routes/mobile/workshop.js';
@@ -72,6 +74,7 @@ export interface Services {
   fulfillment: FulfillmentService;
   workshop: WorkshopService;
   workshopInvoice: WorkshopInvoice;
+  returns: ReturnService;
   hooks: OrderHooks;
   whatsapp: WhatsAppService;
   passwordReset: PasswordResetService;
@@ -136,6 +139,7 @@ export function buildServices(env: Env, db: Db, options: BuildOptions = {}): Ser
     fulfillment: new FulfillmentService(db, audit, notifications),
     workshop,
     workshopInvoice: new WorkshopInvoice(db, audit, workshop, env.APP_TIMEZONE),
+    returns: new ReturnService(db, audit, notifications, storage),
     hooks,
     whatsapp,
     web: { sessions: new WebSessionStore(db), pages: new Set<string>(), navShowAll: !!options.navShowAll },
@@ -212,6 +216,7 @@ export async function buildApp(services: Services, tenancy?: { install(app: Fast
   await app.register(registerMobileMiscRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileGarmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileUploadRoutes, { prefix: '/api/mobile' });
+  await app.register(registerMobileReturnRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileQcRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileFulfillmentRoutes, { prefix: '/api/mobile' });
   await app.register(registerMobileWorkshopRoutes, { prefix: '/api/mobile' });

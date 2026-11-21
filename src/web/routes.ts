@@ -23,6 +23,7 @@ import { registerMiscPages } from './pages/miscPages.js';
 import { registerAdminSettingsPages } from './pages/adminSettings.js';
 import { registerAdminBackupPages } from './pages/adminBackup.js';
 import { registerAdminOrderPhotoPages } from './pages/adminOrderPhotos.js';
+import { registerCustomerReturnPages } from './pages/customerReturns.js';
 import { registerAdminUsersPage } from './pages/adminUsers.js';
 import { registerPricelistImportPage } from './pages/pricelistImport.js';
 import { registerPricingPages } from './pages/pricing.js';
@@ -88,6 +89,7 @@ export async function registerWebRoutes(app: FastifyInstance) {
   registerAdminSettingsPages(app);
   registerAdminBackupPages(app);
   registerAdminOrderPhotoPages(app);
+  registerCustomerReturnPages(app);
   registerMiscPages(app);
   registerReportPages(app);
   registerDesignPages(app);

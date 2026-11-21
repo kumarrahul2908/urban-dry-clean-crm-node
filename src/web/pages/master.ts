@@ -79,6 +79,7 @@ export function registerMasterPages(app: FastifyInstance) {
       ['Services', 'fa-broom', 'services.php', await countQ('services')], ['Tax Rates', 'fa-percent', 'taxes.php', await countQ('taxes')], ['Discount Rules', 'fa-tags', 'discounts.php', await countQ('discounts')],
       ['Urgent Order Levels', 'fa-bolt', 'urgent_levels.php', await countQ('urgent_levels')], ['Payment Types', 'fa-credit-card', 'payment_types.php', await countQ('payment_types')], ['Brands', 'fa-copyright', 'brands.php', await countQ('brands')],
       ['Colors', 'fa-palette', 'colors.php', await countQ('colors')], ['Defects', 'fa-triangle-exclamation', 'defects.php', await countQ('defects')],
+      ['Return Reasons', 'fa-rotate-left', 'return_reasons.php', await countQ('return_reasons')],
     ];
     const u = (p: string) => ctx.baseUrl(p);
     return layout(ctx, { title: 'Master Data' }, html`
