@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { canActAsStoreForOrder, canEditOrderOfStore, resolveAuthorizedStoreId } from '../../auth/stores.js';
 import type { UserContext } from '../../auth/apiAuth.js';
 import { ApiError, num, ok } from '../../lib/http.js';
-import { phpEmpty, round2, toFloat, toInt } from '../../lib/php.js';
+import { isNumeric, phpEmpty, round2, toFloat, toInt } from '../../lib/php.js';
 import { qInt, qStr } from '../../lib/query.js';
 import { getSetting } from '../../services/settings.js';
 
@@ -132,6 +132,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     const q = req.query as Q;
     const search = qStr(q.q);
     const statusFilter = qInt(q.status_id);
+    // same date_mode choice modules/orders/list.php has: order_date (the original behaviour) or due_date
+    const dateMode = q.date_mode === 'due_date' ? 'due_date' : 'order_date';
     const dateFrom = qStr(q.from);
     const dateTo = qStr(q.to);
     const page = Math.max(1, qInt(q.page));
@@ -143,8 +145,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
       params.push(...Array(4).fill(`%${search}%`));
     }
     if (statusFilter) { where += ' AND o.status_id = ?'; params.push(statusFilter); }
-    if (dateFrom !== '') { where += ' AND DATE(o.order_date) >= ?'; params.push(dateFrom); }
-    if (dateTo !== '') { where += ' AND DATE(o.order_date) <= ?'; params.push(dateTo); }
+    if (dateFrom !== '') { where += ` AND DATE(o.${dateMode}) >= ?`; params.push(dateFrom); }
+    if (dateTo !== '') { where += ` AND DATE(o.${dateMode}) <= ?`; params.push(dateTo); }
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params)) as [{ n: number }];
     const results = await db.query(
       `SELECT o.id, o.order_number, o.short_order_code, o.invoice_number, o.order_date, o.due_date, o.order_mode,
@@ -346,7 +348,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
 
     const [order] = await db.query<Raw>('SELECT id, customer_id, store_id FROM orders WHERE id = ?', [orderId]);
     if (!order) throw new ApiError('not_found', 'Order not found.', 404);
-    if (!canActAsStoreForOrder(ctx, Number(order.store_id))) throw new ApiError('forbidden', "You are not authorized to collect payment for this order's store.", 403);
+    const requestedStoreId = typeof p.store_id === 'number' || (typeof p.store_id === 'string' && isNumeric(p.store_id)) ? toInt(p.store_id) : null;
+    if (!(await canActAsStoreForOrder(db, ctx, Number(order.store_id), requestedStoreId))) throw new ApiError('forbidden', "You are not authorized to collect payment for this order's store.", 403);
 
     const lines = normalizeLines(p.payment_lines);
     if (lines.length === 0 && walletAmount <= 0) throw new ApiError('invalid_request', 'At least one payment line or a wallet amount is required.', 422);
@@ -376,7 +379,8 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
 
     const [order] = await db.query<Raw>('SELECT id, customer_id, store_id FROM orders WHERE id = ?', [orderId]);
     if (!order) throw new ApiError('not_found', 'Order not found.', 404);
-    if (!canActAsStoreForOrder(ctx, Number(order.store_id))) throw new ApiError('forbidden', "You are not authorized to process a refund for this order's store.", 403);
+    const requestedStoreId = typeof p.store_id === 'number' || (typeof p.store_id === 'string' && isNumeric(p.store_id)) ? toInt(p.store_id) : null;
+    if (!(await canActAsStoreForOrder(db, ctx, Number(order.store_id), requestedStoreId))) throw new ApiError('forbidden', "You are not authorized to process a refund for this order's store.", 403);
 
     const lines = normalizeLines(p.refund_lines);
     const canonical = `${orderId}|refund:${fmt2(refundAmount)}|wallet:${creditToWallet ? '1' : '0'}|${lines.map((l) => `${l.payment_type_id}:${fmt2(l.amount)}`).join(',')}|reason:${reason}|remarks:${remarks}`;
@@ -501,10 +505,12 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
       color_id: !phpEmpty(p.color_id) ? toInt(p.color_id) : null,
       remarks: scalar(p.remarks) ? String(p.remarks) : '',
       defect_ids: Array.isArray(p.defect_ids) ? p.defect_ids.map(toInt).filter((n: number) => n !== 0) : [],
+      // the app's add-garment screen sends this; a garment added to an existing order keeps its packaging choice
+      packaging_style: typeof p.packaging_style === 'string' ? p.packaging_style : null,
     };
     const result = await orderSvc.addItem(orderId, raw, { userId: ctx.id, ip: req.ip }, ctx.permissions.includes('pos.manual_rate_override'), clientRequestId);
     if (!result.success) failFromService(result, 'Could not add item.');
-    return ok({ order_id: orderId, item_id: Number(result.item_id), idempotent_replay: !!result.idempotent_replay });
+    return ok({ order_id: orderId, item_id: Number(result.item_id), idempotent_replay: !!result.idempotent_replay, tags_changed: result.tags_changed ?? 'none', tags_notice: result.tags_notice ?? null });
   });
 
   route('POST', 'order_item_update', async (req) => {
@@ -528,10 +534,15 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (has('color_id')) raw.color_id = !phpEmpty(p.color_id) ? toInt(p.color_id) : null;
     if (has('remarks')) raw.remarks = scalar(p.remarks) ? String(p.remarks) : '';
     if (has('defect_ids')) raw.defect_ids = Array.isArray(p.defect_ids) ? p.defect_ids.map(toInt).filter((n: number) => n !== 0) : [];
+    // packaging_style and garment_id/service_id (the garment itself can be changed in place; updateItem() validates both and only
+    // allows it while the line is still Pending)
+    if (has('packaging_style')) raw.packaging_style = typeof p.packaging_style === 'string' ? p.packaging_style : null;
+    if (!phpEmpty(p.garment_id)) raw.garment_id = toInt(p.garment_id);
+    if (!phpEmpty(p.service_id)) raw.service_id = toInt(p.service_id);
 
     const result = await orderSvc.updateItem(orderId, itemId, raw, { userId: ctx.id, ip: req.ip }, ctx.permissions.includes('pos.manual_rate_override'));
     if (!result.success) failFromService(result, 'Could not update item.');
-    return ok({ order_id: orderId, item_id: itemId });
+    return ok({ order_id: orderId, item_id: itemId, tags_changed: result.tags_changed ?? 'none', tags_notice: result.tags_notice ?? null });
   });
 
   route('POST', 'order_item_remove', async (req) => {
@@ -544,6 +555,22 @@ export async function registerMobileOrderRoutes(app: FastifyInstance) {
     if (order.status_key !== 'order_created') throw new ApiError('order_not_editable', 'This order can no longer be edited (processing has begun).', 409);
     const result = await orderSvc.removeItem(orderId, itemId, { userId: ctx.id, ip: req.ip });
     if (!result.success) failFromService(result, 'Could not remove item.');
-    return ok({ order_id: orderId, item_id: itemId, removed: true });
+    return ok({ order_id: orderId, item_id: itemId, removed: true, tags_changed: result.tags_changed ?? 'none', tags_notice: result.tags_notice ?? null });
+  });
+  // Mobile twin of the "Change customer" card in modules/orders/edit.php: moves an order to a different customer via
+  // OrderService.changeOrderCustomer() (reason required; refused once any payment / wallet entry / pickup / delivery exists).
+  route('POST', 'order_change_customer', async (req) => {
+    const ctx = await auth(req, 'orders.edit');
+    const p = payload(req);
+    const order = await loadForMutation(ctx, toInt(p.order_id));
+    const orderId = Number(order.id);
+    if (order.status_key !== 'order_created') throw new ApiError('order_not_editable', 'This order can no longer be edited — processing has begun.', 409);
+    const newCustomerId = toInt(p.new_customer_id);
+    if (newCustomerId <= 0) throw new ApiError('validation_failed', 'Select the new customer.', 422);
+    const reason = typeof p.reason === 'string' || typeof p.reason === 'number' || typeof p.reason === 'boolean' ? String(p.reason).trim() : '';
+    const result = await orderSvc.changeOrderCustomer(orderId, newCustomerId, { userId: ctx.id, ip: req.ip }, reason);
+    if (!result.success) failFromService(result, 'Could not change customer.');
+    const [c] = await db.query<Raw>('SELECT c.id, c.full_name, c.mobile FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?', [orderId]);
+    return ok({ order_id: orderId, customer_id: toInt(c?.id ?? 0), customer_name: String(c?.full_name ?? ''), customer_phone: String(c?.mobile ?? '') });
   });
 }

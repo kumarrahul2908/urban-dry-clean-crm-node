@@ -146,7 +146,10 @@ export async function registerMobileMiscRoutes(app: FastifyInstance) {
     const [u] = await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM notification_logs WHERE channel = 'In-App' AND (user_id = ? OR user_id IS NULL) AND is_read = 0", [ctx.id]);
     return ok({
       items: rows.map((r) => ({
-        id: num(r.id), template_key: r.template_key, message: r.message, is_read: !!r.is_read, created_at: r.created_at,
+        id: num(r.id), template_key: r.template_key,
+        // older saved notifications still carry the long order number inside their text; shown with the short code instead (saved row unchanged)
+        message: r.short_order_code !== null && r.order_number !== null && String(r.order_number) !== '' ? String(r.message ?? '').split(String(r.order_number)).join(String(r.short_order_code)) : r.message,
+        is_read: !!r.is_read, created_at: r.created_at,
         order_id: r.order_id !== null ? num(r.order_id) : null, order_number: r.short_order_code ?? r.order_number,
         customer_id: r.customer_id !== null ? num(r.customer_id) : null, customer_name: r.customer_name,
       })),

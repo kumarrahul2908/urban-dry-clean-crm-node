@@ -44,6 +44,13 @@ export function registerDesignPages(app: FastifyInstance) {
       ctx.flashSet('success', 'Tag Design saved.');
       return new WebRedirect('modules/admin/tag_design.php');
     }
+    // Packaging (Hanger / Fold ...) became its own tag field: add its row once, right before "extra details".
+    if (!(await db.query('SELECT 1 FROM tag_design_fields WHERE field_key = ?', ['packaging'])).length) {
+      const ex = (await db.query<Row>("SELECT sort_order FROM tag_design_fields WHERE field_key = 'extra_details'"))[0];
+      const pos = ex ? int(ex.sort_order) : int((await db.query<Row>('SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM tag_design_fields'))[0]!.n);
+      await db.execute('UPDATE tag_design_fields SET sort_order = sort_order + 1 WHERE sort_order >= ?', [pos]);
+      await db.execute("INSERT INTO tag_design_fields (field_key, field_label, show_field, font_family, font_size, is_bold, is_italic, is_underline, text_align, has_box, sort_order) VALUES ('packaging', 'Packaging (Hanger / Fold)', 1, 'Arial', 14, 1, 0, 0, 'left', 0, ?)", [pos]);
+    }
     const fields = await db.query<Row>('SELECT * FROM tag_design_fields ORDER BY sort_order');
     const h = await tplHelpers(ctx);
     return layout(ctx, { title: 'Tag Design' }, raw(tplAdminTagDesign({ alignOptions: ALIGN_OPTIONS, fields, fontOptions: FONT_OPTIONS }, h)));

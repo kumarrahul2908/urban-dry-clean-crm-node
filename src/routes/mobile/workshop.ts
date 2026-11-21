@@ -64,7 +64,7 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
       LEFT JOIN workshop_items wi ON wi.order_item_id = oi.id AND wi.status NOT IN ('Completed','Rejected') LEFT JOIN workshop_challans wc ON wc.id = wi.challan_id WHERE ${where}`;
     const [{ n }] = (await db.query<{ n: number }>(`SELECT COUNT(*) AS n ${base}`, params)) as [{ n: number }];
     const rows = await db.query<Raw>(
-      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
+      `SELECT oi.id, oi.order_id, oi.item_status, oi.quantity, oi.weight, oi.unit, oi.packaging_style, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name,
               g.garment_name, s.service_name, s.billing_unit, ul.level_name AS urgent_level_name, wi.id AS workshop_item_id, wi.status AS workshop_status, wc.challan_number
        ${base} ORDER BY (o.urgent_level_id IS NULL), o.due_date, oi.id LIMIT ${perPage} OFFSET ${(page - 1) * perPage}`, params);
     // a garment marked Unprocessed stays at its existing RAW workshop_items.status (markUnprocessed()
@@ -73,11 +73,22 @@ export async function registerMobileWorkshopRoutes(app: FastifyInstance) {
     // showing stale QC/Complete/Mark-Unprocessed buttons for an item already marked Unprocessed.
     // current_status (the same history-aware value getCurrentStatus() computes for the other queues)
     // is included here too, so the app can hide those buttons once it reads 'Unprocessed'.
+    // Android Send-Report (same garment/service/packaging/defects the web send_report.php shows): the app already has this piece list loaded
+    // before sending, so it builds its report client-side from this same data. defect_names mirrors the order_item_defects join
+    // tags_print.php / send_report.php already use.
+    const pieceDefectsByItem = new Map<number, string[]>();
+    if (rows.length) {
+      for (const d of await db.query<Raw>('SELECT oid.order_item_id, d.defect_name FROM order_item_defects oid JOIN defects d ON d.id = oid.defect_id WHERE oid.order_item_id IN (?)', [rows.map((r) => r.id)])) {
+        const k = Number(d.order_item_id);
+        pieceDefectsByItem.set(k, [...(pieceDefectsByItem.get(k) ?? []), String(d.defect_name)]);
+      }
+    }
     const pieceItems = await Promise.all(rows.map(async (r) => ({
       order_item_id: num(r.id), order_id: num(r.order_id), order_number: r.short_order_code ?? r.order_number, item_status: r.item_status, quantity: numOrNull(r.quantity), weight: numOrNull(r.weight),
       unit: r.unit, due_date: r.due_date, due_time: r.due_time, customer_name: r.customer_name, garment_name: r.garment_name, service_name: r.service_name,
       urgent_level_name: r.urgent_level_name, workshop_item_id: r.workshop_item_id !== null ? num(r.workshop_item_id) : null, workshop_status: r.workshop_status,
       current_status: r.workshop_item_id !== null ? await workshop.getCurrentStatus(Number(r.workshop_item_id)) : null, challan_number: r.challan_number,
+      packaging_style: r.packaging_style, defect_names: pieceDefectsByItem.get(Number(r.id)) ?? [],
     })));
     const mapLaundry = (r: Raw) => ({
       laundry_garment_id: num(r.id), sequence: num(r.sequence), garment_name: r.garment_name, total_garments: num(r.total_garments), order_id: num(r.order_id), order_number: r.order_number,

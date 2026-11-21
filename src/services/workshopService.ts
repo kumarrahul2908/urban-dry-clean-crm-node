@@ -27,7 +27,7 @@ export class WorkshopService {
     if (itemIds.length === 0) return { success: false, errors: ['Select at least one garment to send to the workshop.'] };
     if (!(await this.db.query('SELECT id FROM workshops WHERE id = ? AND is_active = 1', [workshopId])).length) return { success: false, errors: ['Selected workshop is invalid or inactive.'] };
     const rows = await this.db.query<Raw>(
-      `SELECT oi.id, oi.item_status, os.status_key AS order_status_key, o.order_number, o.store_id, g.garment_name
+      `SELECT oi.id, oi.item_status, os.status_key AS order_status_key, COALESCE(o.short_order_code, o.order_number) AS order_number, o.store_id, g.garment_name
        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN garments g ON g.id = oi.garment_id WHERE oi.id IN (?)`, [itemIds]);
     const found = rows.map((r) => Number(r.id));
     const errors: string[] = [];
@@ -59,7 +59,7 @@ export class WorkshopService {
     if (lgIds.length === 0) return { success: false, errors: ['Select at least one Laundry garment to send to the workshop.'] };
     if (!(await this.db.query('SELECT id FROM workshops WHERE id = ? AND is_active = 1', [workshopId])).length) return { success: false, errors: ['Selected workshop is invalid or inactive.'] };
     const rows = await this.db.query<Raw>(
-      `SELECT lg.id, os.status_key AS order_status_key, o.order_number, o.store_id, g.garment_name
+      `SELECT lg.id, os.status_key AS order_status_key, COALESCE(o.short_order_code, o.order_number) AS order_number, o.store_id, g.garment_name
        FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id JOIN order_statuses os ON os.id = o.status_id JOIN garments g ON g.id = lg.garment_id
        WHERE lg.id IN (?)`, [lgIds]);
     const found = rows.map((r) => Number(r.id));

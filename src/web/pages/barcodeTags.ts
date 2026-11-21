@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { PACKAGING_STYLES } from '../../services/orderService.js';
 import { code128Svg } from '../../lib/barcodeCode128.js';
 import { phpEmpty } from '../../lib/php.js';
 import { qrSvg } from '../../lib/qrEncoder.js';
@@ -48,8 +49,8 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     const byId = new Map<number, Row>();
     if (pieceIds.length) {
       for (const r of await db.query<Row>(
-        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names,
-         o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
+        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, bc.piece_index, oi.id AS order_item_id, oi.remarks, oi.quantity, oi.weight, oi.unit, oi.pieces_per_unit, oi.piece_names, oi.packaging_style,
+         o.packaging_preference, o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, col.color_name, br.brand_name, c.full_name AS customer_name, c.customer_code,
          COALESCE(gt.printed_count, 0) AS printed_count, (SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) FROM order_items WHERE order_id = o.id) AS total_items
          FROM barcodes bc JOIN order_items oi ON oi.id = bc.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = oi.garment_id
          JOIN services s ON s.id = oi.service_id LEFT JOIN colors col ON col.id = oi.color_id LEFT JOIN brands br ON br.id = oi.brand_id LEFT JOIN stores st ON st.id = o.store_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id
@@ -57,8 +58,8 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     }
     if (laundryIds.length) {
       for (const r of await db.query<Row>(
-        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, 1 AS piece_index, NULL AS order_item_id, NULL AS remarks, oi.quantity AS quantity, NULL AS weight, 'Pcs' AS unit, 1 AS pieces_per_unit, NULL AS piece_names,
-         o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, NULL AS color_name, NULL AS brand_name, c.full_name AS customer_name, c.customer_code,
+        `SELECT bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.short_qr_payload, bc.item_sequence, 1 AS piece_index, NULL AS order_item_id, NULL AS remarks, oi.quantity AS quantity, NULL AS weight, 'Pcs' AS unit, 1 AS pieces_per_unit, NULL AS piece_names, oi.packaging_style,
+         o.packaging_preference, o.order_number, o.short_order_code, o.order_date, o.due_date, o.due_time, o.store_id AS order_store_id, st.store_name, g.garment_name, s.service_name, NULL AS color_name, NULL AS brand_name, c.full_name AS customer_name, c.customer_code,
          COALESCE(gt.printed_count, 0) AS printed_count, oi.quantity AS total_items
          FROM barcodes bc JOIN laundry_garments lg ON lg.id = bc.laundry_garment_id JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = bc.order_id JOIN customers c ON c.id = o.customer_id
          JOIN garments g ON g.id = lg.garment_id JOIN services s ON s.id = oi.service_id LEFT JOIN stores st ON st.id = o.store_id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id WHERE bc.id IN (${laundryIds.map(() => '?').join(',')})`, laundryIds)) byId.set(int(r.barcode_id), r);
@@ -119,6 +120,11 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
       if (!phpEmpty(t.brand_name)) extras.push(e(t.brand_name));
       const defects = t.order_item_id !== null ? defectsByItem.get(Number(t.order_item_id)) : undefined;
       if (defects && defects.length) extras.push(e(defects.join(', ')));
+      // Packaging is its OWN tag field now (order_items.packaging_style, on Admin > Tag Design, on by default), separate from Defects, so it
+      // no longer disappears when the "extra details" line is switched off; it falls back to the order-level Hanger/Fold choice when the
+      // garment itself has none.
+      const packagingKey = !phpEmpty(t.packaging_style) ? String(t.packaging_style) : String(t.packaging_preference ?? '');
+      const packagingText: string | null = PACKAGING_STYLES[packagingKey] ?? null;
       // a Set garment prints ONE tag per physical piece: show the garment name AND (when Piece Names are set) this piece's own name.
       // With quantity > 1 of the same Set garment, piece_index keeps counting past pieces_per_unit (e.g. 1..9 for 3 outfits of 3), so the
       // within-set name must cycle: ((piece_index - 1) % pieces_per_unit) + 1, not piece_index itself.
@@ -156,6 +162,7 @@ export function registerBarcodeTagPages(app: FastifyInstance) {
     ${pieceParticular !== null ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-bottom:2px;')}">${pieceParticular} (${int(t.item_sequence)}/${int(t.total_items)})</div>` : ''}
     ${visible('due_date') ? html`<div class="due-date" style="${fieldStyle('due_date', 'margin-top:4px;')}">${raw(ctx.date(t.due_date, 'd M y D'))}${!phpEmpty(t.due_time) ? raw(' ' + ctx.date(t.due_time, 'h:i A')) : ''}</div>` : ''}
 
+    ${packagingText !== null && visible('packaging') ? html`<div class="packaging-line" style="${fieldStyle('packaging', 'font-weight:700;font-size:14px;margin-top:4px;')}">${packagingText.toUpperCase()}</div>` : ''}
     ${extras.length && visible('extra_details') ? html`<div class="extra-details" style="${fieldStyle('extra_details', 'margin-top:6px;')}">${raw(extras.join(' &middot; '))}</div>` : ''}
     <!-- order-wide position (item_sequence/total_items), not per-set (piece_index/totalPieces), and shown on every tag now, not just pieces_per_unit > 1 Sets -->
     ${pieceParticular === null && visible('piece_of_set') ? html`<div class="piece-of-set" style="${fieldStyle('piece_of_set', 'margin-top:4px;')}">Piece ${int(t.item_sequence)} of ${int(t.total_items)}</div>` : ''}
@@ -271,7 +278,7 @@ ${raw(scanScript(u, jsonEncode, e, {}, [prefillLookup]))}
     if (laundryId > 0) {
       const item = (await db.query<Row>(
         `SELECT lg.id, lg.sequence, g.garment_name, oi.id AS order_item_id, oi.quantity AS total_garments, oi.weight AS batch_weight, oi.weight_rate AS batch_rate,
-         o.id AS order_id, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile, s.service_name, ul.level_name AS urgent_level_name,
+         o.id AS order_id, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile, s.service_name, ul.level_name AS urgent_level_name,
          bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.created_at AS identifier_created_at, gt.printed_count, gt.last_printed_at, gt.last_printed_by, u.full_name AS last_printed_by_name
          FROM laundry_garments lg JOIN order_items oi ON oi.id = lg.order_item_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id JOIN garments g ON g.id = lg.garment_id
          JOIN services s ON s.id = oi.service_id LEFT JOIN urgent_levels ul ON ul.id = o.urgent_level_id LEFT JOIN barcodes bc ON bc.laundry_garment_id = lg.id LEFT JOIN garment_tags gt ON gt.barcode_id = bc.id
@@ -291,7 +298,7 @@ ${raw(scanScript(u, jsonEncode, e, {}, [prefillLookup]))}
           <h5 class="fw-bold">${item.garment_name} <span class="badge bg-secondary">${int(item.sequence)} / ${int(item.total_garments)}</span></h5>
           <table class="table table-sm">
             <tr><th style="width:180px">Garment ID</th><td><code>${item.barcode_value}</code></td></tr>
-            <tr><th>Order</th><td><a href="${u('modules/orders/view.php?id=' + item.order_id)}">${item.order_number}</a></td></tr>
+            <tr><th>Order</th><td><a href="${u('modules/orders/view.php?id=' + item.order_id)}">${item.short_order_code ?? item.order_number}</a></td></tr>
             <tr><th>Customer</th><td>${item.customer_name} (${item.customer_mobile})</td></tr>
             <tr><th>Service</th><td>${item.service_name}</td></tr>
             <tr><th>Batch Weight / Rate</th><td>${String(item.batch_weight ?? '')} KG @ ${raw((await ctx.loadMoney())(item.batch_rate))}/kg <span class="text-muted small">(shared across all ${int(item.total_garments)} garments in this batch — not priced individually)</span></td></tr>
@@ -339,7 +346,7 @@ ${raw(scanScript(u, jsonEncode, e, {}, [prefillLookup]))}
     }
 
     const item = (await db.query<Row>(
-      `SELECT oi.*, g.garment_name, g.sku, s.service_name, s.billing_unit, b.brand_name, col.color_name, o.order_number, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile,
+      `SELECT oi.*, g.garment_name, g.sku, s.service_name, s.billing_unit, b.brand_name, col.color_name, o.order_number, o.short_order_code, o.due_date, o.due_time, c.full_name AS customer_name, c.mobile AS customer_mobile,
        ul.level_name AS urgent_level_name, bc.id AS barcode_id, bc.barcode_value, bc.qr_token, bc.item_sequence, bc.created_at AS identifier_created_at, gt.printed_count, gt.last_printed_at, gt.last_printed_by,
        u.full_name AS last_printed_by_name, wi.id AS workshop_item_id, wi.status AS workshop_status
        FROM order_items oi JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id JOIN orders o ON o.id = oi.order_id JOIN customers c ON c.id = o.customer_id
@@ -385,7 +392,7 @@ ${raw(scanScript(u, jsonEncode, e, {}, [prefillLookup]))}
       <h5 class="fw-bold">${item.garment_name} <span class="badge bg-secondary">${String(item.item_sequence ?? '')} / ${totalItems}</span></h5>
       <table class="table table-sm">
         <tr><th style="width:180px">Garment ID</th><td><code>${item.barcode_value}</code></td></tr>
-        <tr><th>Order</th><td><a href="${u('modules/orders/view.php?id=' + item.order_id)}">${item.order_number}</a></td></tr>
+        <tr><th>Order</th><td><a href="${u('modules/orders/view.php?id=' + item.order_id)}">${item.short_order_code ?? item.order_number}</a></td></tr>
         <tr><th>Customer</th><td>${item.customer_name} (${item.customer_mobile})</td></tr>
         <tr><th>Service</th><td>${item.service_name}</td></tr>
         <tr><th>Quantity</th><td>${item.weight !== null ? String(item.weight) + ' kg' : String(item.quantity) + ' ' + String(item.unit ?? '')}</td></tr>

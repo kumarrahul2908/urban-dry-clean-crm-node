@@ -5,6 +5,7 @@ import { WebRedirect, WebText, forbiddenPage, webPage, type WebCtx } from '../co
 import { flt, formArray, int, numberFormat, urlencode } from '../format.js';
 import { e, html, jsonEncode, raw, type Raw } from '../html.js';
 import { layout } from '../layout.js';
+import { PACKAGING_STYLES } from '../../services/orderService.js';
 import { invoicePdfScriptTag, invoiceScriptBase, invoiceScriptEnd, invoiceScriptPdf, invoiceScriptWhatsapp, invoiceStyle } from './invoice.static.js';
 import { orderListStyle, orderPaymentScript, orderRefundScript, orderViewScript, orderViewStyle, receiptStyle } from './orders.static.js';
 
@@ -20,7 +21,7 @@ const notFound = (ctx: WebCtx) => { ctx.flashSet('danger', 'Order not found.'); 
 const orEmpty = (v: unknown, fallback: string) => { const s = e(v === null || v === undefined ? '' : String(v)); return s !== '' && s !== '0' ? s : fallback; };
 
 export function registerOrderPages(app: FastifyInstance) {
-  const { db, orders } = app.services;
+  const { db, orders, workshop } = app.services;
   const storeDenied = (ctx: WebCtx, what: string) => new WebText(`<h2>403 - Access Denied</h2><p>You are not authorized to ${what} for this order's store.</p><p><a href="${ctx.baseUrl('modules/orders/list.php')}">Back to Orders</a></p>`, 403);
   /** Auth::canActAsStoreForOrder() */
   const canActAsStoreForOrder = (ctx: WebCtx, orderStoreId: number) => {
@@ -32,23 +33,48 @@ export function registerOrderPages(app: FastifyInstance) {
   webPage(app, '/modules/orders/list', { auth: 'orders.view' }, async (ctx, req) => {
     const q = req.query as Record<string, unknown>;
     const search = clean(q.q), statusFilter = int(q.status_id), dateFrom = clean(q.from), dateTo = clean(q.to);
+    // From/To filter whichever date column date_mode picks (order_date, the original behaviour, or due_date)
+    const dateMode = q.date_mode === 'due_date' ? 'due_date' : 'order_date';
     const page = Math.max(1, int(q.page) || 1);
-    const perPage = 20, offset = (page - 1) * perPage;
+    // rows per page: user-chosen from a fixed set, never an arbitrary client-supplied LIMIT
+    const allowedPerPage = [20, 50, 100, 200];
+    const requestedPerPage = int(q.per_page ?? 20);
+    const perPage = allowedPerPage.includes(requestedPerPage) ? requestedPerPage : 20;
+    const offset = (page - 1) * perPage;
     let where = '1=1';
     const params: unknown[] = [];
     if (search !== '') { where += ' AND (o.order_number LIKE ? OR o.invoice_number LIKE ? OR c.full_name LIKE ? OR c.mobile LIKE ?)'; const like = `%${search}%`; params.push(like, like, like, like); }
     if (statusFilter) { where += ' AND o.status_id = ?'; params.push(statusFilter); }
-    if (dateFrom !== '') { where += ' AND DATE(o.order_date) >= ?'; params.push(dateFrom); }
-    if (dateTo !== '') { where += ' AND DATE(o.order_date) <= ?'; params.push(dateTo); }
+    if (dateFrom !== '') { where += ` AND DATE(o.${dateMode}) >= ?`; params.push(dateFrom); }
+    if (dateTo !== '') { where += ` AND DATE(o.${dateMode}) <= ?`; params.push(dateTo); }
     const total = int((await db.query<Row>(`SELECT COUNT(*) AS n FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params))[0]!.n);
+    // sum across EVERY matching order (not just the current page), same WHERE as the count above
+    const totals = (await db.query<Row>(`SELECT COALESCE(SUM(o.grand_total),0) AS total_amount, COALESCE(SUM(o.current_due),0) AS total_due FROM orders o JOIN customers c ON c.id = o.customer_id WHERE ${where}`, params))[0]!;
     const rows = await db.query<Row>(
-      `SELECT o.*, c.full_name, c.mobile, os.status_label, os.color FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id
+      `SELECT o.*, c.full_name, c.mobile, c.address, c.area, c.city, os.status_label, os.color,
+       (SELECT COALESCE(SUM(quantity * pieces_per_unit), 0) FROM order_items WHERE order_id = o.id) AS garment_count
+       FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_statuses os ON os.id = o.status_id
        WHERE ${where} ORDER BY o.id DESC LIMIT ${perPage} OFFSET ${offset}`, params);
     const totalPages = Math.ceil(total / perPage);
+
+    // "Today / Yesterday / This Week / This Month / Last Month" quick buttons, computed here (not in JS) so they are plain,
+    // bookmarkable GET links. 'This Week' starts on the ISO Monday, computed from the day-of-week number.
+    const [ty, tm, td] = ctx.today.split('-').map(Number) as [number, number, number];
+    const ymd = (d: Date) => d.toISOString().slice(0, 10);
+    const day = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+    const isoDow = ((day(ty, tm, td).getUTCDay() + 6) % 7) + 1; // 1 (Monday) .. 7 (Sunday)
+    const quickRanges: [string, string, string][] = [
+      ['Today', ctx.today, ctx.today],
+      ['Yesterday', ymd(day(ty, tm, td - 1)), ymd(day(ty, tm, td - 1))],
+      ['This Week', ymd(day(ty, tm, td - (isoDow - 1))), ctx.today],
+      ['This Month', ymd(day(ty, tm, 1)), ctx.today],
+      ['Last Month', ymd(day(ty, tm - 1, 1)), ymd(day(ty, tm, 0))],
+    ];
+
     const statuses = await db.query<Row>('SELECT id, status_label FROM order_statuses ORDER BY sort_order');
     const hasFilters = search !== '' || !!statusFilter || dateFrom !== '' || dateTo !== '';
     const showingFrom = total ? offset + 1 : 0, showingTo = Math.min(offset + perPage, total);
-    const pageUrl = (p: number) => `?q=${urlencode(search)}&status_id=${statusFilter}&from=${urlencode(dateFrom)}&to=${urlencode(dateTo)}&page=${p}`;
+    const pageUrl = (p: number) => `?q=${urlencode(search)}&status_id=${statusFilter}&from=${urlencode(dateFrom)}&to=${urlencode(dateTo)}&date_mode=${urlencode(dateMode)}&per_page=${perPage}&page=${p}`;
     const money = await ctx.loadMoney();
     const u = (p: string) => ctx.baseUrl(p);
 
@@ -105,6 +131,15 @@ export function registerOrderPages(app: FastifyInstance) {
               <option value="${s.id}" ${sel(statusFilter === Number(s.id))}>${s.status_label}</option>`)}
           </select>
         </div>
+        <!-- Rahul: "Due date se bhi order nikalne ka option" -- From/To now filter whichever
+             column this picks; same two date inputs, just a choice of which column they apply to. -->
+        <div class="ol-field">
+          <label>Date column</label>
+          <select name="date_mode" class="form-select ol-input">
+            <option value="order_date" ${dateMode === 'order_date' ? 'selected' : ''}>Order Date</option>
+            <option value="due_date" ${dateMode === 'due_date' ? 'selected' : ''}>Due Date</option>
+          </select>
+        </div>
         <div class="ol-field ol-field--dates">
           <label>From</label>
           <input type="date" name="from" class="form-control ol-input" value="${dateFrom}">
@@ -113,31 +148,59 @@ export function registerOrderPages(app: FastifyInstance) {
           <label>To</label>
           <input type="date" name="to" class="form-control ol-input" value="${dateTo}">
         </div>
+        <!-- Rahul: "Ek page pe kitna dikhana hai jaise 50, 100, 200" -->
+        <div class="ol-field">
+          <label>Per page</label>
+          <select name="per_page" class="form-select ol-input">
+            ${allowedPerPage.map((pp) => html`
+              <option value="${pp}" ${perPage === pp ? 'selected' : ''}>${pp}</option>`)}
+          </select>
+        </div>
         <button class="ol-apply-btn" type="submit"><i class="fa-solid fa-magnifying-glass"></i><span>Search</span></button>
         ${hasFilters ? html`
           <a href="?" class="ol-clear-btn" title="Clear all filters"><i class="fa-solid fa-xmark"></i><span>Clear</span></a>` : ''}
       </form>
 
+      <!-- Rahul: "Today, Yesterday, current week, current month, last month" quick date-range
+           buttons -- always filter order_date (the common case), one click, no form-filling. -->
+      <div class="ol-quick-ranges">
+        ${quickRanges.map(([label, qFrom, qTo]) => html`
+          <a class="ol-quick-btn${dateMode === 'order_date' && dateFrom === qFrom && dateTo === qTo ? ' is-active' : ''}"
+             href="?q=${urlencode(search)}&status_id=${statusFilter}&date_mode=order_date&from=${qFrom}&to=${qTo}&per_page=${perPage}">${label}</a>`)}
+      </div>
+
       <div class="table-responsive udc-cards-wrap">
         <table class="table table-hover align-middle udc-cards ol-table">
-          <thead><tr><th>Order#</th><th>Customer</th><th>Date</th><th>Due</th><th>Status</th><th class="text-end">Total</th><th class="text-end">Due Amt</th></tr></thead>
+          <thead><tr><th>Order#</th><th>Customer</th><th>Address</th><th>Date</th><th>Due</th><th class="text-end">Garments</th><th>Status</th><th class="text-end">Total</th><th class="text-end">Due Amt</th></tr></thead>
           <tbody>
           ${rows.length === 0 ? html`
-            <tr><td colspan="7" class="ol-empty">
+            <tr><td colspan="9" class="ol-empty">
               <i class="fa-solid fa-inbox"></i>
               <span>${hasFilters ? 'No orders match these filters.' : 'No orders yet.'}</span>
             </td></tr>` : ''}
           ${rows.map((o) => html`
             <tr>
-              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + o.id)}">${o.order_number}</a></td>
+              <td class="udc-card-head udc-card-title"><a href="${u('modules/orders/view.php?id=' + o.id)}">${o.short_order_code ?? o.order_number}</a></td>
               <td class="udc-card-head">${o.full_name}<div class="text-muted small">${o.mobile}</div></td>
+              <td data-label="Address" class="ol-address">${[o.address, o.area, o.city].filter((x) => x !== null && x !== undefined && x !== '' && x !== '0').join(', ').trim() || '—'}</td>
               <td data-label="Order Date">${raw(ctx.date(o.order_date))}</td>
               <td data-label="Due Date">${raw(ctx.date(o.due_date))}</td>
+              <td class="text-end" data-label="Garments">${int(o.garment_count)}</td>
               <td data-label="Status"><span class="ol-status" style="background:${o.color}">${o.status_label}</span></td>
               <td class="text-end" data-label="Total">${raw(money(o.grand_total))}</td>
               <td class="text-end udc-card-total ol-due${flt(o.current_due) > 0 ? ' ol-due--open' : ''}" data-label="Due Amt">${raw(money(o.current_due))}</td>
             </tr>`)}
           </tbody>
+          ${rows.length ? html`
+          <!-- Rahul: "last me total number of amount" -- sums EVERY matching order (all pages,
+               same WHERE as the list itself and the result count above), not just this page. -->
+          <tfoot>
+            <tr class="ol-totals-row">
+              <td colspan="7" class="text-end">Total (${numberFormat(total, 0)} ${total === 1 ? 'order' : 'orders'})</td>
+              <td class="text-end">${raw(money(totals.total_amount))}</td>
+              <td class="text-end">${raw(money(totals.total_due))}</td>
+            </tr>
+          </tfoot>` : ''}
         </table>
       </div>
 
@@ -315,6 +378,39 @@ document.getElementById('dlConfirmBtn').addEventListener('click', function () {
     const receivableStatus = receivableRow?.status || null;
     const dueAmount = flt(receivableRow?.due_amount ?? 0);
     const paymentTypesForModal = await db.query<Row>('SELECT id, type_name FROM payment_types WHERE is_active=1 ORDER BY sort_order');
+    // Order-scoped Send to Workshop / Receive from Workshop: this order's own items only, same WorkshopService logic as the dedicated pages.
+    const sendablePieceItems = await db.query<Row>(
+      `SELECT oi.id, g.garment_name, s.service_name FROM order_items oi
+       JOIN garments g ON g.id = oi.garment_id JOIN services s ON s.id = oi.service_id
+       WHERE oi.order_id = ? AND oi.item_status = 'Pending'`, [id]);
+    const orderWorkshops = await db.query<Row>('SELECT id, workshop_name FROM workshops WHERE is_active=1 ORDER BY workshop_name');
+    const receivableCandidates = await db.query<Row>(
+      `SELECT wi.id, COALESCE(g1.garment_name, g2.garment_name) AS garment_name
+       FROM workshop_items wi
+       LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id AND oi1.order_id = ?
+       LEFT JOIN garments g1 ON g1.id = oi1.garment_id
+       LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id
+       LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id AND oi2.order_id = ?
+       LEFT JOIN garments g2 ON g2.id = lg.garment_id
+       WHERE (oi1.order_id = ? OR oi2.order_id = ?) AND wi.status != 'Rejected'`, [id, id, id, id]);
+    const receivableItems: Row[] = [];
+    for (const cand of receivableCandidates) {
+      const cs = await workshop.getCurrentStatus(Number(cand.id));
+      if (!['Store Received', 'Unprocessed', 'Rejected'].includes(cs)) receivableItems.push({ ...cand, current_status: cs });
+    }
+    // Photos taken in the app (per garment, plus order-level ones) -- view only here; deleting them is an Admin-only action (Admin > Order Photos).
+    const photosByItem: Record<string, Row[]> = {};
+    const orderLevelPhotos: Row[] = [];
+    for (const ph of await db.query<Row>('SELECT id, order_item_id, file_path, caption FROM order_photos WHERE order_id = ? ORDER BY created_at ASC', [id])) {
+      if (ph.order_item_id === null) orderLevelPhotos.push(ph); else (photosByItem[String(ph.order_item_id)] ??= []).push(ph);
+    }
+    const canDeletePhotos = ctx.can('admin.settings');
+    // Admin-only delete button drawn on a photo thumbnail (posts to the Admin photo handler, then returns here).
+    const photoDeleteForm = (photoId: number): Raw => raw(
+      '<form method="POST" action="' + e(ctx.baseUrl('modules/admin/order_photos.php')) + '" class="d-inline" onsubmit="return confirm(\'Delete this photo permanently?\');">'
+      + String(ctx.csrfField())
+      + '<input type="hidden" name="action" value="delete_photo"><input type="hidden" name="photo_id" value="' + photoId + '"><input type="hidden" name="back_order_id" value="' + id + '">'
+      + '<button type="submit" title="Delete photo (Admin)" style="position:absolute;top:-4px;right:-2px;border:0;border-radius:50%;width:18px;height:18px;line-height:16px;padding:0;background:#dc3545;color:#fff;font-size:11px;">&times;</button></form>');
     const history = await db.query<Row>("SELECT al.*, u.full_name AS user_name FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id WHERE al.module = 'orders' AND al.record_id = ? ORDER BY al.created_at DESC LIMIT 50", [String(id)]);
     const isEditable = await orders.isEditable(order as { status_id: number });
     const u = (p: string) => ctx.baseUrl(p);
@@ -356,10 +452,16 @@ document.getElementById('dlConfirmBtn').addEventListener('click', function () {
              payment, but that is genuinely how it gates there, so it's kept bug-compatible here too. -->
         ${ctx.can('garment_tags.print') || ctx.can('garment_tags.reprint') ? html`
         <a href="${u('modules/barcode/tags_print.php?order_id=' + id)}" target="_blank" class="ov-btn"><i class="fa-solid fa-tag"></i>Tags</a>
+        ${order.status_key === 'delivered' && ctx.can('orders.edit') ? html`
+        <a href="${u('modules/orders/return.php?order_id=' + id)}" class="ov-btn" style="background:#dc3545;color:#fff;border-color:#dc3545;"><i class="fa-solid fa-rotate-left"></i>Customer Return</a>` : ''}
         ${order.status_key !== 'delivered' ? html`
         <button type="button" class="ov-btn" id="btnMarkDelivered" style="background:#198754;color:#fff;border-color:#198754;"><i class="fa-solid fa-circle-check"></i>Mark as Delivered</button>` : ''}
         ${dueAmount > 0.009 ? html`
         <button type="button" class="ov-btn" id="btnAddPayment" style="background:#fd7e14;color:#fff;border-color:#fd7e14;"><i class="fa-solid fa-indian-rupee-sign"></i>Add Payment (Due: ${raw(money(dueAmount))})</button>` : ''}
+        ${ctx.can('workshop.manage') && sendablePieceItems.length ? html`
+        <button type="button" class="ov-btn" id="btnSendToWorkshop" style="background:#0ea5e9;color:#fff;border-color:#0ea5e9;"><i class="fa-solid fa-paper-plane"></i>Send to Workshop</button>` : ''}
+        ${ctx.can('workshop.manage') && receivableItems.length ? html`
+        <button type="button" class="ov-btn" id="btnReceiveFromWorkshop" style="background:#6366f1;color:#fff;border-color:#6366f1;"><i class="fa-solid fa-truck-ramp-box"></i>Receive from Workshop</button>` : ''}
 
         <!-- one shared modal for both Mark Delivered (with optional payment) and the standalone Add
              Payment button -- title/note text and which API endpoint gets called are swapped by JS
@@ -392,7 +494,70 @@ document.getElementById('dlConfirmBtn').addEventListener('click', function () {
               </div>
             </div>
           </div>
-        </div>` : ''}` : ''}
+        </div>
+
+        <!-- Rahul: order-scoped Send to Workshop -- same createChallan() logic as
+             modules/workshop/send.php, just pre-filtered to this order's own Pending items. -->
+        ${ctx.can('workshop.manage') && sendablePieceItems.length ? html`
+        <div class="modal fade" id="sendWorkshopModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Send to Workshop</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                  <label class="form-label">Workshop</label>
+                  <select class="form-select" id="swWorkshop">
+                    <option value="">Choose workshop...</option>
+                    ${orderWorkshops.map((w) => html`
+                    <option value="${w.id}">${w.workshop_name}</option>`)}
+                  </select>
+                </div>
+                <label class="form-label">Garments</label>
+                ${sendablePieceItems.map((it) => html`
+                <div class="form-check">
+                  <input class="form-check-input sw-item" type="checkbox" value="${it.id}" id="swItem${it.id}" checked>
+                  <label class="form-check-label" for="swItem${it.id}">${it.garment_name} — ${it.service_name}</label>
+                </div>`)}
+                <div class="alert alert-danger d-none mt-2" id="swError"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="swConfirmBtn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>` : ''}
+
+        <!-- Rahul: order-scoped Receive from Workshop -- same smart store_receive/
+             force_receive choice as modules/workshop/receive.php, pre-filtered to this
+             order's own items. -->
+        ${ctx.can('workshop.manage') && receivableItems.length ? html`
+        <div class="modal fade" id="receiveWorkshopModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Receive from Workshop</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <label class="form-label">Garments</label>
+                ${receivableItems.map((it) => html`
+                <div class="form-check">
+                  <input class="form-check-input rw-item" type="checkbox" value="${it.id}" id="rwItem${it.id}" checked>
+                  <label class="form-check-label" for="rwItem${it.id}">${it.garment_name} <span class="text-muted small">(${it.current_status})</span></label>
+                </div>`)}
+                <div class="alert alert-danger d-none mt-2" id="rwError"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="rwConfirmBtn">Receive</button>
+              </div>
+            </div>
+          </div>
+        </div>` : ''}` : ''}` : ''}
       ${ctx.can('payments.refund') && flt(order.total_paid) > 0 ? html`
         <a href="${u('modules/orders/refund.php?id=' + id)}" class="ov-btn ov-btn--danger"><i class="fa-solid fa-rotate-left"></i>${cancelled ? 'Process Refund' : 'Refund'}</a>` : ''}
       ${isEditable && ctx.can('orders.cancel') ? html`
@@ -479,7 +644,7 @@ ${cancelled && receivableStatus === 'Refund Due' ? html`
         </ul>` : html`
       <div class="table-responsive udc-cards-wrap">
         <table class="table table-sm udc-cards ov-table">
-          <thead><tr><th>#</th><th>Garment</th><th>Service</th><th>Brand/Color</th><th>Defects/Remarks</th><th class="text-end">Quantity</th><th>Unit</th><th class="text-end">Rate</th><th class="text-end">Subtotal</th><th class="text-end">Discount</th><th class="text-end">Tax</th><th class="text-end">Total</th>${canEditItems ? html`<th></th>` : ''}</tr></thead>
+          <thead><tr><th>#</th><th>Garment</th><th>Service</th><th>Brand/Color</th><th>Details</th><th class="text-end">Quantity</th><th>Unit</th><th class="text-end">Rate</th><th class="text-end">Subtotal</th><th class="text-end">Discount</th><th class="text-end">Tax</th><th class="text-end">Total</th>${canEditItems ? html`<th></th>` : ''}</tr></thead>
           <tbody>
           ${items.map((it, i) => html`
             <tr>
@@ -490,10 +655,13 @@ ${cancelled && receivableStatus === 'Refund Due' ? html`
               <td class="udc-card-head udc-card-title">${it.garment_name}${it.sku ? raw(` <span class="text-muted small">(${e(it.sku)})</span>`) : ''}</td>
               <td class="udc-card-head text-muted">${it.service_name}</td>
               <td data-label="Brand/Color">${raw(orEmpty(it.brand_name, '—'))} / ${raw(orEmpty(it.color_name, '—'))}</td>
-              <td class="small" data-label="Remarks">
-                ${defectsByItem[String(it.id)]?.length ? defectsByItem[String(it.id)]!.join(', ') : '—'}
+              <td class="small" data-label="Remarks"><div>
+                ${it.packaging_style && PACKAGING_STYLES[String(it.packaging_style)] !== undefined ? html`<div><span class="badge text-bg-light border"><i class="fa-solid fa-shirt me-1"></i>${PACKAGING_STYLES[String(it.packaging_style)]}</span></div>` : ''}
+                ${defectsByItem[String(it.id)]?.length ? defectsByItem[String(it.id)]!.join(', ') : (phpEmpty(it.packaging_style) ? '—' : '')}
                 ${it.remarks ? html`<div class="text-muted">${it.remarks}</div>` : ''}
-              </td>
+                ${(photosByItem[String(it.id)] ?? []).map((ph) => { const phUrl = u('uploads/order_photos/' + ph.file_path); return html`
+                  <span style="position:relative;display:inline-block;"><img src="${phUrl}" alt="Garment photo" loading="lazy" class="ov-photo" data-full="${phUrl}" style="width:44px;height:44px;object-fit:cover;border-radius:6px;cursor:zoom-in;margin:2px 2px 0 0;border:1px solid #dde;">${canDeletePhotos ? photoDeleteForm(int(ph.id)) : ''}</span>`; })}
+              </div></td>
               <td class="text-end" data-label="Quantity">${it.weight !== null ? String(it.weight) : String(it.quantity)}</td>
               <td data-label="Unit">${it.weight !== null ? 'KG' : it.unit}</td>
               <td class="text-end" data-label="Rate">${it.weight !== null ? raw(money(it.weight_rate) + '/kg') : raw(money(it.unit_price))}</td>
@@ -502,11 +670,24 @@ ${cancelled && receivableStatus === 'Refund Due' ? html`
               <td class="text-end" data-label="Tax">${raw(money(it.tax))}</td>
               <td class="text-end fw-bold udc-card-total" data-label="Total">${raw(money(it.total))}</td>
               ${canEditItems ? html`
-              <td data-label=""><button class="ov-remove-btn btn-remove-item" data-id="${it.id}" title="Remove item"><i class="fa-solid fa-trash"></i></button></td>` : ''}
+              <td data-label=""><span class="d-inline-flex flex-md-column gap-1">
+                <!-- Rahul: "Order edit me price, and garments, uska hanger etc edit nahi hota wo hona
+                     chahiye" -- opens this one garment for editing (garment, service, quantity,
+                     rate, packaging, defects, remarks). -->
+                <a class="ov-icon-btn" href="${u('modules/orders/edit_item.php?order_id=' + id + '&item_id=' + it.id)}" title="Edit garment"><i class="fa-solid fa-pen"></i></a>
+                <button class="ov-remove-btn btn-remove-item" data-id="${it.id}" title="Remove item"><i class="fa-solid fa-trash"></i></button>
+              </span></td>` : ''}
             </tr>`)}
           </tbody>
         </table>
       </div>`}
+
+      ${orderLevelPhotos.length ? html`
+        <div class="px-3 pb-2">
+          <div class="small text-muted mb-1"><i class="fa-solid fa-camera me-1"></i>Order photos</div>
+          ${orderLevelPhotos.map((ph) => { const phUrl = u('uploads/order_photos/' + ph.file_path); return html`
+            <span style="position:relative;display:inline-block;"><img src="${phUrl}" alt="Order photo" loading="lazy" class="ov-photo" data-full="${phUrl}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;cursor:zoom-in;margin:2px 4px 0 0;border:1px solid #dde;">${canDeletePhotos ? photoDeleteForm(int(ph.id)) : ''}</span>`; })}
+        </div>` : ''}
 
       <div class="ov-summary-wrap">
         <div class="ov-summary">
@@ -589,6 +770,24 @@ ${isEditable && (ctx.can('orders.edit') || ctx.can('orders.cancel')) ? html`
 </div>
 
 ${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaymentTypeId: String(paymentTypesForModal[0]?.id ?? '0') }))}` : ''}
+<div class="modal fade" id="photoViewModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content bg-dark">
+      <div class="modal-body p-1 text-center position-relative">
+        <button type="button" class="btn-close btn-close-white position-absolute top-0 end-0 m-2" data-bs-dismiss="modal" style="z-index:2;"></button>
+        <img id="photoViewImg" src="" alt="Photo" style="max-width:100%;max-height:80vh;">
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+document.addEventListener('click', function (ev) {
+  var img = ev.target.closest && ev.target.closest('.ov-photo');
+  if (!img) return;
+  document.getElementById('photoViewImg').src = img.getAttribute('data-full');
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('photoViewModal')).show();
+});
+</script>
 `);
   });
 
@@ -604,7 +803,22 @@ ${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaym
     let errors: string[] = [];
     const canOverrideDiscount = ctx.can('pos.override_discount');
     const maxDiscount = flt(await ctx.setting('max_counter_discount_percent', '0'));
-    if (req.method === 'POST') {
+    // Current customer (shown on the form) + the separate "change customer" action.
+    const currentCustomer = (await db.query<Row>('SELECT id, full_name, mobile, customer_code FROM customers WHERE id = ?', [Number(order.customer_id)]))[0] ?? { id: 0, full_name: '—', mobile: '', customer_code: '' };
+    const blockers: string[] = [];
+    for (const [t, label] of [['payments', 'payment/refund recorded'], ['wallet_transactions', 'wallet used'], ['pickup_orders', 'pickup linked'], ['delivery_orders', 'delivery linked']] as const) {
+      if (int((await db.query<Row>(`SELECT COUNT(*) AS n FROM ${t} WHERE order_id = ?`, [id]))[0]!.n) > 0) blockers.push(label);
+    }
+    if (req.method === 'POST' && body(ctx).action === 'change_customer') {
+      if (!ctx.csrfValid()) return csrfFail();
+      const b = body(ctx);
+      const res = await orders.changeOrderCustomer(id, int(b.new_customer_id), { userId: ctx.data.user_id!, ip: req.ip }, clean(b.customer_reason));
+      if (res.success) {
+        ctx.flashSet('success', 'Customer changed for this order.');
+        return new WebRedirect(`modules/orders/view.php?id=${id}`);
+      }
+      errors = res.errors ?? [];
+    } else if (req.method === 'POST') {
       if (!ctx.csrfValid()) return csrfFail();
       const b = body(ctx);
       const reason = clean(b.reason);
@@ -631,6 +845,31 @@ ${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaym
     const u = (p: string) => ctx.baseUrl(p);
     return layout(ctx, { title: `Edit Order ${order.short_order_code ?? order.order_number}` }, html`
 <div class="col-md-8">
+  <div class="card mb-3">
+    <div class="card-body">
+      <h6 class="fw-bold mb-2"><i class="fa-solid fa-user me-1"></i>Customer</h6>
+      <div class="mb-2"><span class="fw-semibold">${currentCustomer.full_name}</span>
+        <span class="text-muted small"> · ${currentCustomer.mobile} ${phpEmpty(currentCustomer.customer_code) ? '' : '· ' + currentCustomer.customer_code}</span></div>
+      ${blockers.length ? html`
+        <div class="alert alert-warning small py-2 mb-0">The customer can't be changed on this order (${blockers.join(', ')}).</div>` : html`
+        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#changeCustomerBox"><i class="fa-solid fa-user-pen me-1"></i>Change customer</button>
+        <div class="collapse mt-3" id="changeCustomerBox">
+          <form method="POST" id="changeCustomerForm">
+            ${ctx.csrfField()}
+            <input type="hidden" name="action" value="change_customer">
+            <input type="hidden" name="new_customer_id" id="newCustomerId" value="">
+            <label class="form-label small">Search the correct customer (name / mobile / code)</label>
+            <input type="text" id="custSearch" class="form-control" autocomplete="off" placeholder="Type at least 2 letters or digits">
+            <div id="custResults" class="list-group mt-1"></div>
+            <div id="custChosen" class="alert alert-success py-2 small mt-2 d-none"></div>
+            <label class="form-label small mt-2">Reason <span class="text-danger">*</span></label>
+            <input type="text" name="customer_reason" class="form-control" required placeholder="e.g. Order was made on the wrong customer">
+            <div class="form-text">Prices stay as they are. Only works while no payment / wallet / pickup / delivery is linked.</div>
+            <button class="btn btn-primary btn-sm mt-2" id="changeCustomerBtn" type="submit" disabled>Change customer</button>
+          </form>
+        </div>`}
+    </div>
+  </div>
   <div class="card">
     <div class="card-body">
       ${errorList(errors)}
@@ -695,6 +934,41 @@ ${raw(orderViewScript(u, jsonEncode, e, { id, csrf: ctx.csrfToken(), defaultPaym
     </div>
   </div>
 </div>
+<script>
+(function () {
+  var input = document.getElementById('custSearch'); if (!input) return;
+  var results = document.getElementById('custResults'), chosen = document.getElementById('custChosen');
+  var hidden = document.getElementById('newCustomerId'), btn = document.getElementById('changeCustomerBtn'), timer = null;
+  var currentId = ${int(order.customer_id)};
+  function esc(t){ var d=document.createElement('div'); d.textContent=t==null?'':t; return d.innerHTML; }
+  input.addEventListener('input', function () {
+    hidden.value = ''; btn.disabled = true; chosen.classList.add('d-none');
+    clearTimeout(timer);
+    var q = input.value.trim(); if (q.length < 2) { results.innerHTML = ''; return; }
+    timer = setTimeout(function () {
+      fetch('${e(u('api/customers_search.php'))}?q=' + encodeURIComponent(q), {credentials: 'same-origin'})
+        .then(function (r) { return r.json(); }).then(function (d) {
+          results.innerHTML = '';
+          (d.results || []).filter(function (c) { return parseInt(c.id, 10) !== currentId; }).forEach(function (c) {
+            var a = document.createElement('button'); a.type = 'button'; a.className = 'list-group-item list-group-item-action small';
+            a.innerHTML = '<b>' + esc(c.full_name) + '</b> · ' + esc(c.mobile) + (c.customer_code ? ' · ' + esc(c.customer_code) : '');
+            a.addEventListener('click', function () {
+              hidden.value = c.id; btn.disabled = false; results.innerHTML = '';
+              input.value = c.full_name;
+              chosen.textContent = 'Selected: ' + c.full_name + ' (' + c.mobile + ')'; chosen.classList.remove('d-none');
+            });
+            results.appendChild(a);
+          });
+          if (!results.children.length) results.innerHTML = '<div class="list-group-item small text-muted">No other customer found.</div>';
+        });
+    }, 250);
+  });
+  document.getElementById('changeCustomerForm').addEventListener('submit', function (e) {
+    if (!hidden.value) { e.preventDefault(); return; }
+    if (!confirm('Move this order to ' + input.value + '?')) e.preventDefault();
+  });
+})();
+</script>
 `);
   });
 
@@ -1186,6 +1460,14 @@ ${raw(invoiceScriptPdf(String(order.invoice_number ?? '').replace(/[^A-Za-z0-9_-
   });
 
   // ---- JSON actions (modules/orders/add_item.php, remove_item.php, cancel.php) ------------------
+  // add_item / remove_item answer a script that then reloads the order page, so the "print tags again" notice is left as a flash message
+  // for that page to show -- stored once, even when several garments are added one after another.
+  const queueTagsNotice = (ctx: WebCtx, result: Row) => {
+    if (result.success && result.tags_notice) {
+      const already = (ctx.data.flash ?? []).some((f: { message: string }) => f.message === result.tags_notice);
+      if (!already) ctx.flashSet('warning', String(result.tags_notice));
+    }
+  };
   const jsonAction = (name: string, permission: string, run: (ctx: WebCtx, p: Record<string, unknown>) => Promise<Row>) => {
     webPage(app, `/modules/orders/${name}`, { auth: 'login', methods: ['GET', 'POST'] }, async (ctx, req) => {
       if (!ctx.can(permission)) return forbiddenPage(ctx);
@@ -1195,6 +1477,7 @@ ${raw(invoiceScriptPdf(String(order.invoice_number ?? '').replace(/[^A-Za-z0-9_-
       const token = (p as Record<string, unknown>).csrf_token;
       if (!ctx.data.csrf_token || typeof token !== 'string' || token !== ctx.data.csrf_token) return json({ success: false, errors: ['Invalid or expired security token.'] }, 419);
       const result = await run(ctx, p as Record<string, unknown>);
+      if (name === 'add_item' || name === 'remove_item') queueTagsNotice(ctx, result);
       return json(result, result.success ? 200 : 422);
     });
   };

@@ -33,7 +33,27 @@ const asList = (v: unknown): Raw[] => (Array.isArray(v) ? v.map(asObj) : []);
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const fail = (...errors: string[]): Result => ({ success: false, errors });
 
+/** The four per-garment packaging choices the POS / app offer (order_items.packaging_style enum). */
+export const PACKAGING_STYLES: Record<string, string> = { FOLD: 'Fold', HANGER: 'Hanger', HALF_FOLD: 'Half Fold', HANGER_AND_FOLD: 'Hanger + Fold' };
+
+/** A valid packaging_style value, or null for "none" / anything unrecognised. */
+export function normalizePackagingStyle(v: unknown): string | null {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(PACKAGING_STYLES, v) ? v : null;
+}
+
+/** What happened to an order's tags after an item add/update/remove: the one notice every screen (web and app) shows. */
+export type TagsChanged = 'none' | 'content' | 'added' | 'renumbered';
+export function tagsNotice(changed: string | null | undefined): string | null {
+  switch (changed) {
+    case 'renumbered': return 'Tag numbers on this order have changed. Print all tags for this order again.';
+    case 'added': return 'New tags were created. Print the tags for this order again.';
+    case 'content': return "The details printed on this garment's tags have changed. Print its tags again.";
+    default: return null;
+  }
+}
+
 interface PricedLine {
+  packaging_style?: string | null;
   garment_id: number; service_id: number; garment_name: string; service_name: string;
   quantity: number; unit: string; unit_price: number; weight: number | null; weight_rate: number | null;
   subtotal: number; tax_percent: number; brand_id: number | null; color_id: number | null;
@@ -161,6 +181,8 @@ export class OrderService {
         // rate_overridden now always matches is_manual_override: the fix above means a
         // rate_override value only ever affects the price when manual_override also applied.
         remarks: clean(raw.remarks), rate_overridden: isManual, is_manual_override: isManual,
+        // per-garment packaging (Fold / Hanger / Half Fold / Hanger + Fold) chosen in the POS or app garment modal
+        packaging_style: normalizePackagingStyle(raw.packaging_style),
         original_configured_rate: isManual ? (rate !== null ? (mode === 'weight' ? rate.weight_rate : (rate.piece_rate ?? null)) : null) : null,
       },
     };
@@ -305,10 +327,10 @@ export class OrderService {
           const p = priced[seq]!;
           const it = await t.execute(
             `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
-               weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+               weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks, packaging_style)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
-              p.subtotal, p.discount, p.tax_percent, p.tax, p.total, p.brand_id, p.color_id, p.remarks],
+              p.subtotal, p.discount, p.tax_percent, p.tax, p.total, p.brand_id, p.color_id, p.remarks, p.packaging_style ?? null],
           );
           const itemId = it.insertId;
           if (p.is_manual_override) {
@@ -354,7 +376,7 @@ export class OrderService {
 
   private async afterCreate(customerId: number, orderId: number, orderNumber: string, grandTotal: number, notify = true, waOrderNumber = orderNumber) {
     // PHP's createLaundryOrder() never wrote the in-app 'order_created' notification; only createOrder() did.
-    if (notify) await this.notifications.notify('order_created', `Order ${orderNumber} created for ${await formatCurrency(this.db, grandTotal)}.`, customerId, orderId);
+    if (notify) await this.notifications.notify('order_created', `Order ${waOrderNumber} created for ${await formatCurrency(this.db, grandTotal)}.`, customerId, orderId);
     try {
       await this.hooks.orderCreated({ customerId, orderId, orderNumber: waOrderNumber, grandTotal });
     } catch (e) {
@@ -573,7 +595,7 @@ export class OrderService {
         const paymentId = ins.insertId;
         for (const l of lines) await t.execute('INSERT INTO payment_transactions (payment_id, payment_type_id, amount) VALUES (?,?,?)', [paymentId, l.payment_type_id, l.amount]);
         if (creditToWallet) {
-          await sc.wallet.deposit(Number(locked.customer_id), refundAmount, 'Refund', `Refund for order ${locked.order_number} (${refundNumber})`, orderId, actor.userId, actor.ip ?? null);
+          await sc.wallet.deposit(Number(locked.customer_id), refundAmount, 'Refund', `Refund for order ${locked.short_order_code ?? locked.order_number} (${refundNumber})`, orderId, actor.userId, actor.ip ?? null);
         }
         await sc.audit.record({
           action: 'refund', module: 'orders', recordId: String(orderId),
@@ -764,10 +786,12 @@ export class OrderService {
         }
         const ins = await t.execute(
           `INSERT INTO order_items (order_id, garment_id, service_id, quantity, unit, pieces_per_unit, piece_names, unit_price, weight,
-             weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks, client_request_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
+             weight_rate, is_manual_override, subtotal, discount, tax_percent, tax, total, brand_id, color_id, remarks, client_request_id, packaging_style)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,?,?,?,?)`,
           [orderId, p.garment_id, p.service_id, p.quantity, p.unit, p.pieces_per_unit, p.piece_names, p.unit_price, p.weight, p.weight_rate, p.is_manual_override ? 1 : 0,
-            p.subtotal, p.tax_percent, p.subtotal, p.brand_id, p.color_id, p.remarks, clientRequestId],
+            p.subtotal, p.tax_percent, p.subtotal, p.brand_id, p.color_id, p.remarks, clientRequestId,
+            // a garment added to an existing order carries its packaging choice too (piece lines only)
+            p.weight === null ? (p.packaging_style ?? null) : null],
         );
         const id = ins.insertId;
         for (const defectId of p.defect_ids) await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [id, defectId, actor.userId]);
@@ -791,7 +815,7 @@ export class OrderService {
         await this.recalculateAggregates(sc, orderId, actor, true);
         return id;
       });
-      return { success: true, item_id: itemId };
+      return { success: true, item_id: itemId, tags_changed: 'added', tags_notice: tagsNotice('added') };
     } catch (e) {
       if (clientRequestId !== null && (e as { code?: string }).code === 'ER_DUP_ENTRY') {
         const [dup] = await this.db.query<{ id: number }>('SELECT id FROM order_items WHERE order_id = ? AND client_request_id = ?', [orderId, clientRequestId]);
@@ -802,9 +826,13 @@ export class OrderService {
   }
 
   /**
-   * Changes quantity/weight/rate/brand/colour/remarks/defects of an item already on an editable order, re-pricing exactly like
-   * addItem(). garment_id/service_id are not editable (that is "remove + add"), and tags are never regenerated on a quantity change
-   * (renumbering already printed tags would be harmful).
+   * Changes an item already on an editable order, re-pricing exactly like addItem(). On a per-piece line the garment, its service
+   * and its packaging can change too, and a quantity or garment change brings the line's tags in line (see syncItemTags()); the
+   * result carries 'tags_changed' / 'tags_notice' so every screen can tell the user to print tags again.
+   *
+   * Garment, service and quantity can only change while the line is still 'Pending': once a piece has gone to the workshop its
+   * physical tag is out there, and renumbering or replacing it here would make that tag point at the wrong thing. Rate,
+   * packaging, brand, colour, defects and remarks stay editable either way.
    */
   async updateItem(orderId: number, itemId: number, raw: Raw, actor: Actor, canManualOverrideRate = false): Promise<Result> {
     const [order] = await this.db.query<Raw>('SELECT * FROM orders WHERE id = ?', [orderId]);
@@ -813,22 +841,58 @@ export class OrderService {
     const [existing] = await this.db.query<Raw>('SELECT * FROM order_items WHERE id = ? AND order_id = ?', [itemId, orderId]);
     if (!existing) return fail('Item not found on this order.');
 
-    const garmentId = toInt(existing.garment_id);
-    const serviceId = toInt(existing.service_id);
     const mode: 'weight' | 'piece' = existing.weight !== null ? 'weight' : 'piece';
     const has = (k: string) => Object.prototype.hasOwnProperty.call(raw, k) && raw[k] !== null && raw[k] !== undefined;
+    const garmentId = !phpEmpty(raw.garment_id) ? toInt(raw.garment_id) : toInt(existing.garment_id);
+    const serviceId = !phpEmpty(raw.service_id) ? toInt(raw.service_id) : toInt(existing.service_id);
+    const garmentChanged = garmentId !== toInt(existing.garment_id);
+    const serviceChanged = serviceId !== toInt(existing.service_id);
     let quantity = toFloat(has('quantity') ? raw.quantity : existing.quantity);
     const weight = toFloat(has('weight') ? raw.weight : existing.weight);
+    const quantityChanged = mode === 'piece' && Math.abs(quantity - toFloat(existing.quantity)) > 0.0001;
     const rateOverrideRaw = raw.rate_override ?? null;
     const hasRateOverride = rateOverrideRaw !== null && rateOverrideRaw !== '';
-    const claimsManualOverride = Object.prototype.hasOwnProperty.call(raw, 'manual_override') ? !phpEmpty(raw.manual_override) : Number(existing.is_manual_override) === 1;
+    // A different garment or service is a different price-list line, so an existing manual override does not carry over to it
+    // unless the request claims one again.
+    const claimsManualOverride = Object.prototype.hasOwnProperty.call(raw, 'manual_override')
+      ? !phpEmpty(raw.manual_override)
+      : ((garmentChanged || serviceChanged) ? false : Number(existing.is_manual_override) === 1);
+
+    if ((garmentChanged || serviceChanged) && mode === 'weight') return fail('The garment or service of a Per-Weight (Laundry) line cannot be changed.');
+    if (serviceChanged) {
+      const [ns] = await this.db.query<{ billing_unit: string }>('SELECT billing_unit FROM services WHERE id = ?', [serviceId]);
+      if (!ns) return fail('The selected service does not exist.');
+      if (ns.billing_unit === 'weight') return fail('A per-piece line cannot be changed to a Per-Weight (Laundry) service.');
+    }
+    const itemStatus = String(existing.item_status ?? 'Pending');
+    if ((garmentChanged || serviceChanged || quantityChanged) && itemStatus !== 'Pending') {
+      return fail(`This garment has already moved on (status: ${itemStatus}), so its garment, service and quantity can no longer be changed. Rate, packaging and remarks can still be edited.`);
+    }
 
     if (mode === 'piece' && quantity <= 0) return fail('Quantity must be greater than zero.');
     if (mode === 'weight' && weight <= 0) return fail('Weight must be greater than zero.');
     if (hasRateOverride && (!isNumeric(rateOverrideRaw) || toFloat(rateOverrideRaw) < 0)) return fail('The entered rate override must be a non-negative number.');
 
-    const [g] = await this.db.query<{ garment_name: string }>('SELECT garment_name FROM garments WHERE id = ?', [garmentId]);
+    const [g] = await this.db.query<Raw>('SELECT garment_name, unit, pieces_per_unit, piece_names FROM garments WHERE id = ?', [garmentId]);
+    if (garmentChanged && !g) return fail('The selected garment does not exist.');
     const garmentName = g?.garment_name || `Garment #${garmentId}`;
+    let piecesPerUnit: number, pieceNames: string | null, unit: string;
+    if (garmentChanged) {
+      // A different garment brings its own Set size, piece names and unit (same values createOrder()/addItem() would have stored for it).
+      piecesPerUnit = Math.max(1, toInt(g?.pieces_per_unit ?? 1));
+      pieceNames = g?.piece_names ?? null;
+      unit = g?.unit || 'Pcs';
+    } else {
+      // Same garment: keep what this line stored when it was created, even if the garment's own Set size was edited since --
+      // the line's existing tags were built from it.
+      piecesPerUnit = Math.max(1, toInt(existing.pieces_per_unit ?? 1));
+      pieceNames = existing.piece_names ?? null;
+      unit = existing.unit;
+    }
+    const piecesPerUnitChanged = mode === 'piece' && piecesPerUnit !== Math.max(1, toInt(existing.pieces_per_unit ?? 1));
+    const packagingStyle: string | null = mode === 'piece' && Object.prototype.hasOwnProperty.call(raw, 'packaging_style')
+      ? normalizePackagingStyle(raw.packaging_style)
+      : (existing.packaging_style ?? null);
     const [sv] = await this.db.query<{ service_name: string }>('SELECT service_name FROM services WHERE id = ?', [serviceId]);
     const serviceName = sv?.service_name || `Service #${serviceId}`;
 
@@ -865,26 +929,43 @@ export class OrderService {
       isManual = false;
     }
 
+    let tagsChanged: TagsChanged = 'none';
     try {
       await this.db.tx(async (t) => {
         const sc = this.scoped(t);
         const [locked] = await t.query<Raw>('SELECT * FROM orders WHERE id = ? FOR UPDATE', [orderId]);
         if (!locked || !(await this.isEditable(locked as { status_id: number }, t))) throw new BusinessError('This order can no longer be edited — its status changed a moment ago.');
+        // Under the same lock, re-read the line's status: it may have been sent to the workshop between the check at the top and now.
+        if (garmentChanged || serviceChanged || quantityChanged) {
+          const [st] = await t.query<{ item_status: string }>('SELECT item_status FROM order_items WHERE id = ? FOR UPDATE', [itemId]);
+          if (String(st?.item_status) !== 'Pending') throw new BusinessError('This garment was sent for processing a moment ago, so its garment, service and quantity can no longer be changed.');
+        }
+        const newRemarks = Object.prototype.hasOwnProperty.call(raw, 'remarks') ? clean(raw.remarks) : existing.remarks;
         await t.execute(
-          `UPDATE order_items SET quantity=?, unit_price=?, weight=?, weight_rate=?, is_manual_override=?,
+          `UPDATE order_items SET garment_id=?, service_id=?, unit=?, pieces_per_unit=?, piece_names=?, packaging_style=?,
+             quantity=?, unit_price=?, weight=?, weight_rate=?, is_manual_override=?,
              subtotal=?, tax_percent=?, tax=?, total=?, brand_id=?, color_id=?, remarks=? WHERE id=?`,
-          [quantity, unitPrice, weightSnap, weightRateSnap, isManual ? 1 : 0, lineSubtotal, taxPercent, lineSubtotal, lineSubtotal,
+          [
+            // A Per-Weight (Laundry) batch line has no garment of its own (garment_id NULL) -- keep exactly what it had.
+            mode === 'weight' ? existing.garment_id : garmentId, serviceId, unit, piecesPerUnit, pieceNames, packagingStyle,
+            quantity, unitPrice, weightSnap, weightRateSnap, isManual ? 1 : 0, lineSubtotal, taxPercent, lineSubtotal, lineSubtotal,
             Object.prototype.hasOwnProperty.call(raw, 'brand_id') ? (!phpEmpty(raw.brand_id) ? toInt(raw.brand_id) : null) : existing.brand_id,
             Object.prototype.hasOwnProperty.call(raw, 'color_id') ? (!phpEmpty(raw.color_id) ? toInt(raw.color_id) : null) : existing.color_id,
-            Object.prototype.hasOwnProperty.call(raw, 'remarks') ? clean(raw.remarks) : existing.remarks, itemId],
+            newRemarks, itemId],
         );
+        let defectsChanged = false;
         if (Object.prototype.hasOwnProperty.call(raw, 'defect_ids')) {
+          const oldIds = (await t.query<{ defect_id: number }>('SELECT defect_id FROM order_item_defects WHERE order_item_id = ? ORDER BY defect_id', [itemId])).map((r) => toInt(r.defect_id));
+          const newIds = [...new Set((Array.isArray(raw.defect_ids) ? raw.defect_ids : []).map(toInt).filter((n: number) => n !== 0))].sort((x, y) => x - y);
+          defectsChanged = JSON.stringify(oldIds) !== JSON.stringify(newIds);
           await t.execute('DELETE FROM order_item_defects WHERE order_item_id = ?', [itemId]);
-          for (const d of (Array.isArray(raw.defect_ids) ? raw.defect_ids : []).map(toInt).filter((n: number) => n !== 0)) {
-            await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [itemId, d, actor.userId]);
-          }
+          for (const d of newIds) await t.execute('INSERT INTO order_item_defects (order_item_id, defect_id, recorded_by) VALUES (?,?,?)', [itemId, d, actor.userId]);
         }
-        await sc.audit.record({ action: 'edit', module: 'order_items', recordId: String(itemId), oldValue: existing, newValue: { quantity, unit_price: unitPrice, weight: weightSnap, total: lineSubtotal }, userId: actor.userId, ip: actor.ip });
+        await sc.audit.record({
+          action: 'edit', module: 'order_items', recordId: String(itemId), oldValue: existing,
+          newValue: { garment_id: mode === 'weight' ? existing.garment_id : garmentId, service_id: serviceId, packaging_style: packagingStyle, quantity, unit_price: unitPrice, weight: weightSnap, total: lineSubtotal },
+          userId: actor.userId, ip: actor.ip,
+        });
         if (isManual && Number(existing.is_manual_override) !== 1) {
           await sc.audit.record({
             action: 'manual_rate_override', module: 'order_items', recordId: String(itemId),
@@ -893,12 +974,54 @@ export class OrderService {
             userId: actor.userId, ip: actor.ip,
           });
         }
+        // Tags follow the line: a changed quantity or Set size adds, removes or replaces this line's tags in this same transaction.
+        // When their numbers did not move but something that is PRINTED on them did (garment name, service, packaging, defects,
+        // remarks), that still means a reprint, reported as 'content'.
+        if (mode === 'piece') {
+          tagsChanged = await this.syncItemTags(t, orderId, String(locked.order_number), itemId, Math.max(1, Math.round(quantity * piecesPerUnit)), piecesPerUnitChanged);
+          const printedContentChanged = garmentChanged || serviceChanged || defectsChanged
+            || String(packagingStyle ?? '') !== String(existing.packaging_style ?? '')
+            || String(newRemarks ?? '') !== String(existing.remarks ?? '');
+          if (tagsChanged === 'none' && printedContentChanged) tagsChanged = 'content';
+        }
         await this.recalculateAggregates(sc, orderId, actor, true);
       });
     } catch (e) {
       return fail(this.prefixed(e, 'Could not update item: '));
     }
-    return { success: true };
+    return { success: true, tags_changed: tagsChanged, tags_notice: tagsNotice(tagsChanged) };
+  }
+
+  /**
+   * Brings one piece-mode item's tags in line with its (possibly edited) piece count, inside the caller's open transaction. Other
+   * garments' tag numbers are left alone whenever that is possible:
+   *   same piece count -> nothing changes ('none'); more pieces -> the extra tags get the next free numbers at the END of the order
+   *   ('added'); fewer pieces -> this item's highest-numbered tags are deleted and the order is renumbered to a gapless 1..N, exactly
+   *   what removeItem() does ('renumbered'); `rebuild` (the garment now has a different pieces-per-unit, so which tag is which piece
+   *   of the set no longer holds) -> all of this item's tags are replaced, then the order is renumbered ('renumbered').
+   */
+  private async syncItemTags(t: Db, orderId: number, orderNumber: string, itemId: number, targetPiecesIn: number, rebuild: boolean): Promise<TagsChanged> {
+    const targetPieces = Math.max(1, targetPiecesIn);
+    const [c] = await t.query<{ n: number }>('SELECT COUNT(*) AS n FROM barcodes WHERE order_item_id = ?', [itemId]);
+    let existing = Number(c?.n ?? 0);
+    if (!rebuild && existing === targetPieces) return 'none';
+    if (rebuild && existing > 0) {
+      await t.execute('DELETE FROM barcodes WHERE order_item_id = ?', [itemId]); // garment_tags rows go with their barcode (ON DELETE CASCADE)
+      existing = 0;
+    } else if (existing > targetPieces) {
+      await t.execute('DELETE FROM barcodes WHERE order_item_id = ? AND piece_index > ?', [itemId, targetPieces]);
+      await this.renumberTagSequences(t, orderId);
+      return 'renumbered';
+    }
+    // generateForItem() numbers a missing piece p as startSequence + p - 1, and only creates the pieces that do not exist yet -- so
+    // this start makes the first new one max + 1.
+    const [m] = await t.query<{ n: number }>('SELECT COALESCE(MAX(item_sequence), 0) AS n FROM barcodes WHERE order_id = ?', [orderId]);
+    await new GarmentTagService(t).generateForItem(orderId, orderNumber, itemId, Number(m?.n ?? 0) + 1 - existing, targetPieces);
+    if (rebuild) {
+      await this.renumberTagSequences(t, orderId);
+      return 'renumbered';
+    }
+    return 'added';
   }
 
   /**
@@ -950,7 +1073,7 @@ export class OrderService {
     } catch (e) {
       return fail(this.prefixed(e, 'Could not remove item: '));
     }
-    return { success: true };
+    return { success: true, tags_changed: 'renumbered', tags_notice: tagsNotice('renumbered') };
   }
 
   async editOrder(orderId: number, changes: Raw, actor: Actor, reason: string, canOverrideDiscount: boolean): Promise<Result> {
@@ -982,6 +1105,50 @@ export class OrderService {
       });
     } catch (e) {
       return fail(this.prefixed(e, 'Could not update order: '));
+    }
+    return { success: true };
+  }
+
+  /**
+   * Hand an order that was made under the WRONG customer to the right (existing) customer. Deliberately narrow: only while the
+   * order is still editable (status Order Created); REFUSED if the order has any payment / wallet entry / pickup / delivery row
+   * (that money and those jobs belong to the old customer; moving them is a separate, riskier job); a reason is required and the
+   * old/new customer are written to the audit log. Prices are NOT recalculated; history that already exists (WhatsApp messages /
+   * notifications sent to the old customer) stays as it was.
+   */
+  async changeOrderCustomer(orderId: number, newCustomerId: number, actor: Actor, reason: string): Promise<Result> {
+    if (reason.trim() === '') return fail('A reason is required to change the customer.');
+    try {
+      await this.db.tx(async (t) => {
+        const sc = this.scoped(t);
+        const [order] = await t.query<Raw>('SELECT * FROM orders WHERE id = ? FOR UPDATE', [orderId]);
+        if (!order) throw new BusinessError('Order not found.');
+        if (!(await this.isEditable(order as { status_id: number }, t))) throw new BusinessError('This order can no longer be edited (processing has begun).');
+        if (toInt(order.customer_id) === newCustomerId) throw new BusinessError("That is already this order's customer.");
+        const [nw] = await t.query<Raw>('SELECT id, full_name, is_active FROM customers WHERE id = ?', [newCustomerId]);
+        if (!nw || !toInt(nw.is_active)) throw new BusinessError('Choose an existing, active customer.');
+        for (const [table, why] of [
+          ['payments', 'a payment or refund has been recorded'],
+          ['wallet_transactions', 'wallet money has been used or credited'],
+          ['pickup_orders', 'a pickup is linked to it'],
+          ['delivery_orders', 'a delivery is linked to it'],
+        ] as const) {
+          const [c] = await t.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE order_id = ?`, [orderId]);
+          if (Number(c?.n ?? 0) > 0) throw new BusinessError(`The customer can't be changed: ${why} on this order. Fix that first.`);
+        }
+        await t.execute('UPDATE orders SET customer_id = ?, updated_by = ? WHERE id = ?', [newCustomerId, actor.userId, orderId]);
+        await t.execute('UPDATE accounts_receivable SET customer_id = ? WHERE order_id = ?', [newCustomerId, orderId]);
+        await sc.audit.record({
+          action: 'edit', module: 'orders', recordId: String(orderId),
+          oldValue: { customer_id: toInt(order.customer_id) },
+          newValue: { customer_id: newCustomerId, customer_name: nw.full_name, reason, action: 'change_customer' },
+          userId: actor.userId, ip: actor.ip,
+        });
+      });
+    } catch (e) {
+      if (e instanceof BusinessError) return fail(e.message);
+      this.log(`[order-service] changeOrderCustomer ${(e as Error)?.stack ?? e}`);
+      return fail('An unexpected error occurred.');
     }
     return { success: true };
   }

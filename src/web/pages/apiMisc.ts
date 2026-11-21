@@ -3,6 +3,7 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { numberFormat2, phpEmpty, toInt } from '../../lib/php.js';
+import { formArray } from '../format.js';
 import { WebText, webPage, type WebCtx } from '../context.js';
 import { jsonEncode } from '../html.js';
 import { sniffMime } from '../uploads.js';
@@ -17,16 +18,13 @@ const post = { methods: ['GET', 'POST'] as ('GET' | 'POST')[] };
 const notPost = () => json({ success: false, error: 'Invalid request method.' }, 405);
 
 export function registerApiMisc(app: FastifyInstance) {
-  const { db, audit, whatsapp, orders } = app.services;
+  const { db, audit, whatsapp, orders, workshop } = app.services;
 
   // ---- api/voice_pos_parse.php: inert stub ------------------------------------------------------
   webPage(app, '/api/voice_pos_parse', { auth: 'public', ...post }, async () => json({ success: false, error: 'Voice POS has been removed from this environment.' }, 410));
 
   // ---- barcode_lookup / qr_lookup -----------------------------------------------------------------
-  // These are TWO SEPARATE files in the real app, not one shared implementation -- the short_order_code
-  // fix (changelog 2026-10-23..30) only ever touched api/barcode_lookup.php; api/qr_lookup.php's own
-  // query was explicitly left "otherwise untouched", so it still returns the long order_number. Node
-  // shares one lookup() function for both, so that difference has to be threaded through via `kind`.
+  // These are two separate files in the real app; both now return the short order code (qr_lookup.php was brought in line on 2026-11-16).
   const lookup = async (ctx: WebCtx, ip: string, key: string, col: string, kind: 'barcode' | 'qr', token: string) => {
     const uid = ctx.data.user_id ?? null;
     const anchor = (await db.query<Row>(`SELECT order_item_id, laundry_garment_id FROM barcodes WHERE ${col} = ?`, [key]))[0];
@@ -34,7 +32,7 @@ export function registerApiMisc(app: FastifyInstance) {
     const fallbackId = kind === 'barcode' ? token : 'qr:' + token.slice(0, 8);
     const via = kind === 'barcode' ? null : col;
     const meta = (found: boolean, extra: Row) => (kind === 'barcode' ? { barcode: token, found, ...extra } : { via, found, ...extra });
-    const orderNo = (r: Row) => (kind === 'barcode' ? r.short_order_code ?? r.order_number : r.order_number);
+    const orderNo = (r: Row) => r.short_order_code ?? r.order_number;
     if (anchor && anchor.laundry_garment_id) {
       const row = (await db.query<Row>(
         `SELECT b.id AS barcode_id, b.barcode_value, b.item_sequence, lg.id AS laundry_garment_id, g.garment_name, s.service_name, oi.item_status, oi.quantity AS total_garments,
@@ -75,7 +73,8 @@ export function registerApiMisc(app: FastifyInstance) {
     const rows = await db.query<Row>('SELECT id, order_item_id, file_path, caption, created_at FROM order_photos WHERE order_id = ? ORDER BY created_at DESC', [orderId]);
     return json({ success: true, photos: rows.map((r) => ({ id: Number(r.id), order_item_id: r.order_item_id !== null ? Number(r.order_item_id) : null, url: ctx.baseUrl('uploads/order_photos/' + r.file_path), caption: r.caption, created_at: r.created_at })) });
   });
-  webPage(app, '/api/order_photo_delete', { auth: 'orders.edit', ...post }, async (ctx, req) => {
+  // deleting photos is Admin-only now (Admin > Order Photos); order staff can only view them
+  webPage(app, '/api/order_photo_delete', { auth: 'admin.settings', ...post }, async (ctx, req) => {
     if (req.method !== 'POST') return notPost();
     if (!ctx.csrfValid()) return csrfFail();
     const photoId = toInt(body(ctx).photo_id);
@@ -175,6 +174,53 @@ export function registerApiMisc(app: FastifyInstance) {
     const result = await orders.recordPayment(orderId, Number(order.customer_id), [{ payment_type_id: paymentTypeId, amount }], 0.0, { userId: ctx.data.user_id!, ip: ctx.req.ip });
     if (!result.success) return json({ success: false, error: (result.errors ?? []).join(' ') }, 422);
     return json({ success: true });
+  });
+  // ---- order-scoped Send to / Receive from Workshop (Order Detail buttons) -------------------------
+  // Same WorkshopService calls modules/workshop/send.php and receive.php make, pre-filtered to one order's own items.
+  wa('orders_send_to_workshop', 'workshop.manage', async (ctx, p) => {
+    const orderId = toInt(p.order_id), workshopId = toInt(p.workshop_id);
+    const itemIds = formArray(p, 'item_ids').map((x) => toInt(x));
+    if (!orderId || !workshopId || itemIds.length === 0) return json({ success: false, error: 'Missing order, workshop, or garment selection.' }, 422);
+    // Defense in depth: only items that actually belong to this order and are still Pending can be sent -- never trust the client-submitted id list.
+    const validIds = (await db.query<Row>("SELECT id FROM order_items WHERE id IN (?) AND order_id = ? AND item_status = 'Pending'", [itemIds, orderId])).map((r) => Number(r.id));
+    if (validIds.length === 0) return json({ success: false, error: 'None of the selected garments are still pending for this order.' }, 422);
+    const result = await workshop.createChallan(workshopId, validIds, '', { userId: ctx.data.user_id!, ip: ctx.req.ip }) as Row;
+    if (!result.success) return json({ success: false, error: (result.errors ?? ['Could not create the challan.']).join(' ') }, 422);
+    return json({ success: true, challan_id: result.challan_id });
+  });
+  wa('orders_receive_from_workshop', 'workshop.manage', async (ctx, p) => {
+    const orderId = toInt(p.order_id);
+    const wiIds = formArray(p, 'workshop_item_ids').map((x) => toInt(x));
+    if (!orderId || wiIds.length === 0) return json({ success: false, error: 'Missing order or garment selection.' }, 422);
+    // Defense in depth: every submitted workshop_item_id must genuinely belong to THIS order (via a piece order_item or a Laundry batch's order_item).
+    const validIds = (await db.query<Row>(
+      `SELECT wi.id FROM workshop_items wi
+       LEFT JOIN order_items oi1 ON oi1.id = wi.order_item_id
+       LEFT JOIN laundry_garments lg ON lg.id = wi.laundry_garment_id
+       LEFT JOIN order_items oi2 ON oi2.id = lg.order_item_id
+       WHERE wi.id IN (?) AND (oi1.order_id = ? OR oi2.order_id = ?)`, [wiIds, orderId, orderId])).map((r) => Number(r.id));
+    if (validIds.length === 0) return json({ success: false, error: 'None of the selected garments belong to this order.' }, 422);
+    const actor = { userId: ctx.data.user_id!, ip: ctx.req.ip };
+    let receivedCount = 0;
+    let errors: string[] = [];
+    for (const wiId of validIds) {
+      const current = await workshop.getCurrentStatus(wiId);
+      let r2: { success: boolean; errors?: string[] };
+      if (current === 'Completed' || current === 'Returned') {
+        if (current === 'Completed') {
+          const r1 = await workshop.returnToStore(wiId, actor, '');
+          if (!r1.success) { errors = errors.concat(r1.errors ?? []); continue; }
+        }
+        r2 = await workshop.storeReceive(wiId, actor, '');
+      } else {
+        r2 = await workshop.forceStoreReceive(wiId, actor, '');
+      }
+      if (r2.success) receivedCount++; else errors = errors.concat(r2.errors ?? []);
+    }
+    const uniq = [...new Set(errors)];
+    if (receivedCount > 0 && errors.length === 0) return json({ success: true, received_count: receivedCount });
+    if (receivedCount > 0) return json({ success: true, received_count: receivedCount, error: `${errors.length} garment(s) could not be received: ${uniq.join(' ')}` });
+    return json({ success: false, error: uniq.join(' ') || 'Could not receive the selected garments.' }, 422);
   });
   wa('whatsapp_send_media', 'whatsapp.settings', async (ctx, p) => {
     const customerId = toInt(p.customer_id);

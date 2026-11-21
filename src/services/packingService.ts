@@ -16,7 +16,7 @@ export class PackingService {
 
   async createPackages(orderId: number, additional: number, garmentCount: number, userId: number, ip: string | null = null) {
     if (additional <= 0) return { success: false as const, errors: ['Number of packages must be at least 1.'] };
-    const [o] = await this.db.query<Raw>('SELECT order_number FROM orders WHERE id = ?', [orderId]);
+    const [o] = await this.db.query<Raw>('SELECT COALESCE(short_order_code, order_number) AS order_number FROM orders WHERE id = ?', [orderId]);
     if (!o || !o.order_number) return { success: false as const, errors: ['Order not found.'] };
     try {
       return await this.db.tx(async (t) => {

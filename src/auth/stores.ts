@@ -32,9 +32,16 @@ export async function resolveAuthorizedStoreId(db: Db, ctx: UserContext, request
 export const canEditOrderOfStore = (ctx: UserContext, orderStoreId: number) =>
   ctx.store_id === null || ctx.store_id === orderStoreId;
 
-/** Port of ApiAuth::canActAsStoreForOrder() — fails closed for no-fixed-store identities. */
-export const canActAsStoreForOrder = (ctx: UserContext, orderStoreId: number) =>
-  ctx.store_id !== null && ctx.store_id === orderStoreId;
+/**
+ * Port of ApiAuth::canActAsStoreForOrder(). A fixed-store user acts for their own store only (any client value is ignored). A
+ * no-fixed-store identity (Super Admin / Admin) proves the store with the "Operating store" the app sends as store_id on
+ * payment/refund: it must be an ACTIVE store AND the order's own store. Nothing sent -> fails closed (old app versions unaffected).
+ */
+export async function canActAsStoreForOrder(db: Db, ctx: UserContext, orderStoreId: number, requestedStoreId: number | null = null): Promise<boolean> {
+  if (ctx.store_id !== null) return ctx.store_id === orderStoreId;
+  if (requestedStoreId === null || requestedStoreId !== orderStoreId) return false;
+  return (await db.query('SELECT id FROM stores WHERE id = ? AND is_active = 1', [requestedStoreId])).length > 0;
+}
 
 export const isDeliveryManager = (ctx: UserContext) => DELIVERY_MANAGER_ROLES.includes(ctx.role_name);
 

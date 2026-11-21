@@ -1067,9 +1067,10 @@ function submitOrder() {
         }
         // Same 3-output pattern as the Laundry flow (modules/laundry/index.php) — Invoice +
         // WhatsApp opened here; tags already handled by printTab above.
-        // Rahul: WhatsApp confirmation now sends automatically (direct Meta) from
-        // OrderService::createOrder() itself -- no more manual wa.me popup here.
+        // Rahul: brought back the manual wa.me pop-up alongside the automated direct-Meta send
+        // (that one still happens separately, server-side, inside OrderService::createOrder()).
         window.open(${j(u('modules/orders/invoice.php'))} + '?id=' + res.order_id, '_blank');
+        if (res.whatsapp_url) window.open(res.whatsapp_url, '_blank');
         closeConfirmModalThenRun(function () {
           resetPosForNextOrder(res.order_number || res.order_id);
         });
@@ -1488,10 +1489,11 @@ document.getElementById('saveOrderBtn').addEventListener('click', function () {
     // Same new-tab-for-tags pattern as the existing POS flow, plus invoice + WhatsApp.
     const tagsTab = window.open('', '_blank');
     tagsTab.location.href = ${j(u('modules/barcode/tags_print.php'))} + '?order_id=' + res.order_id + '&auto_print=1';
-    // Rahul: WhatsApp confirmation now sends automatically (direct Meta) from
-    // OrderService::createLaundryOrder() itself -- no more manual wa.me popup here.
+    // Rahul: brought back the manual wa.me pop-up alongside the automated direct-Meta send
+    // (that one still happens separately, server-side, inside OrderService::createLaundryOrder()).
     // Invoice is the primary redirect destination — Order Details is deliberately not opened
     // after a Laundry save; only Invoice + Tags/QR + WhatsApp, per the approved final flow.
+    if (res.whatsapp_url) window.open(res.whatsapp_url, '_blank');
     window.location.href = ${j(u('modules/orders/invoice.php'))} + '?id=' + res.order_id;
   }).catch(function () {
     document.getElementById('saveOrderBtn').disabled = false;
